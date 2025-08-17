@@ -11,6 +11,7 @@ from jax.experimental.ode import odeint
 class IntegratorConfig:
     c: tuple[float]
     d: tuple[float]
+    dt: float
 
     def __post_init__(self):
         assert len(self.c) == len(self.d)
@@ -63,17 +64,34 @@ def symplectic_integrator(
     dHdq = jax.jacobian(lambda q, p: hamiltonian((q, p)), argnums=0)
     dHdp = jax.jacobian(lambda q, p: hamiltonian((q, p)), argnums=1)
 
-    def body_fn(state, tnext):
-        q, p, t = state
-        dt = tnext - t
+    cdstack = jnp.stack([jnp.array(config.c), jnp.array(config.d)], axis=1)
+    def symplectic_step(q, p, dt):
         # https://en.wikipedia.org/wiki/Symplectic_integrator or
         # Eqn. 7 https://fse.studenttheses.ub.rug.nl/20185/1/bMATH_2019_PimJC.pdf
-        for ci, di in zip(reversed(config.c), reversed(config.d)):
-            # since we unroll this in jit, let's skip zeros
-            if di != 0.0:
-                p = p - di * dt * dHdq(q, p)
-            if ci != 0.0:
-                q = q + ci * dt * dHdp(q, p)
+        def inner_loop(qp, cd):
+            q, p = qp
+            ci, di = cd
+            p = p - di * dt * dHdq(q, p)
+            q = q + ci * dt * dHdp(q, p)
+            return (q, p), None
+        
+        (q, p), _ = jax.lax.scan(inner_loop, (q, p), cdstack, reverse=True)
+        return q, p
+
+    def body_fn(state, tnext):
+        q, p, t = state
+
+        def cond_fn(qpt):
+            _, _, t = qpt
+            return t + config.dt < tnext
+        
+        def loop_fn(qpt):
+            q, p, t = qpt
+            q, p = symplectic_step(q, p, config.dt)
+            return q, p, t + config.dt
+
+        q, p, t = jax.lax.while_loop(cond_fn, loop_fn, (q, p, t))
+        q, p = symplectic_step(q, p, tnext - t)
         return (q, p, tnext), (q, p, hamiltonian((q, p)))
 
     _, (q, p, H) = jax.lax.scan(body_fn, (q0, p0, times[0]), times[1:])

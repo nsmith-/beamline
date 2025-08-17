@@ -1,0 +1,66 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+
+[project]
+name = "beamline"
+authors = [
+  { name = "Nick Smith", email = "nick.smith@cern.ch" },
+]
+description = "A beamline simulator"
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+  "Development Status :: 1 - Planning",
+  "Intended Audience :: Science/Research",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: BSD License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering",
+  "Typing :: Typed",
+]
+dynamic = ["version"]
+dependencies = ["scipy", "hepunits", "pint", "matplotlib"]
+
+[project.optional-dependencies]
+test = [
+  "pytest >=6",
+  "pytest-cov >=3",
+  "scikit-hep-testdata",
+]
+dev = [
+  "pytest >=6",
+  "pytest-cov >=3",
+  "scikit-hep-testdata",
+]
+docs = [
+  "sphinx>=7.0",
+  "myst_parser>=0.13",
+  "sphinx_copybutton",
+  "sphinx_autodoc_typehints",
+  "furo>=2023.08.17",
+]
+
+[project.urls]
+Homepage = "https://github.com/nsmith-/beamline"
+"Bug Tracker" = "https://github.com/nsmith-/beamline/issues"
+Discussions = "https://github.com/nsmith-/beamline/discussions"
+Changelog = "https://github.com/nsmith-/beamline/releases"
+
+
+[tool.hatch]
+version.source = "vcs"
+build.hooks.vcs.version-file = "src/beamline/_version.py"
+
+[tool.hatch.envs.default]
+features = ["test"]
+scripts.test = "pytest {args}"
+
+
+[tool.uv]
+dev-dependencies = [
+  "beamline[test]",
+]
