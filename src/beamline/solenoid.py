@@ -32,7 +32,7 @@ def _hypot_ratio(x, y, d=0):
 
 
 def _ellipkepi(n, k):
-    """Compute elliptic integrals of the first, second, and third kind
+    """Compute elliptic integrals of the first, second, and third kind (K, E, Pi)
 
     Doing it once using Carlson forms may save a little bit of time
     https://en.wikipedia.org/wiki/Carlson_symmetric_form#Complete_elliptic_integrals
@@ -97,14 +97,14 @@ class ThinShellSolenoid:
         Bz = MU0 * self.jphi / 2 * (left_term - right_term)
         return Bz
 
-    def B_expansion(self, rho, z, order=1):
+    def _B_rhoexpansion(self, rho, z, order=1):
         """Return the rho and z component of the magnetic field
 
         Uses a series expansion in rho around the on-axis value
         McDonald model, expanding in powers of rho around the on-axis field
 
-        For the default order 1, this is roughly 10x faster than the exact solution
-        But it catches up quickly in time, probably due to poor design of the Bz derivatives
+        For the default order 1, this is slower than _B_wikipedia but probably
+        this is due to poor optimization of the Bz derivative computation
         TODO: improve Bz derivatives computation
         """
         halfRho = rho / 2
@@ -121,11 +121,11 @@ class ThinShellSolenoid:
 
         return Brho, Bz
 
-    def B(self, rho, z, rho_min=1e-7):
+    def _B_Caciagli(self, rho, z, rho_min=1e-7):
         """Return the rho and z component of the magnetic field
 
-        Using the exact solution of 10.1109/20.947050
-        (maybe less expensive than the Conway solution of 10.1016/j.nima.2022.166706 ?)
+        Using the exact solution of 10.1016/j.nima.2022.166706
+        TODO: check if this is actually less expensive than the Conway solution of 10.1109/20.947050
 
         This formula is ill-defined for rho=0, so we clamp rho to a small value
         See _optimize_rho0limit in this source for details
@@ -147,6 +147,74 @@ class ThinShellSolenoid:
         Bz = prefactor / rhopR * (betap * P2p - betam * P2m)
         return Brho, Bz
 
+    def _B_wikipedia(self, rho, z, rho_min=1e-9):
+        """Return the rho and z component of the magnetic field
+
+        This is the same as _B_Caciagli but simplified by a very helpful Wikipedia editor
+        It runs about 4x faster than the original, unfortunately it **DOES NOT AGREE**
+
+        This formula is ill-defined for rho=0, so we clamp rho to a small value
+        See _optimize_rho0limit in this source for details
+        """
+        rho = np.maximum(rho, rho_min)
+        zetap, zetam = z + self.L / 2, z - self.L / 2
+        _4Rrho = 4 * self.R * rho
+        Rprho = self.R + rho
+        n = _4Rrho / Rprho**2
+        zrhypotp, zrhypotm = np.hypot(zetap, Rprho), np.hypot(zetam, Rprho)
+        mp, mm = _4Rrho / zrhypotp**2, _4Rrho / zrhypotm**2
+        Kp, Ep, Pip = _ellipkepi(n, mp)
+        Km, Em, Pim = _ellipkepi(n, mm)
+        prefactor = 0.5 * MU0 * self.jphi / np.pi
+        Brho = (
+            prefactor
+            / (2 * rho)
+            * (
+                zrhypotp * (mp * Kp + 2 * (Ep - Kp))
+                - zrhypotm * (mm * Km + 2 * (Em - Km))
+            )
+        )
+        Bz = prefactor * (
+            zetap / zrhypotp * (Kp + (self.R - rho) / Rprho * Pip)
+            - zetam / zrhypotm * (Km + (self.R - rho) / Rprho * Pim)
+        )
+        return Brho, Bz
+
+    def B(self, rho, z, rho_min=1e-7):
+        """Return the rho and z component of the magnetic field
+
+        Some method have issues at rho=0 so we clamp to a minimum rho
+        """
+        return self._B_Caciagli(rho, z, rho_min=rho_min)
+
+    def plot_field(self, ax):
+        rho, z = np.meshgrid(
+            np.linspace(0, self.R * 2, 100),
+            np.linspace(-self.L, self.L, 201),
+            indexing="ij",
+        )
+
+        Brho, Bz = self.B(rho, z)
+
+        contour = ax.contourf(z, rho, np.hypot(Brho, Bz), levels=100, cmap="RdBu_r")
+        downsample = 5
+        arrows = ax.quiver(
+            z[::downsample, ::downsample],
+            rho[::downsample, ::downsample],
+            Bz[::downsample, ::downsample],
+            Brho[::downsample, ::downsample],
+            angles="xy",
+        )
+        outline = ax.plot(
+            [-self.L / 2, -self.L / 2, self.L / 2, self.L / 2],
+            [0, self.R, self.R, 0],
+            "k--",
+            lw=2,
+        )
+        ax.set_xlabel("z (mm)")
+        ax.set_ylabel("rho (mm)")
+        return (contour, arrows, outline)
+
 
 def _optimize_rho0limit():
     """How the rho -> 0 limit was optimized
@@ -166,7 +234,7 @@ def _optimize_rho0limit():
     @np.vectorize
     def maxdiff(rho):
         Bz1 = solenoid.Bz_onaxis(zpts)
-        Brho2, Bz2 = solenoid.B(rho, zpts)
+        Brho2, Bz2 = solenoid.B(rho, zpts, rho_min=0)
         return np.max(np.abs(Bz1 - Bz2)), np.max(np.abs(Brho2))
 
     fig, ax = plt.subplots()
@@ -192,7 +260,30 @@ if __name__ == "__main__":
 
     zpts = np.linspace(-100, 100, 201)
 
-    Bz1 = solenoid.Bz_onaxis(zpts)
-    Brho2, Bz2 = solenoid.B(1e-9, zpts)
-    assert np.allclose(Bz1, Bz2), "Bz axial does not match the exact solution"
-    assert np.allclose(Brho2, 0.0), "Brho should be zero on-axis"
+    Bz_axis = solenoid.Bz_onaxis(zpts)
+
+    Brho, Bz = solenoid._B_Caciagli(0.0, zpts)
+    assert np.allclose(Bz_axis, Bz), "Bz axial does not match the exact solution"
+    assert np.allclose(Brho, 0.0), "Brho should be zero on-axis"
+
+    Brho, Bz = solenoid._B_wikipedia(0.0, zpts)
+    assert np.allclose(Bz_axis, Bz), "Bz axial does not match the Wikipedia solution"
+    # assert np.allclose(Brho, 0.0), "Brho should be zero on-axis"
+
+    Brho, Bz = solenoid._B_rhoexpansion(0.0, zpts)
+    assert np.allclose(Bz_axis, Bz), "Bz axial does not match the expansion solution"
+    assert np.allclose(Brho, 0.0), "Brho should be zero on-axis"
+
+    rng = np.random.Generator(np.random.PCG64(42))
+    zpts = rng.uniform(-100, 100, 10)
+    rhopts = rng.uniform(0, 10, 10)
+
+    with np.errstate(all="raise"):
+        Brho, Bz = solenoid._B_wikipedia(rhopts, zpts)
+        Brho2, Bz2 = solenoid._B_Caciagli(rhopts, zpts)
+        Brho3, Bz3 = solenoid._B_rhoexpansion(rhopts, zpts)
+
+    assert np.allclose(Brho, Brho2), "Brho does not match"
+    assert np.allclose(Bz, Bz2), "Bz does not match"
+    assert np.allclose(Brho, Brho3), "Brho does not match"
+    assert np.allclose(Bz, Bz3), "Bz does not match"
