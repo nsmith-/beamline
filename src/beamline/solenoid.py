@@ -80,11 +80,11 @@ class ThinShellSolenoid:
     """
 
     R: float
-    """Shell radius"""
+    """Shell radius [mm]"""
     jphi: float
-    """Surface current density"""
+    """Surface current density [e/ns]"""
     L: float
-    """Length of the solenoid"""
+    """Length of the solenoid [mm]"""
 
     def Bz_onaxis(self, z, d=0):
         """Magnetic field on-axis (rho=0)
