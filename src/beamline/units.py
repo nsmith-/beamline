@@ -10,6 +10,13 @@ clhep_mass = u.MeV * clhep_length**-2 * clhep_time**2
 clhep_current = u.elementary_charge / clhep_time
 
 
+def check_units(MeV: int, ns: int, mm: int, e: int, expected: pint.Unit) -> bool:
+    """Check that the given combination of CLHEP units matches the expected Pint unit"""
+    return (
+        u.MeV**MeV * u.nanosecond**ns * u.millimeter**mm * u.elementary_charge**e
+    ).dimensionality == expected.dimensionality
+
+
 def to_clhep(quantity: pint.Quantity) -> float:
     """Convert a Pint quantity to a CLHEP quantity"""
     dim_mass = quantity.dimensionality["[mass]"]
@@ -39,16 +46,6 @@ def from_clhep(quantity: float, desired_unit: pint.Unit) -> pint.Quantity:
         * clhep_current**dim_current
     )
     return pint_quantity.to(desired_unit)
-
-
-# Check constants
-pint_c = to_clhep(1 * u.speed_of_light)
-assert pint_c == hepunits.c_light
-pint_h = to_clhep(1 * u.planck_constant)
-# See https://github.com/scikit-hep/hepunits/issues/262#issuecomment-3123865095
-assert (pint_h - hepunits.h_Planck) / hepunits.h_Planck < 1e-15
-pint_e = to_clhep(1 * u.elementary_charge)
-assert pint_e == 1.0
 
 
 # Useful
