@@ -8,6 +8,7 @@ from scipy.special import jv, jvp, jn_zeros
 import vector
 
 
+from beamline.bessel import jv_over_z
 from beamline.units import check_units, u as ureg
 
 
@@ -82,6 +83,8 @@ class PillboxTMCavity:
     """Wavelength of the mode [mm]"""
 
     def __post_init__(self):
+        if self.n < 1:
+            raise ValueError("n must be >= 1")
         self.vmn = _bessel_zero(self.m, self.n)
         self.frequency = (
             np.hypot(self.vmn / (2 * np.pi * self.radius), self.p / (2 * self.length))
@@ -97,16 +100,14 @@ class PillboxTMCavity:
         sinZ = np.sin(self.p * np.pi * position.z / self.length)
         besselarg = self.vmn * position.rho / self.radius
         bessel = jv(self.m, besselarg)
-        # j_m(x)/x = (j_m-1(x) - j_m+1(x))/(2m)
-        besselr = (
-            (jv(self.m - 1, besselarg) - jv(self.m + 1, besselarg)) / (2 * self.m)
+        besselr_sinPhi = (
+            jv_over_z(self.m, besselarg) * np.sin(self.m * position.phi + self.rotation)
             if self.m != 0
             else 0.0
         )
         besselp = jvp(self.m, besselarg)
         cosPhi = np.cos(self.m * position.phi + self.rotation)
-        sinPhi = np.sin(self.m * position.phi + self.rotation)
-        omega = self.frequency / (2 * np.pi)
+        omega = self.frequency * 2 * np.pi
         Ez = self.E0 * cosZ * bessel * cosPhi
         Er = (
             -self.E0
@@ -121,16 +122,14 @@ class PillboxTMCavity:
             * (self.m * self.p * np.pi * self.radius)
             / (self.vmn * self.length)
             * sinZ
-            * besselr
-            * sinPhi
+            * besselr_sinPhi
         )
         Br = (
             self.E0
             * (self.m * omega * self.radius)
             / (u.c_light_sq * self.vmn)
             * cosZ
-            * besselr
-            * sinPhi
+            * besselr_sinPhi
         )
         Bphi = (
             self.E0
@@ -148,8 +147,26 @@ class PillboxTMCavity:
             & (position.z <= self.length)
             & (position.rho <= self.radius)
         )
-        Evec = vector.VectorObject3D(rho=Er, phi=Ephi, z=Ez) * tRe * boundary
-        Bvec = vector.VectorObject3D(rho=Br, phi=Bphi, z=Bz) * tIm * boundary
+        rhohat = vector.VectorObject2D(rho=1.0, phi=position.phi)
+        phihat = vector.VectorObject2D(rho=1.0, phi=position.phi + np.pi / 2)
+        Evec = (
+            vector.VectorObject3D(
+                x=Er * rhohat.x + Ephi * phihat.x,
+                y=Er * rhohat.y + Ephi * phihat.y,
+                z=Ez,
+            )
+            * tRe
+            * boundary
+        )
+        Bvec = (
+            vector.VectorObject3D(
+                x=Br * rhohat.x + Bphi * phihat.x,
+                y=Br * rhohat.y + Bphi * phihat.y,
+                z=Bz,
+            )
+            * tIm
+            * boundary
+        )
         return Evec, Bvec
 
     def field_tensor(self, position: vector.VectorObject4D):
@@ -182,3 +199,48 @@ if __name__ == "__main__":
     )
     print("Bphi for TM010:", Bphi.to(ureg.microtesla))
     print(Bphi * ureg.c)
+
+    # Test that the field on the surface is as expected, namely transverse E and normal B are zero
+    from itertools import product
+
+    for m, n, p in product(range(4), repeat=3):
+        if n == 0:
+            continue
+        cavity = PillboxTMCavity(
+            length=1 * u.m,
+            radius=1 * u.m,
+            E0=-5 * u.megavolt / u.m,
+            m=m,
+            n=n,
+            p=p,
+            phase=0.0,
+        )
+
+        ntests = 100
+
+        # disk part
+        for _ in range(ntests):
+            phi = np.random.uniform(-np.pi, np.pi)
+            rho = np.random.uniform(0, cavity.radius)
+            z = np.random.choice([0, cavity.length])
+            t = np.random.uniform(0, cavity.wavelength)
+            pos = vector.obj(rho=rho, phi=phi, z=z, t=t)
+            E, B = cavity.field_strength(pos)
+            assert np.isclose(E.rho, 0.0), f"E.rho={E.rho}"
+            assert np.isclose(B.z, 0.0), f"B.z={B.z}"
+
+        # cylinder part
+        for _ in range(ntests):
+            phi = np.random.uniform(-np.pi, np.pi)
+            rho = cavity.radius
+            phihat = vector.VectorObject2D(rho=1, phi=phi + np.pi / 2)
+            rhohat = vector.VectorObject2D(rho=1, phi=phi)
+            z = np.random.uniform(0, cavity.length)
+            t = np.random.uniform(0, cavity.wavelength)
+            pos = vector.obj(rho=rho, phi=phi, z=z, t=t)
+            E, B = cavity.field_strength(pos)
+            assert np.isclose(E.z, 0.0), f"E.z={E.z}"
+            Ephihat = E.to_2D().dot(phihat)
+            Brhohat = B.to_2D().dot(rhohat)
+            assert np.isclose(Ephihat, 0.0), f"Ephihat={Ephihat}"
+            assert np.isclose(Brhohat, 0.0), f"Brhohat={Brhohat}"

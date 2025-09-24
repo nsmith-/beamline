@@ -15,6 +15,8 @@ def wrapped_solve(fun: Callable[[float, T], T], y0: T, **kwargs):
             state = unravel(flat_y)
             return event(t, state)
 
+        flat_event.terminal = getattr(event, "terminal", False)
+        flat_event.direction = getattr(event, "direction", 0)
         return flat_event
 
     if "events" in kwargs:
