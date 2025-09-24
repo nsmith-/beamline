@@ -2,9 +2,10 @@
 
 from dataclasses import dataclass, field
 from functools import partial
+from typing import Literal
 import numpy as np
 import hepunits as u
-from scipy.special import jv, jvp, jn_zeros
+from scipy.special import jv, jvp, jn_zeros, jnp_zeros
 import vector
 
 
@@ -50,8 +51,8 @@ def _bessel_zero(m: int, n: int) -> float:
 
 
 @dataclass
-class PillboxTMCavity:
-    """Pillbox cavitiy with TM standing wave mode
+class PillboxCavity:
+    """Pillbox cavitiy with standing wave mode
 
     The cavity is centered at 0 with length cavity_length
     """
@@ -62,6 +63,8 @@ class PillboxTMCavity:
     """Radius of the cavity [mm]"""
     E0: float
     """Peak electric field [MeV/e/mm]"""
+    mode: Literal["TE", "TM"]
+    """Resonant mode type (transverse electric or transverse magnetic)"""
     m: int
     """Azimuthal mode number"""
     n: int
@@ -85,7 +88,15 @@ class PillboxTMCavity:
     def __post_init__(self):
         if self.n < 1:
             raise ValueError("n must be >= 1")
-        self.vmn = _bessel_zero(self.m, self.n)
+        if self.mode not in ("TE", "TM"):
+            raise ValueError("mode must be 'TE' or 'TM'")
+        if self.mode == "TE" and self.p == 0:
+            raise ValueError("p must be >= 1 for TE modes")
+
+        if self.mode == "TM":
+            self.vmn = jn_zeros(self.m, self.n)[-1]
+        else:
+            self.vmn = jnp_zeros(self.m, self.n)[-1]
         self.frequency = (
             np.hypot(self.vmn / (2 * np.pi * self.radius), self.p / (2 * self.length))
             * u.c_light
@@ -96,8 +107,11 @@ class PillboxTMCavity:
         self, position: vector.VectorObject4D
     ) -> tuple[vector.VectorObject3D, vector.VectorObject3D]:
         """Field strength at a given position"""
-        cosZ = np.cos(self.p * np.pi * position.z / self.length)
-        sinZ = np.sin(self.p * np.pi * position.z / self.length)
+        TMcosZ = np.cos(self.p * np.pi * position.z / self.length)
+        TMsinZ = np.sin(self.p * np.pi * position.z / self.length)
+        # In TE mode, we need to swap sin and cos so that Ez=0 at the ends
+        if self.mode == "TE":
+            TMcosZ, TMsinZ = TMsinZ, TMcosZ
         besselarg = self.vmn * position.rho / self.radius
         bessel = jv(self.m, besselarg)
         besselr_sinPhi = (
@@ -108,12 +122,12 @@ class PillboxTMCavity:
         besselp = jvp(self.m, besselarg)
         cosPhi = np.cos(self.m * position.phi + self.rotation)
         omega = self.frequency * 2 * np.pi
-        Ez = self.E0 * cosZ * bessel * cosPhi
+        Ez = self.E0 * TMcosZ * bessel * cosPhi
         Er = (
             -self.E0
             * (self.p * np.pi * self.radius)
             / (self.vmn * self.length)
-            * sinZ
+            * TMsinZ
             * besselp
             * cosPhi
         )
@@ -121,21 +135,21 @@ class PillboxTMCavity:
             self.E0
             * (self.m * self.p * np.pi * self.radius)
             / (self.vmn * self.length)
-            * sinZ
+            * TMsinZ
             * besselr_sinPhi
         )
         Br = (
             self.E0
             * (self.m * omega * self.radius)
             / (u.c_light_sq * self.vmn)
-            * cosZ
+            * TMcosZ
             * besselr_sinPhi
         )
         Bphi = (
             self.E0
             * (omega * self.radius)
             / (u.c_light_sq * self.vmn)
-            * cosZ
+            * TMcosZ
             * besselp
             * cosPhi
         )
@@ -167,6 +181,8 @@ class PillboxTMCavity:
             * tIm
             * boundary
         )
+        if self.mode == "TE":
+            Evec, Bvec = Bvec * u.c_light, Evec / u.c_light
         return Evec, Bvec
 
     def field_tensor(self, position: vector.VectorObject4D):
@@ -176,10 +192,11 @@ class PillboxTMCavity:
 
 
 if __name__ == "__main__":
-    tm010 = PillboxTMCavity(
+    tm010 = PillboxCavity(
         length=2 * u.m,
         radius=0.5 * u.m,
         E0=5 * u.megavolt / u.m,
+        mode="TM",
         m=0,
         n=1,
         p=0,
@@ -203,13 +220,16 @@ if __name__ == "__main__":
     # Test that the field on the surface is as expected, namely transverse E and normal B are zero
     from itertools import product
 
-    for m, n, p in product(range(4), repeat=3):
+    for m, n, p, mode in product(range(4), range(1, 4), range(3), ("TE", "TM")):
         if n == 0:
             continue
-        cavity = PillboxTMCavity(
+        if mode == "TE" and p == 0:
+            continue
+        cavity = PillboxCavity(
             length=1 * u.m,
             radius=1 * u.m,
             E0=-5 * u.megavolt / u.m,
+            mode=mode,
             m=m,
             n=n,
             p=p,
