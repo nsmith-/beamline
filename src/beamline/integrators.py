@@ -65,6 +65,7 @@ def symplectic_integrator(
     dHdp = jax.jacobian(lambda q, p: hamiltonian((q, p)), argnums=1)
 
     cdstack = jnp.stack([jnp.array(config.c), jnp.array(config.d)], axis=1)
+
     def symplectic_step(q, p, dt):
         # https://en.wikipedia.org/wiki/Symplectic_integrator or
         # Eqn. 7 https://fse.studenttheses.ub.rug.nl/20185/1/bMATH_2019_PimJC.pdf
@@ -74,7 +75,7 @@ def symplectic_integrator(
             p = p - di * dt * dHdq(q, p)
             q = q + ci * dt * dHdp(q, p)
             return (q, p), None
-        
+
         (q, p), _ = jax.lax.scan(inner_loop, (q, p), cdstack, reverse=True)
         return q, p
 
@@ -84,7 +85,7 @@ def symplectic_integrator(
         def cond_fn(qpt):
             _, _, t = qpt
             return t + config.dt < tnext
-        
+
         def loop_fn(qpt):
             q, p, t = qpt
             q, p = symplectic_step(q, p, config.dt)
@@ -132,6 +133,7 @@ def rk_integrator(hamiltonian: Callable, state0, times):
     """
     state = exp(dt * dstate/dt) * state0 + O(dt^2)
     """
+
     def deriv(state, _):
         return Omega(jax.jacobian(hamiltonian)(state))
 

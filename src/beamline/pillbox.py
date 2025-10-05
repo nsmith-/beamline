@@ -115,12 +115,13 @@ class PillboxCavity:
         besselarg = self.vmn * position.rho / self.radius
         bessel = jv(self.m, besselarg)
         besselr_sinPhi = (
-            jv_over_z(self.m, besselarg) * np.sin(self.m * position.phi + self.rotation)
+            jv_over_z(self.m, besselarg)
+            * np.sin(self.m * (position.phi + self.rotation))
             if self.m != 0
             else 0.0
         )
         besselp = jvp(self.m, besselarg)
-        cosPhi = np.cos(self.m * position.phi + self.rotation)
+        cosPhi = np.cos(self.m * (position.phi + self.rotation))
         omega = self.frequency * 2 * np.pi
         Ez = self.E0 * TMcosZ * bessel * cosPhi
         Er = (

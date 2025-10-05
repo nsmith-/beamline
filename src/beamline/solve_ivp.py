@@ -44,3 +44,6 @@ def wrapped_solve(fun: Callable[[float, T], T], y0: T, **kwargs):
             [unravel(step) for step in event] for event in solution.y_events
         ]
     return solution
+
+
+wrapped_solve.__doc__ = solve_ivp.__doc__

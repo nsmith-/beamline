@@ -45,7 +45,7 @@ def jv_over_z(v, z):
 
 def _jv_over_z_study(v: int = 1, cutoff: float = 1e-7):
     """Study of jv(z)/z implementation, to settle on cutoff value
-    
+
     At 1e-7, we start to see the switch to asymptotic form in the scipy jv implementation
     """
     import matplotlib.pyplot as plt

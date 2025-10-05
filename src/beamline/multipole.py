@@ -9,7 +9,6 @@ from dataclasses import dataclass
 import numpy as np
 
 
-
 @dataclass
 class IdealMultipole:
     """Ideal multipole model

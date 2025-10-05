@@ -23,7 +23,7 @@ classifiers = [
   "Typing :: Typed",
 ]
 dynamic = ["version"]
-dependencies = ["scipy", "hepunits", "pint", "matplotlib"]
+dependencies = ["scipy", "hepunits>=2.4.0", "pint", "matplotlib"]
 
 [project.optional-dependencies]
 test = [
