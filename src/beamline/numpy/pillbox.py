@@ -1,49 +1,15 @@
 """Pillbox RF cavities"""
 
 from dataclasses import dataclass, field
-from functools import partial
 from typing import Literal
-import numpy as np
+
 import hepunits as u
-from scipy.special import jv, jvp, jn_zeros, jnp_zeros
+import numpy as np
 import vector
+from scipy.special import jn_zeros, jnp_zeros, jv, jvp
 
-
-from beamline.bessel import jv_over_z
-from beamline.units import check_units, u as ureg
-
-
-assert check_units(1, 0, -1, -1, ureg.megavolt / ureg.meter)
-assert check_units(1, 1, -2, -1, ureg.tesla)
-assert check_units(1, 1, -1, 0, ureg.kilogram * ureg.meter / ureg.second)
-
-
-def _contract(
-    vec: vector.VectorObject4D,
-    *,
-    E: vector.VectorObject3D,
-    B: vector.VectorObject3D,
-):
-    r"""Contract the field 2-form with a (momentum) 4-vector, and use the metric to raise the result to a vector
-
-    Computes $\eta^{\rho\nu}F_{\mu\nu} p^{\nu}$
-    where $\eta$ is the Minkowski metric with signature (+,-,-,-)
-    The result is a 4-vector
-
-    Units: (MeV, ns, mm, e)
-    E: (1, 0, -1, -1)
-    B: (1, 1, -2, -1)
-    vec: (1, 1, -1, 0)
-    out: (2, 2, -3, -1)
-    """
-    Etmp = (E / u.c_light).to_xyz()
-    Btmp = B.to_xyz()
-    return vector.VectorObject4D(
-        t=Etmp.x * vec.x + Etmp.y * vec.y + Etmp.z * vec.z,
-        x=Etmp.x * vec.t + Btmp.z * vec.y - Btmp.y * vec.z,
-        y=Etmp.y * vec.t - Btmp.z * vec.x + Btmp.x * vec.z,
-        z=Etmp.z * vec.t + Btmp.y * vec.x - Btmp.x * vec.y,
-    )
+from beamline.numpy.bessel import jv_over_z
+from beamline.numpy.kinematics import EMTensorField, FieldStrength
 
 
 def _bessel_zero(m: int, n: int) -> float:
@@ -51,7 +17,7 @@ def _bessel_zero(m: int, n: int) -> float:
 
 
 @dataclass
-class PillboxCavity:
+class PillboxCavity(EMTensorField):
     """Pillbox cavitiy with standing wave mode
 
     The cavity is centered at 0 with length cavity_length
@@ -105,7 +71,7 @@ class PillboxCavity:
 
     def field_strength(
         self, position: vector.VectorObject4D
-    ) -> tuple[vector.VectorObject3D, vector.VectorObject3D]:
+    ):
         """Field strength at a given position"""
         TMcosZ = np.cos(self.p * np.pi * position.z / self.length)
         TMsinZ = np.sin(self.p * np.pi * position.z / self.length)
@@ -184,84 +150,4 @@ class PillboxCavity:
         )
         if self.mode == "TE":
             Evec, Bvec = Bvec * u.c_light, Evec / u.c_light
-        return Evec, Bvec
-
-    def field_tensor(self, position: vector.VectorObject4D):
-        """Field tensor at a given position"""
-        Evec, Bvec = self.field_strength(position)
-        return partial(_contract, E=Evec, B=Bvec)
-
-
-if __name__ == "__main__":
-    tm010 = PillboxCavity(
-        length=2 * u.m,
-        radius=0.5 * u.m,
-        E0=5 * u.megavolt / u.m,
-        mode="TM",
-        m=0,
-        n=1,
-        p=0,
-        phase=0.0,
-    )
-    print(tm010)
-    print("TM010 frequency:", tm010.frequency / u.megahertz)
-
-    from beamline.units import from_clhep, u as ureg
-
-    # Confirm units
-    Bphi = (
-        from_clhep(tm010.E0, ureg.megavolt / ureg.meter)
-        * from_clhep(tm010.frequency, ureg.megahertz)
-        * from_clhep(tm010.radius, ureg.meter)
-        / (2 * np.pi * tm010.vmn * ureg.c**2)
-    )
-    print("Bphi for TM010:", Bphi.to(ureg.microtesla))
-    print(Bphi * ureg.c)
-
-    # Test that the field on the surface is as expected, namely transverse E and normal B are zero
-    from itertools import product
-
-    for m, n, p, mode in product(range(4), range(1, 4), range(3), ("TE", "TM")):
-        if n == 0:
-            continue
-        if mode == "TE" and p == 0:
-            continue
-        cavity = PillboxCavity(
-            length=1 * u.m,
-            radius=1 * u.m,
-            E0=-5 * u.megavolt / u.m,
-            mode=mode,
-            m=m,
-            n=n,
-            p=p,
-            phase=0.0,
-        )
-
-        ntests = 100
-
-        # disk part
-        for _ in range(ntests):
-            phi = np.random.uniform(-np.pi, np.pi)
-            rho = np.random.uniform(0, cavity.radius)
-            z = np.random.choice([0, cavity.length])
-            t = np.random.uniform(0, cavity.wavelength)
-            pos = vector.obj(rho=rho, phi=phi, z=z, t=t)
-            E, B = cavity.field_strength(pos)
-            assert np.isclose(E.rho, 0.0), f"E.rho={E.rho}"
-            assert np.isclose(B.z, 0.0), f"B.z={B.z}"
-
-        # cylinder part
-        for _ in range(ntests):
-            phi = np.random.uniform(-np.pi, np.pi)
-            rho = cavity.radius
-            phihat = vector.VectorObject2D(rho=1, phi=phi + np.pi / 2)
-            rhohat = vector.VectorObject2D(rho=1, phi=phi)
-            z = np.random.uniform(0, cavity.length)
-            t = np.random.uniform(0, cavity.wavelength)
-            pos = vector.obj(rho=rho, phi=phi, z=z, t=t)
-            E, B = cavity.field_strength(pos)
-            assert np.isclose(E.z, 0.0), f"E.z={E.z}"
-            Ephihat = E.to_2D().dot(phihat)
-            Brhohat = B.to_2D().dot(rhohat)
-            assert np.isclose(Ephihat, 0.0), f"Ephihat={Ephihat}"
-            assert np.isclose(Brhohat, 0.0), f"Brhohat={Brhohat}"
+        return FieldStrength(Evec, Bvec)

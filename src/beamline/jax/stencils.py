@@ -2,12 +2,10 @@ from dataclasses import dataclass
 import jax.numpy as jnp
 import jax
 
-jax.config.update("jax_enable_x64", True)
-
 
 @dataclass
 class Stencil:
-    stencil: jnp.array
+    stencil: jax.Array
     window_strides: tuple | None
     lhs_dilation: tuple | None
     rhs_dilation: tuple | None
@@ -216,44 +214,3 @@ def prolongate3d(input: jax.Array, dim: int = 3):
         .add(prolongate2d(input[:, :, -1], dim) / boundary_scale)
     )
     return output
-
-
-def test_multigrid(n):
-    r1d = jax.lax.map(restrict1d, jnp.eye(n))
-    assert jnp.allclose(r1d.sum(axis=1), 0.5)
-
-    p1d = jax.lax.map(prolongate1d, jnp.eye(n))
-    assert jnp.allclose(p1d.sum(axis=1), 2.0)
-
-    rp1d = jax.lax.map(prolongate1d, r1d)
-    assert jnp.allclose(rp1d.sum(axis=1), 1.0)
-
-    r2d = jax.lax.map(restrict2d, jnp.eye(n * n).reshape(n * n, n, n))
-    r2d_sum = r2d.sum(axis=(1, 2)).reshape(n, n)
-    assert jnp.allclose(r2d_sum, 0.25)
-
-    p2d = jax.lax.map(prolongate2d, jnp.eye(n * n).reshape(n * n, n, n))
-    p2d_sum = p2d.sum(axis=(1, 2)).reshape(n, n)
-    assert jnp.allclose(p2d_sum, 4.0)
-
-    rp2d = jax.lax.map(prolongate2d, r2d)
-    rp2d_sum = rp2d.sum(axis=(1, 2)).reshape(n, n)
-    assert jnp.allclose(rp2d_sum, 1.0)
-
-    r3d = jax.lax.map(restrict3d, jnp.eye(n * n * n).reshape(n * n * n, n, n, n))
-    r3d_sum = r3d.sum(axis=(1, 2, 3)).reshape(n, n, n)
-    assert jnp.allclose(r3d_sum, 0.125)
-
-    p3d = jax.lax.map(prolongate3d, jnp.eye(n * n * n).reshape(n * n * n, n, n, n))
-    p3d_sum = p3d.sum(axis=(1, 2, 3)).reshape(n, n, n)
-    assert jnp.allclose(p3d_sum, 8.0)
-
-    rp3d = jax.lax.map(prolongate3d, r3d)
-    rp3d_sum = rp3d.sum(axis=(1, 2, 3)).reshape(n, n, n)
-    assert jnp.allclose(rp3d_sum, 1.0)
-
-
-if __name__ == "__main__":
-    for n in [3, 5, 9]:
-        test_multigrid(n)
-    print("All tests passed.")

@@ -1,7 +1,7 @@
 """Some extra Bessel function helpers"""
 
 import numpy as np
-from scipy.special import iv, kv, jv, gamma
+from scipy.special import gamma, iv, jv, kv
 
 
 def iv_prime(v, x):

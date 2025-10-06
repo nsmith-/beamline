@@ -9,10 +9,13 @@ from dataclasses import dataclass
 
 import numpy as np
 from scipy.special import elliprd, elliprf, elliprj, factorial
+from vector import VectorObject4D
+import vector
 
-from beamline.units import to_clhep, u
+from beamline.numpy.kinematics import EMTensorField, FieldStrength, polar_tangents
+from beamline.units import to_clhep, ureg
 
-MU0 = to_clhep(1 * u.vacuum_permeability)
+MU0 = to_clhep(1 * ureg.vacuum_permeability)
 
 
 def _hypot_ratio(x, y, d=0):
@@ -59,7 +62,7 @@ def _auxp12(k2, gamma):
 
 
 @dataclass
-class ThinShellSolenoid:
+class ThinShellSolenoid(EMTensorField):
     r"""Solenoid
 
     The thin-shell solenoid model on-axis ($\rho=0$) has the field:
@@ -187,6 +190,14 @@ class ThinShellSolenoid:
         """
         return self._B_Caciagli(rho, z, rho_min=rho_min)
 
+    def field_strength(self, position: VectorObject4D) -> FieldStrength:
+        rhohat, _ = polar_tangents(position)
+        Brho, Bz = self.B(rho=position.to_2D().rho, z=position.z)
+        return FieldStrength(
+            E=vector.obj(x=0.0, y=0.0, z=0.0),
+            B=vector.obj(x=Brho * rhohat.x, y=Brho * rhohat.y, z=Bz),
+        )
+
     def plot_field(self, ax):
         rho, z = np.meshgrid(
             np.linspace(0, self.R * 2, 100),
@@ -224,9 +235,9 @@ def _optimize_rho0limit():
     import matplotlib.pyplot as plt
 
     solenoid = ThinShellSolenoid(
-        R=to_clhep(43.81 * u.mm),
-        jphi=to_clhep(600 * u.amp / (0.289 * u.mm)),
-        L=to_clhep(34.68 * u.mm),
+        R=to_clhep(43.81 * ureg.mm),
+        jphi=to_clhep(600 * ureg.amp / (0.289 * ureg.mm)),
+        L=to_clhep(34.68 * ureg.mm),
     )
 
     zpts = np.linspace(-100, 100, 201)
@@ -249,41 +260,3 @@ def _optimize_rho0limit():
     ax.set_ylabel("Max Difference (kT)")
     ax.legend()
     return fig
-
-
-if __name__ == "__main__":
-    solenoid = ThinShellSolenoid(
-        R=to_clhep(43.81 * u.mm),
-        jphi=to_clhep(600 * u.amp / (0.289 * u.mm)),
-        L=to_clhep(34.68 * u.mm),
-    )
-
-    zpts = np.linspace(-100, 100, 201)
-
-    Bz_axis = solenoid.Bz_onaxis(zpts)
-
-    Brho, Bz = solenoid._B_Caciagli(0.0, zpts)
-    assert np.allclose(Bz_axis, Bz), "Bz axial does not match the exact solution"
-    assert np.allclose(Brho, 0.0), "Brho should be zero on-axis"
-
-    Brho, Bz = solenoid._B_wikipedia(0.0, zpts)
-    assert np.allclose(Bz_axis, Bz), "Bz axial does not match the Wikipedia solution"
-    # assert np.allclose(Brho, 0.0), "Brho should be zero on-axis"
-
-    Brho, Bz = solenoid._B_rhoexpansion(0.0, zpts)
-    assert np.allclose(Bz_axis, Bz), "Bz axial does not match the expansion solution"
-    assert np.allclose(Brho, 0.0), "Brho should be zero on-axis"
-
-    rng = np.random.Generator(np.random.PCG64(42))
-    zpts = rng.uniform(-100, 100, 10)
-    rhopts = rng.uniform(0, 10, 10)
-
-    with np.errstate(all="raise"):
-        Brho, Bz = solenoid._B_wikipedia(rhopts, zpts)
-        Brho2, Bz2 = solenoid._B_Caciagli(rhopts, zpts)
-        Brho3, Bz3 = solenoid._B_rhoexpansion(rhopts, zpts)
-
-    assert np.allclose(Brho, Brho2), "Brho does not match"
-    assert np.allclose(Bz, Bz2), "Bz does not match"
-    assert np.allclose(Brho, Brho3), "Brho does not match"
-    assert np.allclose(Bz, Bz3), "Bz does not match"

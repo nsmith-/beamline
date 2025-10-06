@@ -1,9 +1,10 @@
-from typing import Callable
+import warnings
 from dataclasses import dataclass
 from functools import partial
-import warnings
-import jax.numpy as jnp
+from typing import Callable
+
 import jax
+import jax.numpy as jnp
 from jax.experimental.ode import odeint
 
 

@@ -5,9 +5,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "beamline"
-authors = [
-  { name = "Nick Smith", email = "nick.smith@cern.ch" },
-]
+authors = [{ name = "Nick Smith", email = "nick.smith@cern.ch" }]
 description = "A beamline simulator"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -23,19 +21,18 @@ classifiers = [
   "Typing :: Typed",
 ]
 dynamic = ["version"]
-dependencies = ["scipy", "hepunits>=2.4.0", "pint", "matplotlib"]
+dependencies = [
+  "scipy",
+  "hepunits>=2.4.1",
+  "pint",
+  "matplotlib",
+  "vector",
+  "optree",
+]
 
 [project.optional-dependencies]
-test = [
-  "pytest >=6",
-  "pytest-cov >=3",
-  "scikit-hep-testdata",
-]
-dev = [
-  "pytest >=6",
-  "pytest-cov >=3",
-  "scikit-hep-testdata",
-]
+jax = ["jax", "diffrax", "equinox", "jaxtyping"]
+test = ["pytest >=6", "pytest-cov >=3"]
 docs = [
   "sphinx>=7.0",
   "myst_parser>=0.13",
@@ -59,8 +56,27 @@ build.hooks.vcs.version-file = "src/beamline/_version.py"
 features = ["test"]
 scripts.test = "pytest {args}"
 
-
 [tool.uv]
-dev-dependencies = [
-  "beamline[test]",
+dev-dependencies = ["beamline[test]"]
+
+[tool.ruff.lint]
+extend-select = [
+  "B",   # flake8-bugbear
+  "I",   # isort
+  "C4",  # flake8-comprehensions
+  "ISC", # flake8-implicit-str-concat
+  "PGH", # pygrep-hooks
+  "PIE", # flake8-pie
+  "PL",  # pylint
+  "PT",  # flake8-pytest-style
+  "RUF", # Ruff-specific
+  "SIM", # flake8-simplify
+  "T20", # flake8-print
+  "UP",  # pyupgrade
+  "YTT", # flake8-2020
+]
+ignore = [
+  "PLR09",   # Too many X
+  "PLR2004", # Magic values
+  "ISC001", # Conflicts with formatter
 ]
