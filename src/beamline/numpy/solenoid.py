@@ -8,9 +8,9 @@ https://doi.org/10.1109/20.947050
 from dataclasses import dataclass
 
 import numpy as np
+import vector
 from scipy.special import elliprd, elliprf, elliprj, factorial
 from vector import VectorObject4D
-import vector
 
 from beamline.numpy.kinematics import EMTensorField, FieldStrength, polar_tangents
 from beamline.units import to_clhep, ureg
