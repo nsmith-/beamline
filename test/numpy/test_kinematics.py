@@ -5,10 +5,9 @@ import numpy as np
 import pytest
 import vector
 
+from beamline.numpy.emfield import EMTensorField, FieldStrength
 from beamline.numpy.integrate import solve_ivp
 from beamline.numpy.kinematics import (
-    EMTensorField,
-    FieldStrength,
     ParticleState,
     make_muon,
     ode_tangent_dct,

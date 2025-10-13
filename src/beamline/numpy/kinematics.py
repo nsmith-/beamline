@@ -1,11 +1,10 @@
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Self
 
 import hepunits as u
 import numpy as np
 import vector
 
+from beamline.numpy.emfield import EMTensorField
 from beamline.units import to_clhep, ureg
 
 pytree = vector.register_pytree()
@@ -70,7 +69,7 @@ class ParticleState:
         return cls(pos, mom, mass, charge)
 
 
-pytree.register_node_class()(ParticleState)
+pytree.register_node_class()(ParticleState)  # type: ignore[arg-type]
 
 
 def make_muon(
@@ -92,83 +91,6 @@ def make_muon(
         mass=MUON_MASS,
         charge=charge * MUON_CHARGE,
     )
-
-
-@dataclass
-class FieldStrength:
-    r"""Electromagnetic field strength 2-form
-
-    i.e. the antisymmetric tensor $F_{\mu\nu}$"""
-
-    E: vector.VectorObject3D
-    "Electric field in [MeV/e/mm]"
-    B: vector.VectorObject3D
-    "Magnetic field in [MeV*ns/e/mm^2]"
-
-    def tree_flatten(self):
-        return ((self.E, self.B), ())
-
-    @classmethod
-    def tree_unflatten(
-        cls,
-        metadata: tuple,
-        children: tuple[vector.VectorObject3D, vector.VectorObject3D],
-    ):
-        E, B = children
-        return cls(E, B)
-
-    def contract(self, p: vector.MomentumObject4D) -> vector.MomentumObject4D:
-        r"""Contract the field 2-form with a momentum vector, and use the metric to raise the result to a vector
-
-        Computes $\eta^{\rho\nu}F_{\mu\nu} p^{\nu}$
-        where $\eta$ is the Minkowski metric with signature (+,-,-,-)
-
-        `p` should be in units of MeV/c, i.e. (E/c, px, py, pz)
-        The result is a 4-vector in units of [MeV^2 * ns^2 / e / mm^3]
-        """
-        # Pre-convert to cartesian for performance
-        Etmp = (self.E / u.c_light).to_xyz()
-        Btmp = self.B.to_xyz()
-        return vector.MomentumObject4D(
-            t=Etmp.x * p.x + Etmp.y * p.y + Etmp.z * p.z,
-            px=Etmp.x * p.t + Btmp.z * p.y - Btmp.y * p.z,
-            py=Etmp.y * p.t - Btmp.z * p.x + Btmp.x * p.z,
-            pz=Etmp.z * p.t + Btmp.y * p.x - Btmp.x * p.y,
-        )
-
-
-pytree.register_node_class()(FieldStrength)
-
-
-class EMTensorField(ABC):
-    @abstractmethod
-    def field_strength(self, position: vector.VectorObject4D) -> FieldStrength:
-        """Evaluate the field tensor at a given position"""
-        ...
-
-    def __add__(self, other: Self):
-        return SumField([self, other])
-
-
-class SumField(EMTensorField):
-    components: list[EMTensorField]
-
-    def __init__(self, components: list[EMTensorField]):
-        self.components = []
-        for comp in components:
-            if isinstance(comp, SumField):
-                self.components.extend(comp.components)
-            else:
-                self.components.append(comp)
-
-    def field_strength(self, position: vector.VectorObject4D) -> FieldStrength:
-        E = vector.VectorObject3D(x=0.0, y=0.0, z=0.0)
-        B = vector.VectorObject3D(x=0.0, y=0.0, z=0.0)
-        for comp in self.components:
-            F = comp.field_strength(position)
-            E += F.E
-            B += F.B
-        return FieldStrength(E=E, B=B)
 
 
 def ode_tangent_dct(

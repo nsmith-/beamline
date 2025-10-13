@@ -9,7 +9,8 @@ import vector
 from scipy.special import jn_zeros, jnp_zeros, jv, jvp
 
 from beamline.numpy.bessel import jv_over_z
-from beamline.numpy.kinematics import EMTensorField, FieldStrength
+from beamline.numpy.emfield import FieldStrength
+from beamline.numpy.emfield import EMTensorField
 
 
 def _bessel_zero(m: int, n: int) -> float:

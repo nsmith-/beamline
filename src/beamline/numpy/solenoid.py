@@ -12,7 +12,8 @@ import vector
 from scipy.special import elliprd, elliprf, elliprj, factorial
 from vector import VectorObject4D
 
-from beamline.numpy.kinematics import EMTensorField, FieldStrength, polar_tangents
+from beamline.numpy.emfield import EMTensorField, FieldStrength
+from beamline.numpy.kinematics import polar_tangents
 from beamline.units import to_clhep, ureg
 
 MU0 = to_clhep(1 * ureg.vacuum_permeability)
