@@ -109,6 +109,8 @@ def ode_tangent_dct(
     dmomentum_dctau = (state.charge / state.mass / u.c_light) * field.field_strength(
         state.position
     ).contract(state.momentum)
+    # Note: we could also use dt_dtau = 1 / gamma = state.mass / state.momentum.energy
+    # but in testing, this appears to have worse numerical stability
     dtau_dt = state.momentum.gamma
     return ParticleState(
         position=dposition_dct.to_xyzt(),
