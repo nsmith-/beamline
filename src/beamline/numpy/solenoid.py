@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import vector
+from scipy.integrate import quad_vec
 from scipy.special import elliprd, elliprf, elliprj, factorial
 from vector import VectorObject4D
 
@@ -65,6 +66,8 @@ def _auxp12(k2, gamma):
 @dataclass
 class ThinShellSolenoid(EMTensorField):
     r"""Solenoid
+
+    Centered at z=0, aligned along z axis
 
     The thin-shell solenoid model on-axis ($\rho=0$) has the field:
 
@@ -261,3 +264,65 @@ def _optimize_rho0limit():
     ax.set_ylabel("Max Difference (kT)")
     ax.legend()
     return fig
+
+
+@dataclass
+class ThickSolenoid(EMTensorField):
+    """Thick solenoid model
+
+    This implements an integral over thin-shell solenoids to model a thick solenoid
+    It is centered at z=0 and aligned along the z axis.
+    """
+
+    Rin: float
+    """Shell inner radius [mm]"""
+    Rout: float
+    """Shell outer radius [mm]"""
+    jphi: float
+    """Volume current density [e/ns/mm]"""
+    L: float
+    """Length of the solenoid [mm]"""
+
+    def _B_shells(self, rho, z, num_shells=200):
+        """Integrate over thin-shell solenoids
+
+        Args:
+            rho: radial position [mm]
+            z: axial position [mm]
+            num_shells: number of thin shells to integrate over
+        """
+        shell_radii = np.linspace(self.Rin, self.Rout, num_shells)
+        dR = (self.Rout - self.Rin) / num_shells
+        thin_solenoid = ThinShellSolenoid(R=shell_radii, jphi=self.jphi * dR, L=self.L)
+        Brho, Bz = thin_solenoid.B(rho, z)
+        return Brho.sum(), Bz.sum()
+
+    def _B_integrate(self, rho, z):
+        """Integrate over thin-shell using scipy.integrate.quad_vec
+
+        This is like 30x slower than _B_shells with num_shells=200
+        """
+
+        def integrand(R):
+            thin_solenoid = ThinShellSolenoid(R=R, jphi=self.jphi, L=self.L)
+            Brho, Bz = thin_solenoid.B(rho, z)
+            return np.array([Brho, Bz])
+
+        (Brho, Bz), _ = quad_vec(
+            integrand,
+            self.Rin,
+            self.Rout,
+        )
+        return Brho, Bz
+
+    def B(self, rho, z):
+        """Return the rho and z component of the magnetic field"""
+        return self._B_shells(rho, z)
+
+    def field_strength(self, position: VectorObject4D) -> FieldStrength:
+        rhohat, _ = polar_tangents(position)
+        Brho, Bz = self.B(rho=position.to_2D().rho, z=position.z)
+        return FieldStrength(
+            E=vector.obj(x=0.0, y=0.0, z=0.0),
+            B=vector.obj(x=Brho * rhohat.x, y=Brho * rhohat.y, z=float(Bz)),
+        )

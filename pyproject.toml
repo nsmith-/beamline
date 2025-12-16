@@ -32,7 +32,7 @@ dependencies = [
 
 [project.optional-dependencies]
 jax = ["jax", "diffrax", "equinox", "jaxtyping"]
-test = ["pytest >=6", "pytest-cov >=3"]
+test = ["pytest >=6", "pytest-cov >=3", "ruff>=0.14.9"]
 docs = [
   "sphinx>=7.0",
   "myst_parser>=0.13",
@@ -78,10 +78,11 @@ extend-select = [
 ignore = [
   "PLR09",   # Too many X
   "PLR2004", # Magic values
-  "ISC001", # Conflicts with formatter
+  "ISC001",  # Conflicts with formatter
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "*.ipynb" = [
   "T20",  # print statements in notebooks are fine
+  "I001", # isort issues in notebooks are fine
 ]

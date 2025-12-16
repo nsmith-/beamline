@@ -76,7 +76,7 @@ def make_muon(
     x: float = 0.0,
     y: float = 0.0,
     z: float = 0.0,
-    t: float = 0.0,
+    ct: float = 0.0,
     px: float = 0.0,
     py: float = 0.0,
     pz: float = 0.0,
@@ -84,7 +84,7 @@ def make_muon(
 ) -> ParticleState:
     """Construct a muon with position in mm and momentum in MeV/c"""
     return ParticleState(
-        position=vector.obj(t=t, x=x, y=y, z=z),
+        position=vector.obj(t=ct, x=x, y=y, z=z),
         momentum=vector.obj(
             px=px, py=py, pz=pz, m=MUON_MASS * u.c_light
         ).to_pxpypzenergy(),
@@ -105,10 +105,11 @@ def ode_tangent_dct(
     """
     # We should have _ct == state.position.t to within the precision of the integrator
     dposition_dct = state.momentum / state.momentum.E
-    # 1/c because force is dp/dtau
-    dmomentum_dctau = (state.charge / state.mass / u.c_light) * field.field_strength(
-        state.position
-    ).contract(state.momentum)
+    Fuv = field.field_strength(state.position)
+    # 1/c because force is dp/dtau and we want dp/d(ctau)
+    dmomentum_dctau = (state.charge / state.mass / u.c_light) * Fuv.contract(
+        state.momentum
+    )
     # Note: we could also use dt_dtau = 1 / gamma = state.mass / state.momentum.energy
     # but in testing, this appears to have worse numerical stability
     dtau_dt = state.momentum.gamma
@@ -132,9 +133,8 @@ def ode_tangent_dz(
     """
     # We should have _z == state.position.z to within the precision of the integrator
     dposition_dz = state.momentum / state.momentum.pz
-    dmomentum_dz = (state.charge / state.momentum.pz) * field.field_strength(
-        state.position
-    ).contract(state.momentum)
+    Fuv = field.field_strength(state.position)
+    dmomentum_dz = (state.charge / state.momentum.pz) * Fuv.contract(state.momentum)
     return ParticleState(
         position=dposition_dz,
         momentum=dmomentum_dz,

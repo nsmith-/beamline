@@ -9,8 +9,7 @@ import vector
 from scipy.special import jn_zeros, jnp_zeros, jv, jvp
 
 from beamline.numpy.bessel import jv_over_z
-from beamline.numpy.emfield import FieldStrength
-from beamline.numpy.emfield import EMTensorField
+from beamline.numpy.emfield import EMTensorField, FieldStrength
 
 
 def _bessel_zero(m: int, n: int) -> float:
@@ -21,7 +20,9 @@ def _bessel_zero(m: int, n: int) -> float:
 class PillboxCavity(EMTensorField):
     """Pillbox cavitiy with standing wave mode
 
-    The cavity is centered at 0 with length cavity_length
+    The cavity is centered at the origin, with the z axis along the cavity axis.
+    The phase is defined such that at t=0 and z=0, the electric field on axis is
+    E0 * cos(phase) for a TM010 cavity.
     """
 
     length: float
@@ -70,12 +71,12 @@ class PillboxCavity(EMTensorField):
         )
         self.wavelength = u.c_light / self.frequency
 
-    def field_strength(
-        self, position: vector.VectorObject4D
-    ):
+    def field_strength(self, position: vector.VectorObject4D):
         """Field strength at a given position"""
-        TMcosZ = np.cos(self.p * np.pi * position.z / self.length)
-        TMsinZ = np.sin(self.p * np.pi * position.z / self.length)
+        # Usual formulas are for z=0 to L, we shift it to -L/2 to L/2
+        zrel = position.z / self.length + 0.5
+        TMcosZ = np.cos(self.p * np.pi * zrel)
+        TMsinZ = np.sin(self.p * np.pi * zrel)
         # In TE mode, we need to swap sin and cos so that Ez=0 at the ends
         if self.mode == "TE":
             TMcosZ, TMsinZ = TMsinZ, TMcosZ
@@ -124,11 +125,7 @@ class PillboxCavity(EMTensorField):
         Bz = 0.0
         tRe = np.cos(omega * position.t / u.c_light + self.phase)
         tIm = np.sin(omega * position.t / u.c_light + self.phase)
-        boundary = 1.0 * (
-            (position.z >= 0.0)
-            & (position.z <= self.length)
-            & (position.rho <= self.radius)
-        )
+        boundary = 1.0 * ((zrel >= 0.0) & (zrel <= 1.0) & (position.rho <= self.radius))
         rhohat = vector.VectorObject2D(rho=1.0, phi=position.phi)
         phihat = vector.VectorObject2D(rho=1.0, phi=position.phi + np.pi / 2)
         Evec = (

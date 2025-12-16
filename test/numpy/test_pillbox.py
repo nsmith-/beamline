@@ -33,6 +33,14 @@ def test_construct():
     # TODO: do some tests with simplified formulas for TM010
     assert tm010.frequency / u.megahertz == pytest.approx(229.48505567042017)
 
+    ctvals = np.arange(4) * tm010.wavelength / 4
+    evals = [5.0, 0.0, -5.0, 0.0]  # MV/m
+    for ct, E_expected in zip(ctvals, evals):
+        field0 = tm010.field_strength(
+            vector.obj(rho=0.0 * u.mm, phi=0.0, z=0.0 * u.mm, t=ct)
+        )
+        assert field0.E.z / (u.megavolt / u.m) == pytest.approx(E_expected)
+
 
 def test_pillbox_surface_fields():
     """Test that the field on the surface is as expected, namely transverse E and normal B are zero"""
@@ -59,7 +67,7 @@ def test_pillbox_surface_fields():
         for _ in range(ntests):
             phi = np.random.uniform(-np.pi, np.pi)
             rho = np.random.uniform(0, cavity.radius)
-            z = np.random.choice([0, cavity.length])
+            z = np.random.choice([-cavity.length / 2, cavity.length / 2])
             t = np.random.uniform(0, cavity.wavelength)
             pos = vector.obj(rho=rho, phi=phi, z=z, t=t)
             field = cavity.field_strength(pos)
@@ -72,7 +80,7 @@ def test_pillbox_surface_fields():
             rho = cavity.radius
             phihat = vector.VectorObject2D(rho=1, phi=phi + np.pi / 2)
             rhohat = vector.VectorObject2D(rho=1, phi=phi)
-            z = np.random.uniform(0, cavity.length)
+            z = np.random.uniform(-cavity.length / 2, cavity.length / 2)
             t = np.random.uniform(0, cavity.wavelength)
             pos = vector.obj(rho=rho, phi=phi, z=z, t=t)
             field = cavity.field_strength(pos)
