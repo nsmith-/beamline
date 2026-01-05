@@ -10,9 +10,10 @@ from dataclasses import dataclass
 import numpy as np
 import vector
 from scipy.integrate import quad_vec
-from scipy.special import elliprd, elliprf, elliprj, factorial
+from scipy.special import factorial
 from vector import VectorObject4D
 
+from beamline.numpy.elliptic import elliptic_kepi
 from beamline.numpy.emfield import EMTensorField, FieldStrength
 from beamline.numpy.kinematics import polar_tangents
 from beamline.units import to_clhep, ureg
@@ -36,28 +37,13 @@ def _hypot_ratio(x, y, d=0):
     raise NotImplementedError("Higher derivatives are not implemented")
 
 
-def _ellipkepi(n, k):
-    """Compute elliptic integrals of the first, second, and third kind (K, E, Pi)
-
-    Doing it once using Carlson forms may save a little bit of time
-    https://en.wikipedia.org/wiki/Carlson_symmetric_form#Complete_elliptic_integrals
-    """
-    Rf = elliprf(0, 1 - k**2, 1)
-    Rd = elliprd(0, 1 - k**2, 1)
-    Rj = elliprj(0, 1 - k**2, 1, 1 - n)
-    K = Rf
-    E = Rf - k**2 / 3 * Rd
-    Pi = Rf + n / 3 * Rj
-    return K, E, Pi
-
-
 def _auxp12(k2, gamma):
     """Auxiliary functions for implementing 10.1109/20.947050
 
     From Eqn. 4, 6"""
     sqrt1mk2 = np.sqrt(1 - k2)
     _1mgamma2 = 1 - gamma**2
-    K, E, Pi = _ellipkepi(_1mgamma2, sqrt1mk2)
+    K, E, Pi = elliptic_kepi(_1mgamma2, sqrt1mk2)
     P1 = K - 2 * (K - E) / (1 - k2)
     P2 = -gamma / _1mgamma2 * (Pi - K) - 1 / _1mgamma2 * (gamma**2 * Pi - K)
     return P1, P2
@@ -170,8 +156,8 @@ class ThinShellSolenoid(EMTensorField):
         n = _4Rrho / Rprho**2
         zrhypotp, zrhypotm = np.hypot(zetap, Rprho), np.hypot(zetam, Rprho)
         mp, mm = _4Rrho / zrhypotp**2, _4Rrho / zrhypotm**2
-        Kp, Ep, Pip = _ellipkepi(n, mp)
-        Km, Em, Pim = _ellipkepi(n, mm)
+        Kp, Ep, Pip = elliptic_kepi(n, mp)
+        Km, Em, Pim = elliptic_kepi(n, mm)
         prefactor = 0.5 * MU0 * self.jphi / np.pi
         Brho = (
             prefactor
