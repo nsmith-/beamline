@@ -23,4 +23,7 @@ ureg.define("GeVc = GeV / speed_of_light")
 # The atomic_mass_constant has a similar relative error as this measurement
 ureg.define("muon_mass = 0.1134289259 * atomic_mass_constant")
 
+# (charged pion that is)
+ureg.define("pion_mass = 139.57039 * MeV / speed_of_light**2")
+
 __all__ = ["check_dimensionality", "from_clhep", "to_clhep", "ureg"]

@@ -32,6 +32,8 @@ dependencies = [
 
 [project.optional-dependencies]
 jax = ["jax", "diffrax", "equinox", "jaxtyping"]
+
+[dependency-groups]
 test = ["pytest >=6", "pytest-cov >=3", "ruff>=0.14.9"]
 docs = [
   "sphinx>=7.0",
@@ -39,6 +41,10 @@ docs = [
   "sphinx_copybutton",
   "sphinx_autodoc_typehints",
   "furo>=2023.08.17",
+]
+dev = [
+  "beamline[jax]",
+  { include-group = "test" },
 ]
 
 [project.urls]
@@ -55,9 +61,6 @@ build.hooks.vcs.version-file = "src/beamline/_version.py"
 [tool.hatch.envs.default]
 features = ["test"]
 scripts.test = "pytest {args}"
-
-[tool.uv]
-dev-dependencies = ["beamline[test]"]
 
 [tool.ruff.lint]
 extend-select = [
@@ -79,6 +82,7 @@ ignore = [
   "PLR09",   # Too many X
   "PLR2004", # Magic values
   "ISC001",  # Conflicts with formatter
+  "SIM300",  # yoda is dumb
 ]
 
 [tool.ruff.lint.per-file-ignores]
