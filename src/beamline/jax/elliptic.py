@@ -417,7 +417,7 @@ def elliptic_kepi(n: Array, k: Array) -> tuple[Array, Array, Array]:
     https://en.wikipedia.org/wiki/Carlson_symmetric_form#Complete_elliptic_integrals
 
     Args:
-        n: Parameter for the third kind integral
+        n: Parameter for the third kind integral (n < 1, typically n > -1)
         k: Modulus (0 <= k < 1)
 
     Returns:

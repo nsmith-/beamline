@@ -74,4 +74,16 @@ def test_elliprj():
 
     expected = nell.elliprj(x, y, z, p)
     actual = jax.vmap(jell.elliprj)(x, y, z, p)
-    assert actual == pytest.approx(expected, rel=1e-6)
+    assert actual == pytest.approx(expected, abs=2e-13)
+
+
+def test_ellipkepi():
+    rng = np.random.default_rng(1234)
+    n = rng.uniform(low=-1.0 + np.finfo(np.float64).eps, high=1.0, size=NSAMP)
+    k = rng.uniform(low=0.0, high=1.0, size=NSAMP)
+
+    exp_K, exp_E, exp_Pi = nell.elliptic_kepi(n, k)
+    act_K, act_E, act_Pi = jax.vmap(jell.elliptic_kepi)(n, k)
+    assert act_K == pytest.approx(exp_K, abs=2e-14)
+    assert act_E == pytest.approx(exp_E, abs=2e-14)
+    assert act_Pi == pytest.approx(exp_Pi, abs=1e-13)
