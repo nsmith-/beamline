@@ -1,6 +1,7 @@
 """Utilities for integratinge ODEs with pytree states."""
 
-from typing import Callable, TypeVar
+from collections.abc import Callable
+from typing import TypeVar
 
 import vector
 from scipy.integrate import solve_ivp as _solve_ivp

@@ -27,4 +27,3 @@ def test_jv_over_z(artifacts_dir, v: int, cutoff: float):
     ax.legend()
     ax.set_xscale("log")
     fig.savefig(artifacts_dir / f"jv_over_z_v{v}_cutoff{cutoff:.0e}.png")
-
