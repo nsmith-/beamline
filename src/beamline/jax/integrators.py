@@ -22,7 +22,8 @@ class IntegratorConfig:
         cond2b = sum(c * sum(self.d[:i]) for i, c in enumerate(self.c))
         if not jnp.allclose(cond2a, 0.5) or not jnp.allclose(cond2b, 0.5):
             warnings.warn(
-                f"Failed to satisfy the symplectic condition at second order for {self}"
+                f"Failed to satisfy the symplectic condition at second order for {self}",
+                stacklevel=2,
             )
         seq = []
         for ci, di in zip(reversed(self.c), reversed(self.d)):
@@ -31,7 +32,9 @@ class IntegratorConfig:
             if ci != 0.0:
                 seq.append(ci)
         if list(reversed(seq)) != seq:
-            warnings.warn(f"Failed to satisfy symmetric condition for {self}")
+            warnings.warn(
+                f"Failed to satisfy symmetric condition for {self}", stacklevel=2
+            )
 
     def steps(self):
         seq = [(0.0, 0.0)]

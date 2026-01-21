@@ -2,6 +2,7 @@
 
 Needed mainly for solenoids
 """
+
 from scipy.special import elliprd, elliprf, elliprj
 
 

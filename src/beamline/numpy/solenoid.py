@@ -217,41 +217,6 @@ class ThinShellSolenoid(EMTensorField):
         return (contour, arrows, outline)
 
 
-def _optimize_rho0limit():
-    """How the rho -> 0 limit was optimized
-
-    As rho gets smaller, the formula gets less accurate, with a minimum around 1e-6 in this example
-    """
-    import matplotlib.pyplot as plt
-
-    solenoid = ThinShellSolenoid(
-        R=to_clhep(43.81 * ureg.mm),
-        jphi=to_clhep(600 * ureg.amp / (0.289 * ureg.mm)),
-        L=to_clhep(34.68 * ureg.mm),
-    )
-
-    zpts = np.linspace(-100, 100, 201)
-
-    @np.vectorize
-    def maxdiff(rho):
-        Bz1 = solenoid.Bz_onaxis(zpts)
-        Brho2, Bz2 = solenoid.B(rho, zpts, rho_min=0)
-        return np.max(np.abs(Bz1 - Bz2)), np.max(np.abs(Brho2))
-
-    fig, ax = plt.subplots()
-
-    rhovals = np.geomspace(1e-14, 1e-3, 50)
-    max_diffs = maxdiff(rhovals)
-    ax.plot(rhovals, max_diffs[0], label="Bz axial - Bz exact")
-    ax.plot(rhovals, max_diffs[1], label="Brho - Brho exact")
-    ax.set_xscale("log")
-    ax.set_yscale("log")
-    ax.set_xlabel("Rho (mm)")
-    ax.set_ylabel("Max Difference (kT)")
-    ax.legend()
-    return fig
-
-
 @dataclass
 class ThickSolenoid(EMTensorField):
     """Thick solenoid model

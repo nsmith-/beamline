@@ -1,8 +1,7 @@
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import partial
-import math
-from typing import Self
 
 import hepunits as u
 import numpy as np
@@ -194,7 +193,7 @@ def plotXY(
     unitE = u.megavolt / u.m
     unitB = u.tesla
 
-    pc = axE.pcolormesh(
+    axE.pcolormesh(
         xvals / unitL,
         yvals / unitL,
         Ez / unitE,
@@ -215,7 +214,7 @@ def plotXY(
     axE.set_ylabel("y [m]")
     axE.set_title(f"Electric Field (max {Emax / unitE:.1f} MV/m)")
 
-    pc = axB.pcolormesh(
+    axB.pcolormesh(
         xvals / unitL,
         yvals / unitL,
         Bz / unitB,
@@ -288,7 +287,7 @@ def plotZT(
     unitE = u.megavolt / u.m
     unitB = u.tesla
 
-    pc = axE.pcolormesh(
+    axE.pcolormesh(
         zvals / unitL,
         ctvals / unitL,
         Ez / unitE,
@@ -309,7 +308,7 @@ def plotZT(
     axE.set_ylabel("ct [m]")
     axE.set_title(f"Electric Field (max {Emax / unitE:.1f} MV/m)")
 
-    pc = axB.pcolormesh(
+    axB.pcolormesh(
         zvals / unitL,
         ctvals / unitL,
         Bz / unitB,

@@ -14,14 +14,7 @@ import beamline.jax.bessel as jbessel
 NSAMP = 10_000
 
 
-@pytest.fixture(scope="module")
-def jbessel_dir(artifacts_dir) -> Path:
-    out = artifacts_dir / "bessel"
-    out.mkdir(exist_ok=True)
-    return out
-
-
-def test_plot_bessel(jbessel_dir: Path):
+def test_plot_bessel(artifacts_dir: Path):
     x = jnp.geomspace(1e-10, 1e3, 1000)
 
     fig, ax = plt.subplots()
@@ -38,7 +31,7 @@ def test_plot_bessel(jbessel_dir: Path):
     ax.set_xlabel("x")
     ax.set_ylabel("|scipy - jax|")
     ax.legend(title=r"Bessel $J_v(x)$")
-    fig.savefig(jbessel_dir / "bessel_jv_difference.png")
+    fig.savefig(artifacts_dir / "bessel_jv_difference.png")
 
 
 # We don't need very large orders for RF cavities

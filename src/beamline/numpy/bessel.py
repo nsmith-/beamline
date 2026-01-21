@@ -41,26 +41,3 @@ def jv_over_z(v, z):
         np.pow(z, v - 1) / (2**v * gamma(v + 1)),
         jv(v, z) / np.maximum(z, cutoff),
     )
-
-
-def _jv_over_z_study(v: int = 1, cutoff: float = 1e-7):
-    """Study of jv(z)/z implementation, to settle on cutoff value
-
-    At 1e-7, we start to see the switch to asymptotic form in the scipy jv implementation
-    """
-    import matplotlib.pyplot as plt
-
-    z = np.linspace(1e-4 * cutoff, 3 * cutoff, 100)
-
-    jvz = jv(v, z) / z
-    laurent = np.pow(z, v - 1) / (2**v * gamma(v + 1))
-    res = np.where(z < cutoff, laurent, jvz)
-
-    # using recurrence relation (not as good)
-    alt = (jv(v - 1, z) - jv(v + 1, z)) / (2 * v)
-
-    fig, ax = plt.subplots()
-    ax.plot(z, (res - jvz) / jvz, label="via asymptotic")
-    ax.plot(z, (alt - jvz) / jvz, "--", label="via recurrence")
-    ax.legend()
-    return ax
