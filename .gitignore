@@ -1,2 +1,4 @@
 *.pyc
 src/beamline/_version.py
+.vscode
+test_artifacts

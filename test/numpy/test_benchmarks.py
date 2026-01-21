@@ -8,11 +8,13 @@ https://indico.cern.ch/event/1446644/attachments/2918391/5121897/Cooling_Code_Be
 import gzip
 import pickle
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 import hepunits as u
 import numpy as np
 import pytest
+from matplotlib import pyplot as plt
 from scipy.special import jn_zeros
 
 from beamline.numpy.integrate import solve_ivp
@@ -26,10 +28,76 @@ from beamline.numpy.solenoid import ThickSolenoid
 
 
 @pytest.fixture(scope="module")
-def output_dict():
+def benchmarks_dir(artifacts_dir) -> Path:
+    out = artifacts_dir / "benchmarks"
+    out.mkdir(exist_ok=True)
+    return out
+
+
+def _plot_results(results: dict[str, Any], benchmarks_dir: Path) -> None:
+    sol = results["benchmark_3p2_solenoid"]
+    xy = np.array([[end.position.x, end.position.y] for start, end in sol])
+
+    fig, ax = plt.subplots()
+    ax.plot(xy[:, 0], xy[:, 1], marker="^", color="green", ls="none", label="beamline")
+
+    theta = np.linspace(0, 2 * np.pi, 100)
+    ax.plot(250 * np.cos(theta), 250 * np.sin(theta), ls="--", color="gray")
+    ax.set_aspect("equal")
+    ax.set_xlabel("x [mm]")
+    ax.set_ylabel("y [mm]")
+    ax.set_title("Benchmark 3.2: Muon through solenoid")
+    ax.set_ylim(-250, 250)
+    ax.set_xlim(-250, 250)
+    ax.legend(loc="upper center")
+
+    ax.set_facecolor("none")
+    fig.set_facecolor("none")
+    fig.savefig(benchmarks_dir / "benchmark_3p2_solenoid.png")
+    ax.clear()
+
+    rf = results["benchmark_3p3_rf_cell"]
+
+    for ix in [0, 10, 16, 20]:
+        xstart = ix * 10.0 * u.mm
+        tvals = np.array(
+            [end.position.t for start, end in rf if start.position.x == xstart]
+        )
+        Evals = np.array(
+            [
+                end.momentum.energy - start.momentum.energy
+                for start, end in rf
+                if start.position.x == xstart
+            ]
+        )
+
+        ax.plot(
+            (tvals - tvals.min()) / (u.ns * u.c_light),
+            Evals / (u.MeV / u.c_light),
+            marker="^",
+            color="green",
+            ls="none",
+            label=f"x={xstart} mm",
+        )
+        ax.set_xlabel("t-t0 [ns]")
+        ax.set_ylabel("Delta E [MeV]")
+        ax.set_title("Benchmark 3.3: Muon through RF cell")
+        ax.legend()
+
+        ax.set_facecolor("none")
+        fig.set_facecolor("none")
+        fig.savefig(benchmarks_dir / f"benchmark_3p3_rf_x{ix:02d}.png")
+        ax.clear()
+
+
+@pytest.fixture(scope="module")
+def output_dict(benchmarks_dir):
     output: dict[str, Any] = {}
+
     yield output
-    with gzip.open("benchmark_results.pkl.gz", "wb") as fout:
+
+    _plot_results(output, benchmarks_dir)
+    with gzip.open(str(benchmarks_dir / "results.pkl.gz"), "wb") as fout:
         pickle.dump(output, fout)
 
 
@@ -108,7 +176,7 @@ def test_benchmark_3p3_rf_cell(output_dict):
                 fun=partial(ode_tangent_dz, cavity),
                 y0=start,
                 t_span=(start.position.z, 500.0 * u.mm),
-                t_eval=[0., 500.0 * u.mm],
+                t_eval=[0.0, 500.0 * u.mm],
                 rtol=1e-4,
                 max_step=10 * u.mm,
             )
