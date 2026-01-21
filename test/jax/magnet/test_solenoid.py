@@ -1,4 +1,3 @@
-import equinox as eqx
 import hepunits as u
 import jax
 import jax.numpy as jnp
@@ -28,18 +27,25 @@ def test_thin_shell():
     assert Bz == pytest.approx(Bz_exp)
 
 
-def test_thin_shell_deriv():
+def test_thin_shell_deriv_origin():
+    """Test the derivative of the magnetic field for a thin shell solenoid at the origin"""
     sol = jsol.ThinShellSolenoid(
-        R=40 * u.mm,
-        jphi=600 * u.ampere / (0.3 * u.mm),
-        L=30 * u.mm,
+        R=43.81 * u.mm,
+        jphi=600 * u.ampere / (0.289 * u.mm),
+        L=34.68 * u.mm,
     )
 
-    def f(sol: jsol.ThinShellSolenoid):
-        _, Bz = sol._B_Caciagli(0.5 * sol.R, 0.5 * sol.L)
+    def bz_origin(sol: jsol.ThinShellSolenoid):
+        _, Bz = sol._B_Caciagli(0.0 * sol.R, 0.0 * sol.L)
         return Bz
 
-    val, grad = jax.value_and_grad(f)(sol)
+    def bz_expecetd(sol: jsol.ThinShellSolenoid):
+        return jsol.MU0 * sol.jphi * sol.L / 2 / jnp.hypot(sol.R, sol.L / 2)
 
-    assert val == pytest.approx(0.0008128264759033163)
-    raise AssertionError(eqx.tree_pformat(grad, short_arrays=False))
+    val, grad = jax.value_and_grad(bz_origin)(sol)
+    val_exp, grad_exp = jax.value_and_grad(bz_expecetd)(sol)
+
+    assert val == pytest.approx(val_exp, rel=1e-8)
+    assert grad.R == pytest.approx(grad_exp.R, rel=1e-5)
+    assert grad.jphi == pytest.approx(grad_exp.jphi, rel=1e-8)
+    assert grad.L == pytest.approx(grad_exp.L, rel=1e-5)
