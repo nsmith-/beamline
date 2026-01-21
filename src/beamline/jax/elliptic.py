@@ -13,13 +13,17 @@ https://arxiv.org/abs/math/9409227
 
 from typing import TypeAlias
 
+import jax
 import jax.numpy as jnp
-from jax import Array, lax
+from jax import lax
 
-_RFState: TypeAlias = tuple[Array, Array, Array, Array, Array, Array]
+from beamline.jax.types import SFloat
+
+_RFState: TypeAlias = tuple[SFloat, SFloat, SFloat, SFloat, SFloat, SFloat]
+"""x, y, z, A, Q, f"""
 
 
-def _elliprf_full_iter(x: Array, y: Array, z: Array) -> Array:
+def _elliprf_full_iter(x: SFloat, y: SFloat, z: SFloat) -> SFloat:
     """Iterative solution for non-special cases"""
 
     def cond_fun(state: _RFState):
@@ -64,10 +68,11 @@ def _elliprf_full_iter(x: Array, y: Array, z: Array) -> Array:
     ) / jnp.sqrt(A_final)
 
 
-_RF0State: TypeAlias = tuple[Array, Array]
+_RF0State: TypeAlias = tuple[SFloat, SFloat]
+"""x, y"""
 
 
-def _elliprf_one_zero_iter(x: Array, y: Array) -> Array:
+def _elliprf_one_zero_iter(x: SFloat, y: SFloat) -> SFloat:
     """Solution for the case where one argument is zero"""
     xn = jnp.sqrt(x)
     yn = jnp.sqrt(y)
@@ -87,7 +92,7 @@ def _elliprf_one_zero_iter(x: Array, y: Array) -> Array:
     return jnp.pi / (x_final + y_final)
 
 
-def elliprf(x: Array, y: Array, z: Array) -> Array:
+def elliprf(x: SFloat, y: SFloat, z: SFloat) -> SFloat:
     r"""Carlson symmetric elliptic integral of the first kind
 
     $$ R_F(x, y, z) = \frac{1}{2} \int_0^\infty \frac{dt}{\sqrt{(t+x)(t+y)(t+z)}} $$
@@ -112,10 +117,11 @@ def elliprf(x: Array, y: Array, z: Array) -> Array:
     )
 
 
-_RDState: TypeAlias = tuple[Array, Array, Array, Array, Array, Array, Array]
+_RDState: TypeAlias = tuple[SFloat, SFloat, SFloat, SFloat, SFloat, SFloat, SFloat]
+"""x, y, z, A, Q, sum_term, f"""
 
 
-def _elliprd_general_iter(x: Array, y: Array, z: Array) -> Array:
+def _elliprd_general_iter(x: SFloat, y: SFloat, z: SFloat) -> SFloat:
     """General iterative solution for RD"""
 
     def cond_fun(state: _RDState):
@@ -180,10 +186,11 @@ def _elliprd_general_iter(x: Array, y: Array, z: Array) -> Array:
     return 3 * sum_final + result
 
 
-_RD0State: TypeAlias = tuple[Array, Array, Array, Array]
+_RD0State: TypeAlias = tuple[SFloat, SFloat, SFloat, SFloat]
+"""x, y, sum_term, sum_pow"""
 
 
-def _elliprd_one_zero_iter(y: Array, z: Array) -> Array:
+def _elliprd_one_zero_iter(y: SFloat, z: SFloat) -> SFloat:
     """Iterative solution for RD when one argument is zero"""
     x0 = jnp.sqrt(y)
     y0 = jnp.sqrt(z)
@@ -214,7 +221,7 @@ def _elliprd_one_zero_iter(y: Array, z: Array) -> Array:
     return pt * rf * 3
 
 
-def elliprd(x: Array, y: Array, z: Array) -> Array:
+def elliprd(x: SFloat, y: SFloat, z: SFloat) -> SFloat:
     r"""Carlson symmetric elliptic integral of the second kind
 
     $$ R_D(x, y, z) = \frac{3}{2} \int_0^\infty \frac{dt}{(t+z) \sqrt{(t+x)(t+y)(t+z)}} $$
@@ -234,7 +241,7 @@ def elliprd(x: Array, y: Array, z: Array) -> Array:
     )
 
 
-def elliprc(x: Array, y: Array) -> Array:
+def elliprc(x: SFloat, y: SFloat) -> SFloat:
     r"""Carlson's degenerate elliptic integral R_C
 
     $$ R_C(x, y) = \frac{1}{2} \int_0^\infty \frac{dt}{\sqrt{t+x}(t+y)} $$
@@ -269,7 +276,7 @@ def elliprc(x: Array, y: Array) -> Array:
     )
 
 
-def elliprc1p(x: Array) -> Array:
+def elliprc1p(x: SFloat) -> SFloat:
     """R_C(1, 1+x) special case
 
     Does not handle x <= -1 singular case
@@ -294,11 +301,14 @@ def elliprc1p(x: Array) -> Array:
 
 
 _RJState: TypeAlias = tuple[
-    Array, Array, Array, Array, Array, Array, Array, Array, Array
+    SFloat, SFloat, SFloat, SFloat, SFloat, SFloat, SFloat, SFloat, SFloat
 ]
+"""x, y, z, p, A, delta, Q, fmn, sum_term
+
+Q is unaltered so could be captured instead"""
 
 
-def elliprj(x: Array, y: Array, z: Array, p: Array) -> Array:
+def elliprj(x: SFloat, y: SFloat, z: SFloat, p: SFloat) -> SFloat:
     r"""Carlson symmetric elliptic integral of the third kind
 
     $$ R_J(x, y, z, p) = \frac{3}{2} \int_0^\infty \frac{dt}{(t+p) \sqrt{(t+x)(t+y)(t+z)}} $$
@@ -410,7 +420,8 @@ def elliprj(x: Array, y: Array, z: Array, p: Array) -> Array:
     return result + 6 * sum_final
 
 
-def elliptic_kepi(n: Array, k: Array) -> tuple[Array, Array, Array]:
+@jax.custom_jvp
+def elliptic_kepi(n: SFloat, k: SFloat) -> tuple[SFloat, SFloat, SFloat]:
     """Compute elliptic integrals of the first, second, and third kind (K, E, Pi)
 
     Doing it once using Carlson forms may save a little bit of time
@@ -434,3 +445,25 @@ def elliptic_kepi(n: Array, k: Array) -> tuple[Array, Array, Array]:
     E = Rf - k**2 / 3 * Rd
     Pi = Rf + n / 3 * Rj
     return K, E, Pi
+
+
+@elliptic_kepi.defjvp
+def elliptic_kepi_fwd(primals, tangents):
+    n, k = primals
+    dn, dk = tangents
+    K, E, Pi = elliptic_kepi(n, k)
+    # wolfram alpha
+    dK_dk = (k * K - K + E) / (2 * k * (k - 1))
+    dE_dk = (E - K) / (2 * k)
+    # https://en.wikipedia.org/wiki/Elliptic_integral#Partial_derivatives
+    dPi_dk = k / (n - k**2) * (E / (k**2 - 1) + Pi)
+    dPi_dn = (
+        1
+        / (2 * (k**2 - n) * (n - 1))
+        * (E + (k**2 - n) * K / n + (n**2 - k**2) * Pi / n)
+    )
+    return (K, E, Pi), (
+        dK_dk * dk,
+        dE_dk * dk,
+        dPi_dk * dk + dPi_dn * dn,
+    )

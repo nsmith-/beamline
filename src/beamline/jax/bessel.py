@@ -16,8 +16,9 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
-from jax import Array
 from jax.scipy.special import gamma
+
+from beamline.jax.types import SFloat, SInt
 
 RP1 = jnp.array(
     [
@@ -116,7 +117,7 @@ Z1 = 1.46819706421238932572e1
 Z2 = 4.92184563216946036703e1
 
 
-def _j1_small(x: Array) -> Array:
+def _j1_small(x: SFloat) -> SFloat:
     """Implementation of J1 for x < 5"""
     z = x * x
     w = jnp.polyval(RP1, z) / jnp.polyval(RQ1, z)
@@ -124,7 +125,7 @@ def _j1_small(x: Array) -> Array:
     return w
 
 
-def _j1_large_c(x: Array) -> Array:
+def _j1_large_c(x: SFloat) -> SFloat:
     w = 5.0 / x
     z = w * w
     p = jnp.polyval(PP1, z) / jnp.polyval(PQ1, z)
@@ -134,7 +135,7 @@ def _j1_large_c(x: Array) -> Array:
     return p * jnp.sqrt(2 / jnp.pi) / jnp.sqrt(x)
 
 
-def _j1(x: Array) -> Array:
+def _j1(x: SFloat) -> SFloat:
     return jnp.where(x < 5.0, _j1_small(x), _j1_large_c(x))
 
 
@@ -236,7 +237,7 @@ RQ0 = jnp.array(
 )
 
 
-def _j0_small(x: Array) -> Array:
+def _j0_small(x: SFloat) -> SFloat:
     """
     Implementation of J0 for x < 5
     """
@@ -246,7 +247,7 @@ def _j0_small(x: Array) -> Array:
     return jnp.where(x < 1e-5, 1 - z / 4.0, p)
 
 
-def _j0_large(x: Array) -> Array:
+def _j0_large(x: SFloat) -> SFloat:
     """
     Implementation of J0 for x >= 5
     """
@@ -259,15 +260,15 @@ def _j0_large(x: Array) -> Array:
     return p * jnp.sqrt(2 / jnp.pi) / jnp.sqrt(x)
 
 
-def _j0(x: Array) -> Array:
+def _j0(x: SFloat) -> SFloat:
     return jnp.where(x < 5.0, _j0_small(x), _j0_large(x))
 
 
-_FwdState = tuple[Array, Array, Array]
+_FwdState = tuple[SFloat, SFloat, SInt]
 """J_{v-1}, J_v, v"""
 
 
-def _jv_forward_recurrence(v: Array, x: Array) -> Array:
+def _jv_forward_recurrence(v: SFloat, x: SFloat) -> SFloat:
     def cond(state: _FwdState):
         _, _, n = state
         return n < jnp.abs(v)
@@ -282,11 +283,11 @@ def _jv_forward_recurrence(v: Array, x: Array) -> Array:
     return jn
 
 
-_BwdState = tuple[Array, Array, Array, Array]
+_BwdState = tuple[SFloat, SFloat, SInt, SFloat]
 """J_n, J_{n+1}, n, J_v"""
 
 
-def _jv_backward_recurrence(v: Array, x: Array) -> Array:
+def _jv_backward_recurrence(v: SFloat, x: SFloat) -> SFloat:
     """Use Miller's algorithm to compute for x < 1"""
 
     def cond(state: _BwdState):
@@ -314,13 +315,13 @@ def _jv_backward_recurrence(v: Array, x: Array) -> Array:
     return jn
 
 
-def _jv_small_asymptotic(v: Array, x: Array) -> Array:
+def _jv_small_asymptotic(v: SInt, x: SFloat) -> SFloat:
     """Asymptotic expansion for small x
 
     The backward recurrence seems to do a good job already, so this is unused.
     """
 
-    def body(n: int, acc: Array) -> Array:
+    def body(n: int, acc: SFloat) -> SFloat:
         numer = jnp.power(-1.0, n) * jnp.power(x / 2, 2 * n + v)
         denom = gamma(n + 1) * gamma(v + n + 1)
         return acc + numer / denom
@@ -328,8 +329,11 @@ def _jv_small_asymptotic(v: Array, x: Array) -> Array:
     return jax.lax.fori_loop(0, 7, body, jnp.zeros_like(x))
 
 
+# TODO: we might rather have custom_jvp here
+
+
 @partial(jax.custom_vjp, nondiff_argnums=(0,))
-def jv(v: Array, x: Array) -> Array:
+def jv(v: SInt, x: SFloat) -> SFloat:
     """Compute the Bessel function J_v(x)
 
     Uses recurrence relations to compute J_v from J_0 and J_1.
@@ -371,7 +375,7 @@ def jv(v: Array, x: Array) -> Array:
     )
 
 
-def _jv_fwd(v: Array, x: Array):
+def _jv_fwd(v: SInt, x: SFloat):
     y = jv(v, x)
     return y, (x,)
 

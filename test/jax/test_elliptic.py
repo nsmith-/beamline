@@ -87,3 +87,16 @@ def test_ellipkepi():
     assert act_K == pytest.approx(exp_K, abs=2e-14)
     assert act_E == pytest.approx(exp_E, abs=2e-14)
     assert act_Pi == pytest.approx(exp_Pi, abs=1e-13)
+
+
+def test_ellipkepi_deriv():
+    rng = np.random.default_rng(1234)
+    n = rng.uniform(low=-1.0 + np.finfo(np.float64).eps, high=1.0, size=NSAMP)
+    k = rng.uniform(low=0.0, high=1.0, size=NSAMP)
+
+    # TODO: does this test anything meaningful?
+    fwd_K, fwd_E, fwd_Pi = jax.vmap(jax.jacfwd(jell.elliptic_kepi))(n, k)
+    rev_K, rev_E, rev_Pi = jax.vmap(jax.jacrev(jell.elliptic_kepi))(n, k)
+    assert fwd_K == pytest.approx(rev_K, abs=1e-13)
+    assert fwd_E == pytest.approx(rev_E, abs=1e-13)
+    assert fwd_Pi == pytest.approx(rev_Pi, abs=1e-13)

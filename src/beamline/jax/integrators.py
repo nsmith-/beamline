@@ -26,7 +26,7 @@ class IntegratorConfig:
                 stacklevel=2,
             )
         seq = []
-        for ci, di in zip(reversed(self.c), reversed(self.d)):
+        for ci, di in zip(reversed(self.c), reversed(self.d), strict=True):
             if di != 0.0:
                 seq.append(di)
             if ci != 0.0:
@@ -38,7 +38,7 @@ class IntegratorConfig:
 
     def steps(self):
         seq = [(0.0, 0.0)]
-        for ci, di in zip(reversed(self.c), reversed(self.d)):
+        for ci, di in zip(reversed(self.c), reversed(self.d), strict=True):
             if di != 0.0:
                 seq.append((seq[-1][0], seq[-1][1] + di))
             if ci != 0.0:
