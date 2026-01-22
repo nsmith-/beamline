@@ -1,16 +1,18 @@
 """Solenoid models"""
 
+from functools import partial
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax.experimental.jet import jet
 from jax.scipy.special import gamma
+from quadax import quadgk
 
 from beamline.jax.elliptic import elliptic_kepi
+from beamline.jax.magnet.loop import WireLoop
 from beamline.jax.types import SFloat
-from beamline.units import to_clhep, ureg
-
-MU0 = to_clhep(1 * ureg.vacuum_permeability)
+from beamline.units import MU0
 
 
 def _hypot_ratio(x: SFloat, y: SFloat) -> SFloat:
@@ -38,11 +40,23 @@ def _auxp12(k2: SFloat, gamma: SFloat) -> tuple[SFloat, SFloat]:
     return P1, P2
 
 
+def _quadarg_rho(R: SFloat, rho: SFloat, z: SFloat) -> SFloat:
+    """Argument for numerical quadrature of a wire loop"""
+    Brho, _ = WireLoop(R=R, I=1.0)._B(rho, z)
+    return Brho
+
+
+def _quadarg_z(R: SFloat, rho: SFloat, z: SFloat) -> SFloat:
+    """Argument for numerical quadrature of a wire loop"""
+    _, Bz = WireLoop(R=R, I=1.0)._B(rho, z)
+    return Bz
+
+
 class ThinShellSolenoid(eqx.Module):
     R: SFloat
     """Shell radius [mm]"""
     jphi: SFloat
-    """Surface current density [e/ns]"""
+    """Surface current density [e/ns/mm]"""
     L: SFloat
     """Length of the solenoid [mm]"""
 
@@ -85,10 +99,12 @@ class ThinShellSolenoid(eqx.Module):
     def _B_Caciagli(self, rho: SFloat, z: SFloat) -> tuple[SFloat, SFloat]:
         """Return the rho and z component of the magnetic field
 
-        Using the exact solution of 10.1016/j.nima.2022.166706
+        Using Caciagli Eqn. 3-6
         Note this solution is nan for rho=0
 
-        TODO: check if this is actually less expensive than the Conway solution of 10.1109/20.947050
+        References:
+            Conway https://doi.org/10.1109/20.947050
+            Caciagli https://doi.org/10.1016/j.jmmm.2018.02.003
         """
         # avoid rho=0, which causes nan in the solution and rho = R which never converges
         rho = jax.lax.select(
@@ -115,6 +131,15 @@ class ThinShellSolenoid(eqx.Module):
         Brho = prefactor * (alphap * P1p - alpham * P1m)
         Bz = prefactor / rhopR * (betap * P2p - betam * P2m)
         return Brho, Bz
+
+    def _B_quadrature(self, rho: SFloat, z: SFloat) -> tuple[SFloat, SFloat]:
+        """Compute the magnetic field using numerical quadrature on a wire loop model"""
+        quadfun_rho = partial(_quadarg_rho, self.R, rho)
+        quadfun_z = partial(_quadarg_z, self.R, rho)
+        bounds = jnp.array([z - self.L / 2, z + self.L / 2])
+        Brho, _ = quadgk(quadfun_rho, bounds)
+        Bz, _ = quadgk(quadfun_z, bounds)
+        return self.jphi * Brho, self.jphi * Bz
 
     def _B(self, rho: SFloat, z: SFloat) -> tuple[SFloat, SFloat]:
         """Return the rho and z component of the magnetic field

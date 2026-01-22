@@ -2,7 +2,8 @@
 
 Most are coming from the references
 Granum:2022dtk https://doi.org/10.1016/j.nima.2022.166706
-https://doi.org/10.1109/20.947050
+Conway https://doi.org/10.1109/20.947050
+Caciagli https://doi.org/10.1016/j.jmmm.2018.02.003
 """
 
 from dataclasses import dataclass
@@ -75,7 +76,7 @@ class ThinShellSolenoid(EMTensorField):
     R: float
     """Shell radius [mm]"""
     jphi: float
-    """Surface current density [e/ns]"""
+    """Surface current density [e/ns/mm]"""
     L: float
     """Length of the solenoid [mm]"""
 
@@ -116,7 +117,7 @@ class ThinShellSolenoid(EMTensorField):
     def _B_Caciagli(self, rho, z, rho_min=1e-7):
         """Return the rho and z component of the magnetic field
 
-        Using the exact solution of 10.1016/j.nima.2022.166706
+        Using the exact solution of https://doi.org/10.1016/j.jmmm.2018.02.003
         TODO: check if this is actually less expensive than the Conway solution of 10.1109/20.947050
 
         This formula is ill-defined for rho=0, so we clamp rho to a small value

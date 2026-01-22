@@ -31,7 +31,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-jax = ["jax", "diffrax", "equinox", "jaxtyping"]
+jax = ["jax", "diffrax", "equinox", "jaxtyping", "quadax"]
 
 [dependency-groups]
 test = ["pytest >=6", "pytest-cov >=3", "ruff>=0.14.9", "pytest-benchmark"]

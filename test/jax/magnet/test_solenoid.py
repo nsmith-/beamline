@@ -23,6 +23,21 @@ SOLENOID = jsol.ThinShellSolenoid(
 )
 
 
+def _get_bfun(solenoid: jsol.ThinShellSolenoid, fun: str):
+    if fun == "Caciagli":
+        bfun = solenoid._B_Caciagli
+    elif fun.startswith("rhoexpansion"):
+        order = int(fun.removeprefix("rhoexpansion"))
+        bfun = partial(solenoid._B_rhoexpansion, order=order)
+    elif fun == "quadrature":
+        bfun = solenoid._B_quadrature
+    elif fun == "composite":
+        bfun = solenoid._B
+    else:
+        raise RuntimeError
+    return jax.jit(jnp.vectorize(bfun))
+
+
 def test_thin_shell_caciagli():
     ref = REF_SOLENOID
     solenoid = SOLENOID
@@ -33,7 +48,6 @@ def test_thin_shell_caciagli():
         indexing="ij",
     )
 
-    # jax.config.update("jax_debug_nans", True)
     Brho, Bz = jnp.vectorize(solenoid._B_Caciagli)(rho, z)
     Brho_exp, Bz_exp = ref._B_Caciagli(rho, z)
 
@@ -57,18 +71,28 @@ def test_thin_shell_rhoexpansion():
     assert Bz == pytest.approx(Bz_exp)
 
 
-@pytest.mark.parametrize("bfun", ["rhoexpansion", "Caciagli"])
+def test_thin_shell_quadrature():
+    solenoid = SOLENOID
+    rho, z = jnp.meshgrid(
+        jnp.linspace(0, 0.5 * solenoid.R, 100),
+        jnp.linspace(-solenoid.L, solenoid.L, 201),
+        indexing="ij",
+    )
+
+    Brho, Bz = _get_bfun(solenoid, "quadrature")(rho, z)
+    Brho_exp, Bz_exp = _get_bfun(solenoid, "rhoexpansion8")(rho, z)
+    assert Brho == pytest.approx(Brho_exp, rel=2e-6)
+    assert Bz == pytest.approx(Bz_exp)
+
+
+@pytest.mark.parametrize("bfun", ["rhoexpansion2", "Caciagli"])
 def test_thin_shell_divergence(bfun: str):
     """Test the divergence is zero in the solenoid"""
     sol = SOLENOID
 
-    fun = (
-        partial(sol._B_rhoexpansion, order=3)
-        if bfun == "rhoexpansion"
-        else sol._B_Caciagli
-    )
+    fun = _get_bfun(sol, bfun)
     # TODO: why is Caciagli model so inaccurate for the divergence test?
-    atol = 1e-15 if bfun == "rhoexpansion" else 1e-2
+    atol = 1e-2 if bfun == "Caciagli" else 1e-15
 
     def rhoBrho(rho, z):
         Brho, _ = fun(rho, z)
@@ -96,7 +120,15 @@ def test_thin_shell_divergence(bfun: str):
 
 @pytest.mark.parametrize(
     "fun",
-    ["Caciagli", "rhoexpansion1", "rhoexpansion2", "rhoexpansion3", "rhoexpansion4"],
+    [
+        "Caciagli",
+        "rhoexpansion1",
+        "rhoexpansion2",
+        "rhoexpansion4",
+        "rhoexpansion8",
+        "quadrature",
+        "composite",
+    ],
 )
 def test_solenoid_performance(benchmark, fun: str):
     solenoid = SOLENOID
@@ -106,13 +138,7 @@ def test_solenoid_performance(benchmark, fun: str):
         indexing="ij",
     )
 
-    if fun == "Caciagli":
-        bfun = jax.jit(jnp.vectorize(solenoid._B_Caciagli))
-    elif fun.startswith("rhoexpansion"):
-        order = int(fun.removeprefix("rhoexpansion"))
-        bfun = jax.jit(jnp.vectorize(partial(solenoid._B_rhoexpansion, order=order)))
-    else:
-        raise RuntimeError
+    bfun = _get_bfun(solenoid, fun)
 
     def run_bfun():
         Brho, Bz = bfun(rho, z)
