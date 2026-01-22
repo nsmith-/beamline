@@ -100,3 +100,41 @@ def test_ellipkepi_deriv():
     assert fwd_K == pytest.approx(rev_K, abs=1e-13)
     assert fwd_E == pytest.approx(rev_E, abs=1e-13)
     assert fwd_Pi == pytest.approx(rev_Pi, abs=1e-13)
+
+
+def test_ellipkepi_deriv_zero():
+    """Some limiting cases for the derivatives of elliptic_kepi
+
+    TODO: validate numeric values for non-zero
+    """
+    jax.config.update("jax_debug_nans", True)
+    # n, k = 0
+    dKdn, dEdn, dPidn = jax.jacfwd(jell.elliptic_kepi)(0.0, 0.0)
+    assert dKdn == 0.0
+    assert dEdn == 0.0
+    assert dPidn == 0.0
+
+    dKdk, dEdk, dPidk = jax.jacfwd(jell.elliptic_kepi, argnums=1)(0.0, 0.0)
+    assert dKdk == 0.0
+    assert dEdk == 0.0
+    assert dPidk == 0.0
+
+    # n = 0, k != 0
+    dKdn, dEdn, dPidn = jax.jacfwd(jell.elliptic_kepi)(0.0, 0.1)
+    assert dKdn == 0.0
+    assert dEdn == 0.0
+    assert dPidn == pytest.approx(-0.83106076)
+    dKdk, dEdk, dPidk = jax.jacfwd(jell.elliptic_kepi, argnums=1)(0.0, 0.1)
+    assert dKdk == pytest.approx(-0.83106076)
+    assert dEdk == pytest.approx(-0.0394181)
+    assert dPidk == 0.0
+
+    # n != 0, k = 0
+    dKdn, dEdn, dPidn = jax.jacfwd(jell.elliptic_kepi)(0.1, 0.0)
+    assert dKdn == 0.0
+    assert dEdn == 0.0
+    assert dPidn == pytest.approx(0.96962736)
+    dKdk, dEdk, dPidk = jax.jacfwd(jell.elliptic_kepi, argnums=1)(0.1, 0.0)
+    assert dKdk == 0.0
+    assert dEdk == 0.0
+    assert dPidk == 0.0

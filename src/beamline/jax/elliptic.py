@@ -221,6 +221,16 @@ def _elliprd_one_zero_iter(y: SFloat, z: SFloat) -> SFloat:
     return pt * rf * 3
 
 
+def _elliprd_one_zero(y: SFloat, z: SFloat) -> SFloat:
+    # guard against nan for y == z in the second branch
+    ysafe = jnp.where(y == z, y + z, y)
+    return lax.select(
+        y == z,
+        3 * jnp.pi / (4 * y * jnp.sqrt(y)),
+        _elliprd_one_zero_iter(ysafe, z),
+    )
+
+
 def elliprd(x: SFloat, y: SFloat, z: SFloat) -> SFloat:
     r"""Carlson symmetric elliptic integral of the second kind
 
@@ -236,7 +246,7 @@ def elliprd(x: SFloat, y: SFloat, z: SFloat) -> SFloat:
     """
     return lax.select(
         (x == 0.0) | (y == 0.0),
-        _elliprd_one_zero_iter(jnp.maximum(x, y), z),
+        _elliprd_one_zero(jnp.maximum(x, y), z),
         _elliprd_general_iter(x, y, z),
     )
 
@@ -255,21 +265,24 @@ def elliprc(x: SFloat, y: SFloat) -> SFloat:
     Returns:
         R_C(x, y)
     """
-    arg = jnp.sqrt((x - y) / x)
+    # even when we don't select a branch, we'd like it to not produce NaNs
+    xsafe = lax.select(x == 0.0, 1e-16, x)
+    sqrt_abs = jnp.sqrt(abs(x - y))
+    sqrt_relx = jnp.sqrt(abs(x - y) / xsafe)
     return lax.select(
         x == 0.0,
         jnp.pi / (2 * jnp.sqrt(y)),
         lax.select(
             x == y,
-            1.0 / jnp.sqrt(x),
+            1.0 / jnp.sqrt(xsafe),
             lax.select(
                 y > x,
-                jnp.atan(jnp.sqrt((y - x) / x)) / jnp.sqrt(y - x),
+                jnp.atan(sqrt_relx) / sqrt_abs,
                 lax.select(
-                    y / x > 0.5,
-                    (jnp.log1p(arg) - jnp.log1p(-arg)) / (2 * jnp.sqrt(x - y)),
-                    jnp.log((jnp.sqrt(x) + jnp.sqrt(x - y)) / jnp.sqrt(y))
-                    / jnp.sqrt(x - y),
+                    y / xsafe > 0.5,
+                    (jnp.log1p(sqrt_relx) - jnp.log1p(jnp.maximum(-1.0, -sqrt_relx)))
+                    / (2 * sqrt_abs),
+                    jnp.log((jnp.sqrt(x) + sqrt_abs) / jnp.sqrt(y)) / sqrt_abs,
                 ),
             ),
         ),
@@ -284,16 +297,17 @@ def elliprc1p(x: SFloat) -> SFloat:
     Args:
         x: Real argument (x > -1)
     """
-    arg = jnp.sqrt(-x)
+    xsafe = lax.select(x == 0.0, 1e-16, x)
+    arg = jnp.sqrt(abs(xsafe))
     return lax.select(
         x == 0.0,
         jnp.ones_like(x),
         lax.select(
             x > 0.0,
-            jnp.atan(jnp.sqrt(x)) / jnp.sqrt(x),
+            jnp.atan(arg) / arg,
             lax.select(
                 x > -0.5,
-                (jnp.log1p(arg) - jnp.log1p(-arg)) / (2 * arg),
+                (jnp.log1p(arg) - jnp.log1p(jnp.maximum(-1.0, -arg))) / (2 * arg),
                 jnp.log((1 + arg) / jnp.sqrt(1 + x)) / arg,
             ),
         ),
@@ -420,6 +434,22 @@ def elliprj(x: SFloat, y: SFloat, z: SFloat, p: SFloat) -> SFloat:
     return result + 6 * sum_final
 
 
+def _elliptic_kepi_imp(n: SFloat, k: SFloat) -> tuple[SFloat, SFloat, SFloat]:
+    # TODO: protect against k = 1 (unterminated loop)
+    n, k = jnp.broadcast_arrays(n, k)
+    zero = jnp.zeros_like(k)
+    one = jnp.ones_like(k)
+    # Rf = elliprf(zero, 1 - k**2, one)
+    Rf = _elliprf_one_zero_iter(1 - k**2, one)
+    # Rd = elliprd(zero, 1 - k**2, one)
+    Rd = _elliprd_one_zero(1 - k**2, one)
+    Rj = elliprj(zero, 1 - k**2, one, 1 - n)
+    K = Rf
+    E = Rf - k**2 / 3 * Rd
+    Pi = Rf + n / 3 * Rj
+    return K, E, Pi
+
+
 @jax.custom_jvp
 def elliptic_kepi(n: SFloat, k: SFloat) -> tuple[SFloat, SFloat, SFloat]:
     """Compute elliptic integrals of the first, second, and third kind (K, E, Pi)
@@ -434,33 +464,43 @@ def elliptic_kepi(n: SFloat, k: SFloat) -> tuple[SFloat, SFloat, SFloat]:
     Returns:
         K, E, Pi: Complete elliptic integrals of the first, second, and third kind
     """
-    zero = jnp.zeros_like(k)
-    one = jnp.ones_like(k)
-    # Rf = elliprf(zero, 1 - k**2, one)
-    Rf = _elliprf_one_zero_iter(1 - k**2, one)
-    # Rd = elliprd(zero, 1 - k**2, one)
-    Rd = _elliprd_one_zero_iter(1 - k**2, one)
-    Rj = elliprj(zero, 1 - k**2, one, 1 - n)
-    K = Rf
-    E = Rf - k**2 / 3 * Rd
-    Pi = Rf + n / 3 * Rj
-    return K, E, Pi
+    return _elliptic_kepi_imp(n, k)
 
 
 @elliptic_kepi.defjvp
 def elliptic_kepi_fwd(primals, tangents):
     n, k = primals
+    # "double-where trick" ensure autograd handles k = 0 and n = 0 correctly
+    # by sanitizing the inputs for the non-limiting case branches
+    n0, k0 = lax.select(n == 0.0, 0.2, n), lax.select(k == 0.0, 0.1, k)
     dn, dk = tangents
-    K, E, Pi = elliptic_kepi(n, k)
-    # wolfram alpha
-    dK_dk = (k * K - K + E) / (2 * k * (k - 1))
-    dE_dk = (E - K) / (2 * k)
+    K, E, Pi = _elliptic_kepi_imp(n, k)
+    # https://en.wikipedia.org/wiki/Elliptic_integral#Differential_equation
+    dK_dk = lax.select(
+        k == 0.0,
+        0.0,
+        (k0 * K - K + E) / (2 * k0 * (k0 - 1)),
+    )
+    # https://en.wikipedia.org/wiki/Elliptic_integral#Derivative_and_differential_equation
+    dE_dk = lax.select(
+        k == 0.0,
+        0.0,
+        (E - K) / (2 * k0),
+    )
     # https://en.wikipedia.org/wiki/Elliptic_integral#Partial_derivatives
-    dPi_dk = k / (n - k**2) * (E / (k**2 - 1) + Pi)
-    dPi_dn = (
-        1
-        / (2 * (k**2 - n) * (n - 1))
-        * (E + (k**2 - n) * K / n + (n**2 - k**2) * Pi / n)
+    dPi_dk = lax.select(
+        (k == 0.0) | (n == 0.0),
+        0.0,
+        k0 / (n0 - k0**2) * (E / (k0**2 - 1) + Pi),
+    )
+    dPi_dn = lax.select(
+        n == 0.0,
+        dK_dk,
+        (
+            1
+            / (2 * (k0**2 - n0) * (n0 - 1))
+            * (E + (k0**2 - n0) * K / n0 + (n0**2 - k0**2) * Pi / n0)
+        ),
     )
     return (K, E, Pi), (
         dK_dk * dk,

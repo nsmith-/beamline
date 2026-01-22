@@ -1,7 +1,7 @@
 """Solenoid models
 
 Most are coming from the references
-https://doi.org/10.1016/j.nima.2022.166706
+Granum:2022dtk https://doi.org/10.1016/j.nima.2022.166706
 https://doi.org/10.1109/20.947050
 """
 
@@ -103,7 +103,6 @@ class ThinShellSolenoid(EMTensorField):
         halfRho = rho / 2
         Bz = self.Bz_onaxis(z)
         Brho = -self.Bz_onaxis(z, d=1) * halfRho
-        # TODO: when jax-ifying, this is a good place for a jet
         for n in range(1, order + 1):
             prefactor = (-1) ** n / factorial(n) ** 2
             Bz += prefactor * self.Bz_onaxis(z, d=2 * n) * (halfRho ** (2 * n))
