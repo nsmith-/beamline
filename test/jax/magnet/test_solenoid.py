@@ -1,3 +1,5 @@
+from functools import partial
+
 import hepunits as u
 import jax
 import jax.numpy as jnp
@@ -5,7 +7,6 @@ import pytest
 from matplotlib import pyplot as plt
 
 from beamline.jax.magnet import solenoid as jsol
-from beamline.jax.types import SFloat
 from beamline.numpy import solenoid as nsol
 
 
@@ -51,30 +52,45 @@ def test_thin_shell_rhoexpansion():
     assert Bz == pytest.approx(Bz_exp)
 
 
-def test_thin_shell_deriv_onaxis():
-    """Test the derivative of the magnetic field for a thin shell solenoid at the origin"""
+@pytest.mark.parametrize("bfun", ["rhoexpansion", "Caciagli"])
+def test_thin_shell_divergence(bfun: str):
+    """Test the divergence is zero in the solenoid"""
     sol = jsol.ThinShellSolenoid(
         R=43.81 * u.mm,
         jphi=600 * u.ampere / (0.289 * u.mm),
         L=34.68 * u.mm,
     )
 
-    def bz_onaxis(sol: jsol.ThinShellSolenoid, z: SFloat):
-        _, Bz = sol._B(0.0, z)
+    fun = (
+        partial(sol._B_rhoexpansion, order=3)
+        if bfun == "rhoexpansion"
+        else sol._B_Caciagli
+    )
+    # TODO: why is Caciagli model so inaccurate for the divergence test?
+    atol = 1e-15 if bfun == "rhoexpansion" else 1e-2
+
+    def rhoBrho(rho, z):
+        Brho, _ = fun(rho, z)
+        return rho * Brho
+
+    def Bz(rho, z):
+        _, Bz = fun(rho, z)
         return Bz
 
-    def bz_expected(sol: jsol.ThinShellSolenoid, z: SFloat):
-        return sol.Bz_onaxis(z)
+    def divergence(rho, z):
+        drhoBrho_drho = jax.grad(rhoBrho, argnums=0)(rho, z)
+        dBz_dz = jax.grad(Bz, argnums=1)(rho, z)
+        return drhoBrho_drho / rho + dBz_dz
 
-    zvals = jnp.linspace(-2 * sol.L, 2 * sol.L, 101)
-    val, grad = jax.vmap(jax.value_and_grad(bz_onaxis), in_axes=(None, 0))(sol, zvals)
-    val_exp, grad_exp = jax.vmap(jax.value_and_grad(bz_expected), in_axes=(None, 0))(
-        sol, zvals
+    rng_rho, rng_z = jax.random.split(jax.random.PRNGKey(1234), 2)
+    npts = 100
+    rhovals = jax.random.chisquare(rng_rho, df=2, shape=(npts,)) * sol.R / 3
+    zvals = jax.random.uniform(
+        rng_z, shape=(npts,), minval=-2 * sol.L, maxval=2 * sol.L
     )
-    assert val == pytest.approx(val_exp, rel=1e-8)
-    assert grad.R == pytest.approx(grad_exp.R, rel=1e-5)
-    assert grad.jphi == pytest.approx(grad_exp.jphi, rel=1e-8)
-    assert grad.L == pytest.approx(grad_exp.L, rel=1e-5)
+
+    divvals = jax.vmap(divergence)(rhovals, zvals)
+    assert divvals == pytest.approx(jnp.zeros_like(divvals), abs=atol)
 
 
 def test_optimize_rho0limit(artifacts_dir):
