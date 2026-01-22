@@ -9,14 +9,23 @@ from matplotlib import pyplot as plt
 from beamline.jax.magnet import solenoid as jsol
 from beamline.numpy import solenoid as nsol
 
+REF_SOLENOID = nsol.ThinShellSolenoid(
+    R=43.81 * u.mm,
+    jphi=600 * u.ampere / (0.289 * u.mm),
+    L=34.68 * u.mm,
+)
+
+# parameters from an example in the muon cooling benchmark
+SOLENOID = jsol.ThinShellSolenoid(
+    R=43.81 * u.mm,
+    jphi=600 * u.ampere / (0.289 * u.mm),
+    L=34.68 * u.mm,
+)
+
 
 def test_thin_shell_caciagli():
-    ref = nsol.ThinShellSolenoid(
-        R=43.81 * u.mm,
-        jphi=600 * u.ampere / (0.289 * u.mm),
-        L=34.68 * u.mm,
-    )
-    solenoid = jsol.ThinShellSolenoid(R=ref.R, jphi=ref.jphi, L=ref.L)
+    ref = REF_SOLENOID
+    solenoid = SOLENOID
 
     rho, z = jnp.meshgrid(
         jnp.linspace(0, 2 * solenoid.R, 200),
@@ -34,12 +43,8 @@ def test_thin_shell_caciagli():
 
 
 def test_thin_shell_rhoexpansion():
-    ref = nsol.ThinShellSolenoid(
-        R=43.81 * u.mm,
-        jphi=600 * u.ampere / (0.289 * u.mm),
-        L=34.68 * u.mm,
-    )
-    solenoid = jsol.ThinShellSolenoid(R=ref.R, jphi=ref.jphi, L=ref.L)
+    ref = REF_SOLENOID
+    solenoid = SOLENOID
     rho, z = jnp.meshgrid(
         jnp.linspace(0, 0.5 * solenoid.R, 100),
         jnp.linspace(-solenoid.L, solenoid.L, 100),
@@ -55,11 +60,7 @@ def test_thin_shell_rhoexpansion():
 @pytest.mark.parametrize("bfun", ["rhoexpansion", "Caciagli"])
 def test_thin_shell_divergence(bfun: str):
     """Test the divergence is zero in the solenoid"""
-    sol = jsol.ThinShellSolenoid(
-        R=43.81 * u.mm,
-        jphi=600 * u.ampere / (0.289 * u.mm),
-        L=34.68 * u.mm,
-    )
+    sol = SOLENOID
 
     fun = (
         partial(sol._B_rhoexpansion, order=3)
@@ -93,17 +94,42 @@ def test_thin_shell_divergence(bfun: str):
     assert divvals == pytest.approx(jnp.zeros_like(divvals), abs=atol)
 
 
+@pytest.mark.parametrize(
+    "fun",
+    ["Caciagli", "rhoexpansion1", "rhoexpansion2", "rhoexpansion3", "rhoexpansion4"],
+)
+def test_solenoid_performance(benchmark, fun: str):
+    solenoid = SOLENOID
+    rho, z = jnp.meshgrid(
+        jnp.linspace(0, 2 * solenoid.R, 200),
+        jnp.linspace(-2 * solenoid.L, 2 * solenoid.L, 101),
+        indexing="ij",
+    )
+
+    if fun == "Caciagli":
+        bfun = jax.jit(jnp.vectorize(solenoid._B_Caciagli))
+    elif fun.startswith("rhoexpansion"):
+        order = int(fun.removeprefix("rhoexpansion"))
+        bfun = jax.jit(jnp.vectorize(partial(solenoid._B_rhoexpansion, order=order)))
+    else:
+        raise RuntimeError
+
+    def run_bfun():
+        Brho, Bz = bfun(rho, z)
+        (Brho + Bz).block_until_ready()
+
+    # warmup
+    run_bfun()
+    benchmark(run_bfun)
+
+
 def test_optimize_rho0limit(artifacts_dir):
     """How the rho -> 0 limit was optimized
 
     As rho gets smaller, the Caciagli formula gets less accurate, with a minimum around 1e-6 in this example
     """
 
-    solenoid = jsol.ThinShellSolenoid(
-        R=43.81 * u.mm,
-        jphi=600 * u.ampere / (0.289 * u.mm),
-        L=34.68 * u.mm,
-    )
+    solenoid = SOLENOID
 
     zpts = jnp.linspace(-2 * solenoid.L, 2 * solenoid.L, 201)
 
