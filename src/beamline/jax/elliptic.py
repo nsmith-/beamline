@@ -79,7 +79,7 @@ def _elliprf_one_zero_iter(x: SFloat, y: SFloat) -> SFloat:
 
     def cond_fn(state: _RF0State):
         x, y = state
-        return jnp.abs(x - y) >= 2.7 * jnp.finfo(x.dtype).eps * jnp.abs(x)
+        return jnp.abs(x - y) >= 2.7 * jnp.sqrt(jnp.finfo(x.dtype).eps) * jnp.abs(x)
 
     def body_fn(state: _RF0State) -> _RF0State:
         x, y = state
@@ -90,6 +90,14 @@ def _elliprf_one_zero_iter(x: SFloat, y: SFloat) -> SFloat:
 
     x_final, y_final = lax.while_loop(cond_fn, body_fn, (xn, yn))
     return jnp.pi / (x_final + y_final)
+
+
+def _elliprf_one_zero(x: SFloat, y: SFloat) -> SFloat:
+    return lax.select(
+        x == y,
+        jnp.pi / 2 / jnp.sqrt(x),
+        _elliprf_one_zero_iter(x, y),
+    )
 
 
 def elliprf(x: SFloat, y: SFloat, z: SFloat) -> SFloat:
@@ -112,7 +120,7 @@ def elliprf(x: SFloat, y: SFloat, z: SFloat) -> SFloat:
     lo, me, hi = jnp.sort(jnp.array([x, y, z]))
     return lax.select(
         lo == 0.0,
-        _elliprf_one_zero_iter(me, hi),
+        _elliprf_one_zero(me, hi),
         _elliprf_full_iter(lo, me, hi),
     )
 
@@ -439,8 +447,9 @@ def _elliptic_kepi_imp(n: SFloat, k: SFloat) -> tuple[SFloat, SFloat, SFloat]:
     n, k = jnp.broadcast_arrays(n, k)
     zero = jnp.zeros_like(k)
     one = jnp.ones_like(k)
+    # TODO: k = 0 is found in wire loop and solenoid on axis, need better handling
     # Rf = elliprf(zero, 1 - k**2, one)
-    Rf = _elliprf_one_zero_iter(1 - k**2, one)
+    Rf = _elliprf_one_zero(1 - k**2, one)
     # Rd = elliprd(zero, 1 - k**2, one)
     Rd = _elliprd_one_zero(1 - k**2, one)
     Rj = elliprj(zero, 1 - k**2, one, 1 - n)
@@ -472,34 +481,43 @@ def elliptic_kepi_fwd(primals, tangents):
     n, k = primals
     # "double-where trick" ensure autograd handles k = 0 and n = 0 correctly
     # by sanitizing the inputs for the non-limiting case branches
-    n0, k0 = lax.select(n == 0.0, 0.2, n), lax.select(k == 0.0, 0.1, k)
+    n0, k0 = lax.select(n == 0.0, 0.1234, n), lax.select(k == 0.0, 0.1234, k)
     dn, dk = tangents
     K, E, Pi = _elliptic_kepi_imp(n, k)
     # https://en.wikipedia.org/wiki/Elliptic_integral#Differential_equation
     dK_dk = lax.select(
         k == 0.0,
         0.0,
-        (k0 * K - K + E) / (2 * k0 * (k0 - 1)),
+        # (k0 * K - K + E) / (2 * k0 * (k0 - 1)),
+        E / (k0 * (1 - k0**2)) - K / k0,
     )
     # https://en.wikipedia.org/wiki/Elliptic_integral#Derivative_and_differential_equation
     dE_dk = lax.select(
         k == 0.0,
         0.0,
-        (E - K) / (2 * k0),
+        (E - K) / k0,
     )
     # https://en.wikipedia.org/wiki/Elliptic_integral#Partial_derivatives
     dPi_dk = lax.select(
-        (k == 0.0) | (n == 0.0),
+        k == 0.0,
         0.0,
-        k0 / (n0 - k0**2) * (E / (k0**2 - 1) + Pi),
+        k0 / (n - k0**2) * (E / (k0**2 - 1) + Pi),
     )
     dPi_dn = lax.select(
         n == 0.0,
-        dK_dk,
+        lax.select(
+            k == 0.0,
+            0.0,
+            # 1 / -2k**2 (E - K + k**2/n * (K - Pi))
+            # (K - Pi) = -n/3 * Rj
+            # => E - K - k**2/3 * Rj = 2*(E - K)
+            # as Rd = Rj at n = 0
+            (K - E) / k0**2,
+        ),
         (
             1
-            / (2 * (k0**2 - n0) * (n0 - 1))
-            * (E + (k0**2 - n0) * K / n0 + (n0**2 - k0**2) * Pi / n0)
+            / (2 * (k**2 - n0) * (n0 - 1))
+            * (E + (k**2 - n0) * K / n0 + (n0**2 - k**2) * Pi / n0)
         ),
     )
     return (K, E, Pi), (

@@ -14,7 +14,7 @@ class WireLoop(eqx.Module):
     I: SFloat  # noqa: E741
     """Current through the wire loop [e/ns]"""
 
-    def _B(self, rho: SFloat, z: SFloat) -> tuple[SFloat, SFloat]:
+    def B(self, rho: SFloat, z: SFloat) -> tuple[SFloat, SFloat]:
         """Magnetic field of a wire loop at (rho, z)
 
         Args:
@@ -22,7 +22,7 @@ class WireLoop(eqx.Module):
             z: Axial distance from the plane of the loop [mm]
 
         Returns:
-            Tuple containing the radial and axial components of the magnetic field
+            (Brho, Bz): Tuple containing the radial and axial components of the magnetic field
 
 
         References:

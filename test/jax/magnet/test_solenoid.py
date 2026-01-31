@@ -25,14 +25,16 @@ SOLENOID = jsol.ThinShellSolenoid(
 
 def _get_bfun(solenoid: jsol.ThinShellSolenoid, fun: str):
     if fun == "Caciagli":
-        bfun = solenoid._B_Caciagli
+        bfun = solenoid.B_Caciagli
     elif fun.startswith("rhoexpansion"):
         order = int(fun.removeprefix("rhoexpansion"))
-        bfun = partial(solenoid._B_rhoexpansion, order=order)
+        bfun = partial(solenoid.B_rhoexpansion, order=order)
     elif fun == "quadrature":
-        bfun = solenoid._B_quadrature
+        bfun = solenoid.B_quadloop
     elif fun == "composite":
-        bfun = solenoid._B
+        bfun = solenoid.B_composite
+    elif fun == "dA":
+        bfun = solenoid.B_dA
     else:
         raise RuntimeError
     return jax.jit(jnp.vectorize(bfun))
@@ -48,7 +50,7 @@ def test_thin_shell_caciagli():
         indexing="ij",
     )
 
-    Brho, Bz = jnp.vectorize(solenoid._B_Caciagli)(rho, z)
+    Brho, Bz = jnp.vectorize(solenoid.B_Caciagli)(rho, z)
     Brho_exp, Bz_exp = ref._B_Caciagli(rho, z)
 
     # actually here we're doing better for small rho than numpy
@@ -65,24 +67,59 @@ def test_thin_shell_rhoexpansion():
         indexing="ij",
     )
 
-    Brho, Bz = jnp.vectorize(solenoid._B_rhoexpansion)(rho, z)
+    Brho, Bz = jnp.vectorize(solenoid.B_rhoexpansion)(rho, z)
     Brho_exp, Bz_exp = ref._B_rhoexpansion(rho, z)
     assert Brho == pytest.approx(Brho_exp)
     assert Bz == pytest.approx(Bz_exp)
 
 
-def test_thin_shell_quadrature():
+@pytest.mark.parametrize(
+    ("ref", "cmp", "rholim", "rtol", "atol"),
+    [
+        # Try to tighten tolerances as much as possible, so this is a good reference
+        # rho expansion is very good for small rho
+        ("rhoexpansion8", "Caciagli", 0.5, 5e-7, 1e-7),
+        # but quickly becomes less accurate near R
+        ("rhoexpansion8", "Caciagli", 0.9, 0.034, 3e-3),
+        ("rhoexpansion8", "quadrature", 0.5, 5e-7, 1e-7),
+        # ("rhoexpansion8", "dA", 0.5, 3e-10),
+    ],
+)
+def test_thin_shell_comparison(
+    ref: str, cmp: str, rholim: float, rtol: float, atol: float
+):
+    """Compare two different solenoid field calculation methods"""
     solenoid = SOLENOID
+    B0 = solenoid.Bz_onaxis(0.0)
+
     rho, z = jnp.meshgrid(
-        jnp.linspace(0, 0.5 * solenoid.R, 100),
+        jnp.linspace(0, rholim * solenoid.R, 200),
         jnp.linspace(-solenoid.L, solenoid.L, 201),
         indexing="ij",
     )
 
-    Brho, Bz = _get_bfun(solenoid, "quadrature")(rho, z)
-    Brho_exp, Bz_exp = _get_bfun(solenoid, "rhoexpansion8")(rho, z)
-    assert Brho == pytest.approx(Brho_exp, rel=2e-6)
-    assert Bz == pytest.approx(Bz_exp)
+    Brho, Bz = _get_bfun(solenoid, cmp)(rho, z)
+    Brho_exp, Bz_exp = _get_bfun(solenoid, ref)(rho, z)
+    # Scale to fraction of B0 so atol means something physical
+    Brho /= B0
+    Bz /= B0
+    Brho_exp /= B0
+    Bz_exp /= B0
+    assert Brho == pytest.approx(Brho_exp, abs=atol, rel=rtol)
+    assert Bz == pytest.approx(Bz_exp, abs=atol, rel=rtol)
+
+
+@pytest.mark.skip("not ready")
+def test_B_dA():
+    solenoid = SOLENOID
+
+    rho, z = jnp.array(0.0 * solenoid.R), jnp.array(0.4 * solenoid.L)
+    A, dA_drho = jax.value_and_grad(solenoid.A, argnums=0)(rho, z)
+    dA_dz = jax.grad(solenoid.A, argnums=1)(rho, z)
+    assert jnp.isfinite(A)
+    assert jnp.isfinite(dA_drho)
+    assert jnp.isfinite(dA_dz)
+    # Brho, Bz = solenoid.B_dA(rho, z)
 
 
 @pytest.mark.parametrize("bfun", ["rhoexpansion2", "Caciagli"])
@@ -91,8 +128,7 @@ def test_thin_shell_divergence(bfun: str):
     sol = SOLENOID
 
     fun = _get_bfun(sol, bfun)
-    # TODO: why is Caciagli model so inaccurate for the divergence test?
-    atol = 1e-2 if bfun == "Caciagli" else 1e-15
+    atol = 3e-15 if bfun == "Caciagli" else 1e-15
 
     def rhoBrho(rho, z):
         Brho, _ = fun(rho, z)
@@ -162,10 +198,10 @@ def test_optimize_rho0limit(artifacts_dir):
     @jnp.vectorize
     def maxdiff(rho):
         Bz0 = solenoid.Bz_onaxis(zpts)
-        Brho_exp, Bz_exp = jax.vmap(solenoid._B_rhoexpansion, in_axes=(None, 0))(
+        Brho_exp, Bz_exp = jax.vmap(solenoid.B_rhoexpansion, in_axes=(None, 0))(
             rho, zpts
         )
-        Brho_cac, Bz_cac = jax.vmap(solenoid._B_Caciagli, in_axes=(None, 0))(rho, zpts)
+        Brho_cac, Bz_cac = jax.vmap(solenoid.B_Caciagli, in_axes=(None, 0))(rho, zpts)
         return (
             jnp.max(jnp.abs(Bz_exp - Bz0)),
             jnp.max(jnp.abs(Brho_exp)),

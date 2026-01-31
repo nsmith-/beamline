@@ -42,13 +42,13 @@ def _auxp12(k2: SFloat, gamma: SFloat) -> tuple[SFloat, SFloat]:
 
 def _quadarg_rho(R: SFloat, rho: SFloat, z: SFloat) -> SFloat:
     """Argument for numerical quadrature of a wire loop"""
-    Brho, _ = WireLoop(R=R, I=1.0)._B(rho, z)
+    Brho, _ = WireLoop(R=R, I=1.0).B(rho, z)
     return Brho
 
 
 def _quadarg_z(R: SFloat, rho: SFloat, z: SFloat) -> SFloat:
     """Argument for numerical quadrature of a wire loop"""
-    _, Bz = WireLoop(R=R, I=1.0)._B(rho, z)
+    _, Bz = WireLoop(R=R, I=1.0).B(rho, z)
     return Bz
 
 
@@ -68,7 +68,7 @@ class ThinShellSolenoid(eqx.Module):
         Bz = MU0 * self.jphi / 2 * (left_term - right_term)
         return Bz
 
-    def _B_rhoexpansion(
+    def B_rhoexpansion(
         self, rho: SFloat, z: SFloat, order: int = 1
     ) -> tuple[SFloat, SFloat]:
         """Return the rho and z component of the magnetic field
@@ -79,7 +79,7 @@ class ThinShellSolenoid(eqx.Module):
         Bz0, dnBz = jet(
             self.Bz_onaxis,
             primals=(z,),
-            series=([1.0] + [0.0] * 2 * order,),
+            series=(jnp.zeros(2 * order + 1).at[0].set(1.0),),
         )
         hrho = rho / 2
         Bz = Bz0 + sum(
@@ -96,23 +96,55 @@ class ThinShellSolenoid(eqx.Module):
         )
         return Brho, Bz
 
-    def _B_Caciagli(self, rho: SFloat, z: SFloat) -> tuple[SFloat, SFloat]:
+    def A(self, rho: SFloat, z: SFloat) -> SFloat:
+        """Vector potential A_phi at (rho, z)
+
+        Following Wikipedia"""
+        xip, xim = z + self.L / 2, z - self.L / 2
+        rhopR = rho + self.R
+        fourRrho = 4 * self.R * rho
+        n = fourRrho / rhopR**2
+        mp, mm = (
+            fourRrho / (xip**2 + rhopR**2),
+            fourRrho / (xim**2 + rhopR**2),
+        )
+        ap, am = xip / jnp.hypot(xip, rhopR), xim / jnp.hypot(xim, rhopR)
+        Kp, Ep, Pip = elliptic_kepi(n=n, k=jnp.sqrt(mp))
+        Km, Em, Pim = elliptic_kepi(n=n, k=jnp.sqrt(mm))
+        termp = ap * ((mp + n - mp * n) / (mp * n) * Kp - Ep / mp + (n + 1) / n * Pip)
+        termm = am * ((mm + n - mm * n) / (mm * n) * Km - Em / mm + (n + 1) / n * Pim)
+        Aphi = MU0 * self.jphi * self.R / jnp.pi / self.L * (termp - termm)
+        return Aphi
+
+    def B_dA(self, rho: SFloat, z: SFloat) -> tuple[SFloat, SFloat]:
+        """Compute the magnetic field by taking the curl of the vector potential"""
+        A, dA_drho = jax.value_and_grad(self.A, argnums=0)(rho, z)
+        dA_dz = jax.grad(self.A, argnums=1)(rho, z)
+        Brho = -dA_dz
+        Bz = dA_drho + A / rho
+        return Brho, Bz
+
+    def B_Caciagli(self, rho: SFloat, z: SFloat) -> tuple[SFloat, SFloat]:
         """Return the rho and z component of the magnetic field
 
         Using Caciagli Eqn. 3-6
         Note this solution is nan for rho=0
 
         References:
+
+            Callaghan:1960 https://ntrs.nasa.gov/citations/19980227402
             Conway https://doi.org/10.1109/20.947050
-            Caciagli https://doi.org/10.1016/j.jmmm.2018.02.003
+            Caciagli:2018 https://doi.org/10.1016/j.jmmm.2018.02.003
         """
         # avoid rho=0, which causes nan in the solution and rho = R which never converges
+        eps_zero = 1e-8 * self.R  # should be smaller than threshold used in self.B
+        threshold_R = 1e-5 * self.R  # smaller eps = longer elliptic integral loop
         rho = jax.lax.select(
             rho == 0.0,
-            1e-7 * self.R,  # should be smaller than threshold used in self._B
+            eps_zero,
             jax.lax.select(
-                rho == self.R,
-                self.R * (1 - 1e-5),  # smaller eps = longer elliptic integral loop
+                jnp.abs(rho - self.R) < threshold_R,
+                self.R + jnp.sign(rho - self.R) * threshold_R,
                 rho,
             ),
         )
@@ -132,7 +164,7 @@ class ThinShellSolenoid(eqx.Module):
         Bz = prefactor / rhopR * (betap * P2p - betam * P2m)
         return Brho, Bz
 
-    def _B_quadrature(self, rho: SFloat, z: SFloat) -> tuple[SFloat, SFloat]:
+    def B_quadloop(self, rho: SFloat, z: SFloat) -> tuple[SFloat, SFloat]:
         """Compute the magnetic field using numerical quadrature on a wire loop model"""
         quadfun_rho = partial(_quadarg_rho, self.R, rho)
         quadfun_z = partial(_quadarg_z, self.R, rho)
@@ -141,7 +173,7 @@ class ThinShellSolenoid(eqx.Module):
         Bz, _ = quadgk(quadfun_z, bounds)
         return self.jphi * Brho, self.jphi * Bz
 
-    def _B(self, rho: SFloat, z: SFloat) -> tuple[SFloat, SFloat]:
+    def B_composite(self, rho: SFloat, z: SFloat) -> tuple[SFloat, SFloat]:
         """Return the rho and z component of the magnetic field
 
         Uses both a closed-form solution (Caciagli) and a series expansion
@@ -149,8 +181,8 @@ class ThinShellSolenoid(eqx.Module):
         becomes a bit inaccurate for small rho.
         """
         rel = 1e-7  # optimized in test_optimize_rho0limit
-        Brho_lo, Bz_lo = self._B_rhoexpansion(rho, z, order=2)
-        Brho_hi, Bz_hi = self._B_Caciagli(rho, z)
+        Brho_lo, Bz_lo = self.B_rhoexpansion(rho, z, order=2)
+        Brho_hi, Bz_hi = self.B_Caciagli(rho, z)
         Brho = jax.lax.select(rho < rel * self.R, Brho_lo, Brho_hi)
         Bz = jax.lax.select(rho < rel * self.R, Bz_lo, Bz_hi)
         return Brho, Bz
