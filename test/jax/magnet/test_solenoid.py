@@ -211,8 +211,9 @@ def test_optimize_rho0limit(artifacts_dir):
 
     fig, ax = plt.subplots()
 
-    rhovals = jnp.geomspace(1e-10, 1e-2 * solenoid.R, 100)
+    rhovals = jnp.geomspace(1e-16, 1e-6 * solenoid.R, 100)
     dBz_exp, Brho_exp, dBz_cac, Brho_cac = maxdiff(rhovals)
+    _, _, Bz0_cac, Brho0_cac = maxdiff(jnp.array(0.0))
     ax.plot(
         rhovals / solenoid.R,
         dBz_exp,
@@ -221,12 +222,14 @@ def test_optimize_rho0limit(artifacts_dir):
         label="|Bz expansion - Bz on-axis|",
     )
     ax.plot(
-        rhovals / solenoid.R, Brho_exp, color="C0", ls="--", label="|Brho expansion|"
+        rhovals / solenoid.R, Brho_exp, color="C1", ls="--", label="|Brho expansion|"
     )
     ax.plot(
-        rhovals / solenoid.R, dBz_cac, color="C1", label="|Bz Caciagli - Bz on-axis|"
+        rhovals / solenoid.R, dBz_cac, color="C0", label="|Bz Caciagli - Bz on-axis|"
     )
     ax.plot(rhovals / solenoid.R, Brho_cac, color="C1", label="|Brho Caciagli|")
+    ax.axhline(Bz0_cac, color="C0", ls=":", label="|Bz diff @rho=0|")
+    ax.axhline(Brho0_cac, color="C1", ls=":", label=f"|Brho={Brho0_cac} @rho=0|")
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("rho / R")

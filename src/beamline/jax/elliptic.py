@@ -23,6 +23,7 @@ _RFState: TypeAlias = tuple[SFloat, SFloat, SFloat, SFloat, SFloat, SFloat]
 """x, y, z, A, Q, f"""
 
 
+@jax.custom_jvp
 def _elliprf_full_iter(x: SFloat, y: SFloat, z: SFloat) -> SFloat:
     """Iterative solution for non-special cases"""
 
@@ -68,10 +69,25 @@ def _elliprf_full_iter(x: SFloat, y: SFloat, z: SFloat) -> SFloat:
     ) / jnp.sqrt(A_final)
 
 
+@_elliprf_full_iter.defjvp
+def _elliprf_full_iter_fwd(primals, tangents):
+    x, y, z = primals
+    dx, dy, dz = tangents
+    rf = _elliprf_full_iter(x, y, z)
+
+    drf_dx = -elliprd(y, z, x) / 6
+    drf_dy = -elliprd(x, z, y) / 6
+    drf_dz = -elliprd(x, y, z) / 6
+
+    drf = drf_dx * dx + drf_dy * dy + drf_dz * dz
+    return rf, drf
+
+
 _RF0State: TypeAlias = tuple[SFloat, SFloat]
 """x, y"""
 
 
+@jax.custom_jvp
 def _elliprf_one_zero_iter(x: SFloat, y: SFloat) -> SFloat:
     """Solution for the case where one argument is zero"""
     xn = jnp.sqrt(x)
@@ -92,12 +108,34 @@ def _elliprf_one_zero_iter(x: SFloat, y: SFloat) -> SFloat:
     return jnp.pi / (x_final + y_final)
 
 
-def _elliprf_one_zero(x: SFloat, y: SFloat) -> SFloat:
-    return lax.select(
-        x == y,
-        jnp.pi / 2 / jnp.sqrt(x),
-        _elliprf_one_zero_iter(x, y),
-    )
+@_elliprf_one_zero_iter.defjvp
+def _elliprf_one_zero_iter_fwd(primals, tangents):
+    x, y = primals
+    dx, dy = tangents
+    rf = _elliprf_one_zero_iter(x, y)
+
+    drf_dx = -elliprd_one_zero(y, x) / 6
+    drf_dy = -elliprd_one_zero(x, y) / 6
+
+    drf = drf_dx * dx + drf_dy * dy
+    return rf, drf
+
+
+def elliprf_one_zero(x: SFloat, y: SFloat) -> SFloat:
+    """Special case of Carlson R_F where one argument is zero
+
+    Args:
+        x: Real argument (x > 0)
+        y: Real argument (y > 0)
+
+    Returns:
+        R_F(x, y, 0)
+
+    Implementation notes:
+    Originally we selected pi/2/sqrt(x) when x == y, but this seems
+    to cause trouble for autograd.
+    """
+    return _elliprf_one_zero_iter(x, y)
 
 
 def elliprf(x: SFloat, y: SFloat, z: SFloat) -> SFloat:
@@ -114,14 +152,18 @@ def elliprf(x: SFloat, y: SFloat, z: SFloat) -> SFloat:
 
     Returns:
         R_F(x, y, z)
+
+    Implementation notes:
+    Originally we selected elliprc when x == y or y == z,
+    but this seems to cause trouble for autograd, and the iterative
+    method gives the same result in those cases
     """
-    # TODO: there are additional special cases, is it worth implementing them?
-    # See Boost implementation for reference
     lo, me, hi = jnp.sort(jnp.array([x, y, z]))
+    losafe = lax.select(lo == 0.0, 1e-16, lo)
     return lax.select(
         lo == 0.0,
-        _elliprf_one_zero(me, hi),
-        _elliprf_full_iter(lo, me, hi),
+        elliprf_one_zero(me, hi),
+        _elliprf_full_iter(losafe, me, hi),
     )
 
 
@@ -129,6 +171,7 @@ _RDState: TypeAlias = tuple[SFloat, SFloat, SFloat, SFloat, SFloat, SFloat, SFlo
 """x, y, z, A, Q, sum_term, f"""
 
 
+@jax.custom_jvp
 def _elliprd_general_iter(x: SFloat, y: SFloat, z: SFloat) -> SFloat:
     """General iterative solution for RD"""
 
@@ -194,6 +237,67 @@ def _elliprd_general_iter(x: SFloat, y: SFloat, z: SFloat) -> SFloat:
     return 3 * sum_final + result
 
 
+def _drd_dx_term1(x, y):
+    xmy = lax.select(x == y, 1e-16, x - y)
+    return (
+        3 / (16 * xmy**2) * (jnp.sqrt(y) * (5 * x - 2 * y) / x**2 - 3 * elliprc(y, x))
+    )
+
+
+def _drd_dx_term2(x, y, z, rd):
+    xmz = lax.select(x == z, 1e-16, x - z)
+    return (_elliprd_general_iter(y, z, x) - rd) / (2 * xmz)
+
+
+def _drd_dz_xeqz(x, y, z, rd):
+    ymz = lax.select(y == z, 1e-16, y - z)
+    return -9 / 16 / ymz**2 * (3 * elliprc(y, z) + jnp.sqrt(y) * (2 * y - 5 * z) / z**2)
+
+
+def _drd_dz_else(x, y, z, rd):
+    xmz = lax.select(x == z, 1e-16, x - z)
+    ymz = lax.select(y == z, 1e-16, y - z)
+    return (
+        (x + y - 2 * z) * rd
+        + 3 / 2 * elliprf(x, y, z)
+        - 3 / 2 * jnp.sqrt(x * y) / z / jnp.sqrt(z)
+    ) / (xmz * ymz)
+
+
+@_elliprd_general_iter.defjvp
+def _elliprd_general_iter_fwd(primals, tangents):
+    x, y, z = primals
+    dx, dy, dz = tangents
+    rd_xyz = _elliprd_general_iter(x, y, z)
+
+    drd_dx = lax.select(
+        (x == y) & (y == z),
+        -3 / 10 / x**2 / jnp.sqrt(x),
+        lax.select(x == z, _drd_dx_term1(x, y), _drd_dx_term2(x, y, z, rd_xyz)),
+    )
+    drd_dy = lax.select(
+        (x == y) & (y == z),
+        -3 / 10 / y**2 / jnp.sqrt(y),
+        lax.select(y == z, _drd_dx_term1(y, x), _drd_dx_term2(y, x, z, rd_xyz)),
+    )
+    drd_dz = lax.select(
+        (x == y) & (y == z),
+        -9 / 10 / z**2 / jnp.sqrt(z),
+        lax.select(
+            x == z,
+            _drd_dz_xeqz(x, y, z, rd_xyz),
+            lax.select(
+                y == z,
+                _drd_dz_xeqz(y, x, z, rd_xyz),
+                _drd_dz_else(x, y, z, rd_xyz),
+            ),
+        ),
+    )
+
+    drd = drd_dx * dx + drd_dy * dy + drd_dz * dz
+    return rd_xyz, drd
+
+
 _RD0State: TypeAlias = tuple[SFloat, SFloat, SFloat, SFloat]
 """x, y, sum_term, sum_pow"""
 
@@ -229,7 +333,21 @@ def _elliprd_one_zero_iter(y: SFloat, z: SFloat) -> SFloat:
     return pt * rf * 3
 
 
-def _elliprd_one_zero(y: SFloat, z: SFloat) -> SFloat:
+def elliprd_one_zero(y: SFloat, z: SFloat) -> SFloat:
+    """Special case of Carlson R_D where one argument is zero
+
+    Args:
+        y: Real argument (y > 0)
+        z: Real argument (z > 0)
+
+    Returns:
+        R_D(0, y, z)
+    """
+    return _elliprd_one_zero_impl(y, z)
+
+
+@jax.custom_jvp
+def _elliprd_one_zero_impl(y: SFloat, z: SFloat) -> SFloat:
     # guard against nan for y == z in the second branch
     ysafe = jnp.where(y == z, y + z, y)
     return lax.select(
@@ -237,6 +355,29 @@ def _elliprd_one_zero(y: SFloat, z: SFloat) -> SFloat:
         3 * jnp.pi / (4 * y * jnp.sqrt(y)),
         _elliprd_one_zero_iter(ysafe, z),
     )
+
+
+@_elliprd_one_zero_impl.defjvp
+def _elliprd_one_zero_impl_fwd(primals, tangents):
+    y, z = primals
+    ysafe = jnp.where(y == z, y + z, y)
+    dy, dz = tangents
+    rd_yz = _elliprd_one_zero_impl(y, z)
+    rd_zy = _elliprd_one_zero_impl(z, y)
+
+    drd_dy = lax.select(
+        y == z,
+        -9 * jnp.pi / 32 / y**2 / jnp.sqrt(y),
+        (rd_zy - rd_yz) / 2 / (ysafe - z),
+    )
+    drd_dz = lax.select(
+        y == z,
+        -27 * jnp.pi / 32 / z**2 / jnp.sqrt(z),
+        ((y - 2 * z) * rd_yz + 3 / 2 * elliprf_one_zero(y, z)) / (z - ysafe) / z,
+    )
+
+    drd = drd_dy * dy + drd_dz * dz
+    return rd_yz, drd
 
 
 def elliprd(x: SFloat, y: SFloat, z: SFloat) -> SFloat:
@@ -252,9 +393,10 @@ def elliprd(x: SFloat, y: SFloat, z: SFloat) -> SFloat:
     Returns:
         R_D(x, y, z)
     """
+    lo, hi = jnp.minimum(x, y), jnp.maximum(x, y)
     return lax.select(
-        (x == 0.0) | (y == 0.0),
-        _elliprd_one_zero(jnp.maximum(x, y), z),
+        lo == 0.0,
+        elliprd_one_zero(hi, z),
         _elliprd_general_iter(x, y, z),
     )
 
@@ -263,6 +405,8 @@ def elliprc(x: SFloat, y: SFloat) -> SFloat:
     r"""Carlson's degenerate elliptic integral R_C
 
     $$ R_C(x, y) = \frac{1}{2} \int_0^\infty \frac{dt}{\sqrt{t+x}(t+y)} $$
+
+    Note: $R_C(x, y) = R_F(x, y, y)$
 
     This routine does not handle the singular case y < 0
 
@@ -277,6 +421,8 @@ def elliprc(x: SFloat, y: SFloat) -> SFloat:
     xsafe = lax.select(x == 0.0, 1e-16, x)
     sqrt_abs = jnp.sqrt(abs(x - y))
     sqrt_relx = jnp.sqrt(abs(x - y) / xsafe)
+    # we only go in the log1p branch when 0.5 < y/x <= 1
+    sqrt_relx_safe = lax.select(sqrt_relx >= 1.0, jnp.zeros_like(x), sqrt_relx)
     return lax.select(
         x == 0.0,
         jnp.pi / (2 * jnp.sqrt(y)),
@@ -288,7 +434,7 @@ def elliprc(x: SFloat, y: SFloat) -> SFloat:
                 jnp.atan(sqrt_relx) / sqrt_abs,
                 lax.select(
                     y / xsafe > 0.5,
-                    (jnp.log1p(sqrt_relx) - jnp.log1p(jnp.maximum(-1.0, -sqrt_relx)))
+                    (jnp.log1p(sqrt_relx) - jnp.log1p(-sqrt_relx_safe))
                     / (2 * sqrt_abs),
                     jnp.log((jnp.sqrt(x) + sqrt_abs) / jnp.sqrt(y)) / sqrt_abs,
                 ),
@@ -442,6 +588,7 @@ def elliprj(x: SFloat, y: SFloat, z: SFloat, p: SFloat) -> SFloat:
     return result + 6 * sum_final
 
 
+@jax.custom_jvp
 def _elliptic_kepi_imp(n: SFloat, k: SFloat) -> tuple[SFloat, SFloat, SFloat]:
     # TODO: protect against k = 1 (unterminated loop)
     n, k = jnp.broadcast_arrays(n, k)
@@ -449,9 +596,9 @@ def _elliptic_kepi_imp(n: SFloat, k: SFloat) -> tuple[SFloat, SFloat, SFloat]:
     one = jnp.ones_like(k)
     # TODO: k = 0 is found in wire loop and solenoid on axis, need better handling
     # Rf = elliprf(zero, 1 - k**2, one)
-    Rf = _elliprf_one_zero(1 - k**2, one)
+    Rf = elliprf_one_zero(1 - k**2, one)
     # Rd = elliprd(zero, 1 - k**2, one)
-    Rd = _elliprd_one_zero(1 - k**2, one)
+    Rd = elliprd_one_zero(1 - k**2, one)
     Rj = elliprj(zero, 1 - k**2, one, 1 - n)
     K = Rf
     E = Rf - k**2 / 3 * Rd
@@ -459,7 +606,6 @@ def _elliptic_kepi_imp(n: SFloat, k: SFloat) -> tuple[SFloat, SFloat, SFloat]:
     return K, E, Pi
 
 
-@jax.custom_jvp
 def elliptic_kepi(n: SFloat, k: SFloat) -> tuple[SFloat, SFloat, SFloat]:
     """Compute elliptic integrals of the first, second, and third kind (K, E, Pi)
 
@@ -476,7 +622,7 @@ def elliptic_kepi(n: SFloat, k: SFloat) -> tuple[SFloat, SFloat, SFloat]:
     return _elliptic_kepi_imp(n, k)
 
 
-@elliptic_kepi.defjvp
+@_elliptic_kepi_imp.defjvp
 def elliptic_kepi_fwd(primals, tangents):
     n, k = primals
     # "double-where trick" ensure autograd handles k = 0 and n = 0 correctly

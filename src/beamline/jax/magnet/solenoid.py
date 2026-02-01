@@ -9,7 +9,12 @@ from jax.experimental.jet import jet
 from jax.scipy.special import gamma
 from quadax import quadgk
 
-from beamline.jax.elliptic import elliptic_kepi
+from beamline.jax.elliptic import (
+    elliprd_one_zero,
+    elliprf_one_zero,
+    elliprj,
+    elliptic_kepi,
+)
 from beamline.jax.magnet.loop import WireLoop
 from beamline.jax.types import SFloat
 from beamline.units import MU0
@@ -27,16 +32,25 @@ def _auxp12(k2: SFloat, gamma: SFloat) -> tuple[SFloat, SFloat]:
     From Eqn. 4, 6
 
     Args:
-        k2: Real value in (0, 1]
-        gamma: Real value in [-1, 1)
+        k2: Real value in (0, 1], k2 = 1 corresponds to rho = 0
+        gamma: Real value in [-1, 1), gamma = -1 corresponds to rho = 0
     """
-    sqrt1mk2 = jnp.sqrt(1 - k2)  # [0, 1)
-    _1mgamma2 = 1 - gamma**2  # [0, 1]
-    K, E, Pi = elliptic_kepi(n=_1mgamma2, k=sqrt1mk2)
-    P1 = K - 2 * (K - E) / (1 - k2)
+    # sqrt1mk2 = jnp.sqrt(1 - k2)  # [0, 1)
+    # _1mgamma2 = 1 - gamma**2  # [0, 1]
+    # K, E, Pi = elliptic_kepi(n=_1mgamma2, k=sqrt1mk2)
+    # P1 = K - 2 * (K - E) / (1 - k2)
     # P2 = -gamma / _1mgamma2 * (Pi - K) - 1 / _1mgamma2 * (gamma**2 * Pi - K)
-    # Some algebra helps for the special case gamma = -1
-    P2 = (K - gamma * Pi) / (1 - gamma)
+    # Alternative formulation using Carlson integrals (more stable numerically at rho = 0)
+    # K = Rf
+    # E = Rf - (1-k2) / 3 * Rd
+    # Pi = Rf + (1 - gamma**2) / 3 * Rj
+    zero = jnp.zeros_like(k2)
+    one = jnp.ones_like(k2)
+    Rf = elliprf_one_zero(k2, one)
+    Rd = elliprd_one_zero(k2, one)
+    Rj = elliprj(zero, k2, one, gamma**2)
+    P1 = Rf - 2 / 3 * Rd
+    P2 = Rf - gamma * (1 + gamma) / 3 * Rj
     return P1, P2
 
 
@@ -136,17 +150,12 @@ class ThinShellSolenoid(eqx.Module):
             Conway https://doi.org/10.1109/20.947050
             Caciagli:2018 https://doi.org/10.1016/j.jmmm.2018.02.003
         """
-        # avoid rho=0, which causes nan in the solution and rho = R which never converges
-        eps_zero = 1e-8 * self.R  # should be smaller than threshold used in self.B
+        # avoid rho = R which never converges
         threshold_R = 1e-5 * self.R  # smaller eps = longer elliptic integral loop
         rho = jax.lax.select(
-            rho == 0.0,
-            eps_zero,
-            jax.lax.select(
-                jnp.abs(rho - self.R) < threshold_R,
-                self.R + jnp.sign(rho - self.R) * threshold_R,
-                rho,
-            ),
+            jnp.abs(rho - self.R) < threshold_R,
+            self.R + jnp.sign(rho - self.R) * threshold_R,
+            rho,
         )
         xip, xim = z + self.L / 2, z - self.L / 2
         rhopR, rhomR = rho + self.R, rho - self.R
