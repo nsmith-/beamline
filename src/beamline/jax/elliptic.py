@@ -1,5 +1,8 @@
 """Elliptic integrals
 
+This module implements Carlson's symmetric elliptic integrals R_F, R_D, R_J, R_C, and R_G
+using JAX, with custom jvp rules for automatic differentiation.
+
 References:
 https://github.com/sinaatalay/jaxellip
 https://github.com/tagordon/ellip
@@ -249,6 +252,14 @@ def _drd_dx_term2(x, y, z, rd):
     return (_elliprd_general_iter(y, z, x) - rd) / (2 * xmz)
 
 
+def _drd_dx_switch(x, y, z, rd):
+    return lax.select(
+        (x == y) & (y == z),
+        -3 / 10 / x**2 / jnp.sqrt(x),
+        lax.select(x == z, _drd_dx_term1(x, y), _drd_dx_term2(x, y, z, rd)),
+    )
+
+
 def _drd_dz_xeqz(x, y, z, rd):
     ymz = lax.select(y == z, 1e-16, y - z)
     return -9 / 16 / ymz**2 * (3 * elliprc(y, z) + jnp.sqrt(y) * (2 * y - 5 * z) / z**2)
@@ -270,16 +281,8 @@ def _elliprd_general_iter_fwd(primals, tangents):
     dx, dy, dz = tangents
     rd_xyz = _elliprd_general_iter(x, y, z)
 
-    drd_dx = lax.select(
-        (x == y) & (y == z),
-        -3 / 10 / x**2 / jnp.sqrt(x),
-        lax.select(x == z, _drd_dx_term1(x, y), _drd_dx_term2(x, y, z, rd_xyz)),
-    )
-    drd_dy = lax.select(
-        (x == y) & (y == z),
-        -3 / 10 / y**2 / jnp.sqrt(y),
-        lax.select(y == z, _drd_dx_term1(y, x), _drd_dx_term2(y, x, z, rd_xyz)),
-    )
+    drd_dx = _drd_dx_switch(x, y, z, rd_xyz)
+    drd_dy = _drd_dx_switch(y, x, z, rd_xyz)
     drd_dz = lax.select(
         (x == y) & (y == z),
         -9 / 10 / z**2 / jnp.sqrt(z),
@@ -468,14 +471,6 @@ def elliprc1p(x: SFloat) -> SFloat:
     )
 
 
-_RJState: TypeAlias = tuple[
-    SFloat, SFloat, SFloat, SFloat, SFloat, SFloat, SFloat, SFloat, SFloat
-]
-"""x, y, z, p, A, delta, Q, fmn, sum_term
-
-Q is unaltered so could be captured instead"""
-
-
 def elliprj(x: SFloat, y: SFloat, z: SFloat, p: SFloat) -> SFloat:
     r"""Carlson symmetric elliptic integral of the third kind
 
@@ -492,7 +487,19 @@ def elliprj(x: SFloat, y: SFloat, z: SFloat, p: SFloat) -> SFloat:
     Returns:
         R_J(x, y, z, p)
     """
+    return _elliprj_impl(x, y, z, p)
 
+
+_RJState: TypeAlias = tuple[
+    SFloat, SFloat, SFloat, SFloat, SFloat, SFloat, SFloat, SFloat, SFloat
+]
+"""x, y, z, p, A, delta, Q, fmn, sum_term
+
+Q is unaltered so could be captured instead"""
+
+
+@jax.custom_jvp
+def _elliprj_impl(x: SFloat, y: SFloat, z: SFloat, p: SFloat) -> SFloat:
     def cond_fun(state: _RJState):
         _, _, _, _, An, _, Q, fmn, _ = state
         return fmn * Q >= An
@@ -586,6 +593,173 @@ def elliprj(x: SFloat, y: SFloat, z: SFloat, p: SFloat) -> SFloat:
         )
     )
     return result + 6 * sum_final
+
+
+def elliprg(x: SFloat, y: SFloat, z: SFloat) -> SFloat:
+    r"""Carlson symmetric elliptic integral R_G
+
+    $$ R_G(x, y, z) = \frac{1}{4} \int_0^\infty \frac{dt}{\sqrt{(t+x)(t+y)(t+z)}} \left( \frac{x}{t+x} + \frac{y}{t+y} + \frac{z}{t+z} \right) $$
+
+    This can be computed from R_F and R_D as:
+    $$ R_G(x, y, z) = \frac{1}{2} \left( z R_F(x, y, z) - \frac{1}{3} (x-z)(y-z) R_D(x, y, z) + \sqrt{\frac{xy}{z}} \right) $$
+    where we permute z to be nonzero
+
+    ([1], Eq. 7)
+
+    Args:
+        x: Real argument (x >= 0)
+        y: Real argument (y >= 0)
+        z: Real argument (z >= 0)
+
+    Note: assumes at most one of x, y, z is zero. R_G is defined for more zeros but
+    this implementation does not cover those cases.
+
+    Returns:
+        R_G(x, y, z)
+
+    [1] https://arxiv.org/pdf/math/9409227
+    """
+    # ensure z > 0 for R_D
+    y, z = jnp.minimum(y, z), jnp.maximum(y, z)
+    return 0.5 * (
+        z * elliprf(x, y, z)
+        - (x - z) * (y - z) / 3 * elliprd(x, y, z)
+        + jnp.sqrt(x * y / z)
+    )
+
+
+def _drj_dx_term_xyp(x, y, z):
+    num = 3 * jnp.sqrt(z) * (5 * x - 2 * z) - 9 * x**2 * elliprc(z, x)
+    den = 16 * (x - z) ** 2 * x**2
+    return num / lax.select(x == z, 1.0, den)
+
+
+def _drj_dx_term_xp(x, y, z):
+    num = (
+        2 / 3 * (y + z - 2 * x) * elliprd(y, z, x)
+        + elliprf(x, y, z)
+        - jnp.sqrt(y * z / x**3)
+    )
+    den = 2 * (x - y) * (x - z)
+    return num / lax.select((x == y) | (x == z), 1.0, den)
+
+
+def _drj_dx_term_else(x, y, z, p, rj):
+    num = rj - elliprd(y, z, x)
+    den = 2 * (p - x)
+    return num / lax.select(x == p, 1.0, den)
+
+
+def _drj_dx_switch(x, y, z, p, rj):
+    # for x == 0.0, we evaluate R_C and R_D out of bounds in some branches
+    x0 = lax.select(x == 0.0, 1e-16, x)
+    return lax.select(
+        (x == y) & (y == z) & (z == p),
+        -3 / 10 / x**2 / jnp.sqrt(x),
+        lax.select(
+            (x == y) & (y == p),
+            _drj_dx_term_xyp(x0, y, z),
+            lax.select(
+                (x == z) & (z == p),
+                _drj_dx_term_xyp(x0, z, y),
+                lax.select(
+                    x == p,
+                    _drj_dx_term_xp(x0, y, z),
+                    _drj_dx_term_else(x0, y, z, p, rj),
+                ),
+            ),
+        ),
+    )
+
+
+def _drj_dp_term_2eq(p, x):
+    "p=y=z case"
+    num = -3 * (jnp.sqrt(x) * (-5 * p + 2 * x) / p**2 + 3 * elliprc(x, p))
+    den = 8 * (p - x) ** 2
+    return num / lax.select(p == x, 1.0, den)
+
+
+def _drj_dp_term_1eq(p, y, z):
+    "p=x (or p=y or p=z) case"
+    num = (
+        -(jnp.sqrt(y * z) / p ** (3 / 2))
+        + (2 * (-2 * p + y + z) * elliprd(y, z, p)) / 3
+        + elliprf(p, y, z)
+    )
+    den = (p - y) * (p - z)
+    return num / lax.select((p == y) | (p == z), 1.0, den)
+
+
+def _drj_dp_term_else(x, y, z, p, rj):
+    term1_num = 3 * (
+        jnp.sqrt(x * y * z) / p + p * elliprf(x, y, z) - 2 * elliprg(x, y, z)
+    )
+    pmx, pmy, pmz = p - x, p - y, p - z
+    term2_num = -(pmy * pmz + pmz * pmx + pmx * pmy) * rj
+    den = 2 * pmx * pmy * pmz
+    return (term1_num + term2_num) / lax.select(den == 0.0, 1.0, den)
+
+
+def _twiddling(x, y, z, p):
+    """Some bit twiddling to return values of x,y,z that are not equal to p"""
+    peqx, peqy, peqz = (
+        jnp.astype(p == x, jnp.int8),
+        jnp.astype(p == y, jnp.int8),
+        jnp.astype(p == z, jnp.int8),
+    )
+    neq = peqx + peqy + peqz
+    # for n=2 this is the odd one out
+    arg = (neq == 2) * ((peqy & peqz) * x + (peqx & peqz) * y + (peqx & peqy) * z)
+    arg = arg + (neq == 1) * (peqx * y + peqy * z + peqz * x)
+    # for n=1 grab the other unique one
+    arg2 = (neq == 1) * (peqx * z + peqy * x + peqz * y)
+    # avoid returning zeros
+    arg2 = arg2 + (neq != 1) * 1.0
+    return neq, arg, arg2
+
+
+def _drj_dp_switch(x, y, z, p, rj):
+    """
+    Piecewise[{
+            {-3/(5 p^(5/2)), p == x == y == z},
+            {(-3 ((Sqrt[x] (-5 p + 2 x))/p^2 + 3 CarlsonRC[x, p]))/(8 (p - x)^2), (p == x == y && p != z) || (p != x && p == y && y == z)},
+            {(-3 ((Sqrt[y] (-5 p + 2 y))/p^2 + 3 CarlsonRC[y, p]))/(8 (p - y)^2), p == x == z && p != y},
+            {(-((Sqrt[y] Sqrt[z])/p^(3/2)) + (2 (-2 p + y + z) CarlsonRD[y, z, p])/3 + CarlsonRF[p, y, z])/((p - y) (p - z)), p == x && p != y && p != z},
+            {(-((Sqrt[x] Sqrt[z])/p^(3/2)) + (2 (-2 p + x + z) CarlsonRD[x, z, p])/3 + CarlsonRF[p, x, z])/((p - x) (p - z)), p == y && p != x && p != z},
+            {(-((Sqrt[x] Sqrt[y])/p^(3/2)) + (2 (-2 p + x + y) CarlsonRD[x, y, p])/3 + CarlsonRF[p, x, y])/((p - x) (p - y)), p == z && p != x && p != y}
+        },
+        ((3 ((Sqrt[x] Sqrt[y] Sqrt[z])/p + p CarlsonRF[x, y, z] - 2 CarlsonRG[x, y, z]))/((p - x) (p - y) (p - z)) - ((p - x)^(-1) + (p - y)^(-1) + (p - z)^(-1)) CarlsonRJ[x, y, z, p])/2
+    ]
+    """
+    neq, arg, arg2 = _twiddling(x, y, z, p)
+    return lax.select(
+        neq == 3,
+        -3 / (5 * p**2 * jnp.sqrt(p)),
+        lax.select(
+            neq == 2,
+            _drj_dp_term_2eq(p, arg),
+            lax.select(
+                neq == 1,
+                _drj_dp_term_1eq(p, arg, arg2),
+                _drj_dp_term_else(x, y, z, p, rj),
+            ),
+        ),
+    )
+
+
+@_elliprj_impl.defjvp
+def _elliprj_impl_fwd(primals, tangents):
+    x, y, z, p = primals
+    dx, dy, dz, dp = tangents
+    rj = _elliprj_impl(x, y, z, p)
+
+    drj_dx = _drj_dx_switch(x, y, z, p, rj)
+    drj_dy = _drj_dx_switch(y, x, z, p, rj)
+    drj_dz = _drj_dx_switch(z, x, y, p, rj)
+    drj_dp = _drj_dp_switch(x, y, z, p, rj)
+
+    drj = drj_dx * dx + drj_dy * dy + drj_dz * dz + drj_dp * dp
+    return rj, drj
 
 
 @jax.custom_jvp

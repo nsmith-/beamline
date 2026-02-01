@@ -19,30 +19,33 @@ NSAMP_DERIV = 20
 
 
 def _gen_samples(case: str, n: int):
-    """Helper to generate sample points for testing special cases"""
+    """Helper to generate sample points for testing special cases
+
+    Used to test R_F(x, y, z), R_D(x, y, z), R_C(x, y), R_J(x, y, z, p)
+    Everyone is symmetric in x,y so x0 and y0 are equivalent.
+    Equally for xeqz and yeqz. We keep yeqz to combine with x0.
+    Equally for xeqp and yeqp. Since R_J is symmetric in x,y,z we don't need zeqp either.
+    """
     rng = np.random.default_rng(1234)
     x = rng.exponential(scale=1.0, size=n)
     y = rng.exponential(scale=1.0, size=n)
     z = rng.exponential(scale=1.0, size=n)
+    p = rng.exponential(scale=1.0, size=n)
     ops = case.split("_")
-    if not all(
-        op in ["x0", "y0", "z0", "xeqy", "xeqz", "yeqz", "general"] for op in ops
-    ):
-        raise ValueError(f"Unknown case: {case}")
     for op in ops:
         if op == "x0":
             x[:] = 0.0
-        elif op == "y0":
-            y[:] = 0.0
-        elif op == "z0":
-            z[:] = 0.0
         elif op == "xeqy":
             x[:] = y
-        elif op == "xeqz":
-            x[:] = z
         elif op == "yeqz":
             y[:] = z
-    return x, y, z
+        elif op == "zeqp":
+            z[:] = p
+        elif op == "general":
+            pass
+        else:
+            raise ValueError(f"Unknown case: {case}")
+    return jnp.array(x), jnp.array(y), jnp.array(z), jnp.array(p)
 
 
 def _scipy_ellip_deriv(func: Callable, argnum: int, at: tuple):
@@ -63,7 +66,7 @@ def _scipy_ellip_deriv(func: Callable, argnum: int, at: tuple):
     if not out.success:
         # TODO: investigate
         warnings.warn("derivative computation did not converge", stacklevel=1)
-        return pytest.approx(0.0, abs=1e10)
+        return None
     return pytest.approx(out.df, abs=max(out.error, 1e-13))
 
 
@@ -81,72 +84,92 @@ def test_powers(benchmark, scheme: str):
         benchmark(fun, x)
 
 
-@pytest.mark.parametrize("case", ["general", "x0", "xeqy", "xeqy_z0", "xeqy_yeqz"])
+@pytest.mark.parametrize("case", ["general", "x0", "xeqy", "x0_yeqz", "xeqy_yeqz"])
 def test_elliprf(case: str):
-    x, y, z = _gen_samples(case, n=1000)
+    x, y, z, _ = _gen_samples(case, n=1000)
     expected = nell.elliprf(x, y, z)
     actual = jax.vmap(jell.elliprf)(x, y, z)
     assert actual == pytest.approx(expected, rel=1e-15, abs=1e-15)
 
 
-@pytest.mark.parametrize("case", ["general", "x0", "xeqy", "xeqy_z0", "xeqy_yeqz"])
+@pytest.mark.parametrize("case", ["general", "x0", "xeqy", "x0_yeqz", "xeqy_yeqz"])
 def test_elliprf_deriv(case: str):
-    x, y, z = _gen_samples(case, n=100)
+    x, y, z, _ = _gen_samples(case, n=100)
     dRdx, dRdy, dRdz = jax.vmap(jax.jacfwd(jell.elliprf, argnums=(0, 1, 2)))(x, y, z)
 
+    failed_numerics = 0
     for xi, yi, zi, dRdxi, dRdyi, dRdzi in zip(x, y, z, dRdx, dRdy, dRdz, strict=True):
         dRdx_exp = _scipy_ellip_deriv(scipy.special.elliprf, 0, (xi, yi, zi))
         dRdy_exp = _scipy_ellip_deriv(scipy.special.elliprf, 1, (xi, yi, zi))
         dRdz_exp = _scipy_ellip_deriv(scipy.special.elliprf, 2, (xi, yi, zi))
+        if any(x is None for x in (dRdx_exp, dRdy_exp, dRdz_exp)):
+            failed_numerics += 1
+            continue
         assert dRdxi == dRdx_exp
         assert dRdyi == dRdy_exp
         assert dRdzi == dRdz_exp
+    if failed_numerics == len(x):
+        pytest.skip("All derivative computations failed numerically")
 
 
 @pytest.mark.parametrize(
-    "case", ["general", "x0", "xeqy", "xeqz", "xeqz_y0", "xeqy_yeqz"]
+    "case", ["general", "x0", "xeqy", "yeqz", "x0_yeqz", "xeqy_yeqz"]
 )
 def test_elliprd(case: str):
-    x, y, z = _gen_samples(case, n=1000)
+    x, y, z, _ = _gen_samples(case, n=1000)
     expected = nell.elliprd(x, y, z)
     actual = jax.vmap(jell.elliprd)(x, y, z)
     assert actual == pytest.approx(expected, rel=1e-15, abs=1e-15)
 
 
 @pytest.mark.parametrize(
-    "case", ["general", "x0", "xeqy", "xeqz", "xeqz_y0", "xeqy_yeqz"]
+    "case", ["general", "x0", "xeqy", "yeqz", "x0_yeqz", "xeqy_yeqz"]
 )
 def test_elliprd_deriv(case: str):
-    x, y, z = _gen_samples(case, n=100)
+    x, y, z, _ = _gen_samples(case, n=100)
     dRdx, dRdy, dRdz = jax.vmap(jax.jacfwd(jell.elliprd, argnums=(0, 1, 2)))(x, y, z)
 
+    failed_numerics = 0
     for xi, yi, zi, dRdxi, dRdyi, dRdzi in zip(x, y, z, dRdx, dRdy, dRdz, strict=True):
         dRdx_exp = _scipy_ellip_deriv(scipy.special.elliprd, 0, (xi, yi, zi))
         dRdy_exp = _scipy_ellip_deriv(scipy.special.elliprd, 1, (xi, yi, zi))
         dRdz_exp = _scipy_ellip_deriv(scipy.special.elliprd, 2, (xi, yi, zi))
+        if any(x is None for x in (dRdx_exp, dRdy_exp, dRdz_exp)):
+            failed_numerics += 1
+            continue
         assert dRdxi == dRdx_exp
         assert dRdyi == dRdy_exp
         assert dRdzi == dRdz_exp
+    if failed_numerics == len(x):
+        pytest.skip("All derivative computations failed numerically")
 
 
 @pytest.mark.parametrize("case", ["general", "x0", "xeqy"])
 def test_elliprc(case: str):
-    x, y, _ = _gen_samples("general", n=1000)
+    x, y, _, _ = _gen_samples("general", n=1000)
     expected = scipy.special.elliprc(x, y)
     actual = jax.vmap(jell.elliprc)(x, y)
-    assert actual == pytest.approx(expected, abs=2e-14)
+    # TODO: investigate weaker rel tolerance
+    assert actual == pytest.approx(expected, rel=2e-14, abs=1e-15)
 
 
 @pytest.mark.parametrize("case", ["general", "x0", "xeqy"])
 def test_elliprc_deriv(case: str):
-    x, y, _ = _gen_samples("general", n=100)
+    x, y, _, _ = _gen_samples("general", n=100)
     dRdx, dRdy = jax.vmap(jax.jacfwd(jell.elliprc, argnums=(0, 1)))(x, y)
 
+    failed_numerics = 0
     for xi, yi, dRdxi, dRdyi in zip(x, y, dRdx, dRdy, strict=True):
         dRdx_exp = _scipy_ellip_deriv(scipy.special.elliprc, 0, (xi, yi))
         dRdy_exp = _scipy_ellip_deriv(scipy.special.elliprc, 1, (xi, yi))
+        if any(x is None for x in (dRdx_exp, dRdy_exp)):
+            failed_numerics += 1
+            continue
         assert dRdxi == dRdx_exp
         assert dRdyi == dRdy_exp
+
+    if failed_numerics == len(x):
+        pytest.skip("All derivative computations failed numerically")
 
 
 def test_elliprc1p():
@@ -157,20 +180,63 @@ def test_elliprc1p():
     assert actual == pytest.approx(expected, abs=2e-14)
 
 
-def test_elliprj():
-    rng = np.random.default_rng(1234)
-    x = rng.exponential(scale=1.0, size=NSAMP)
-    y = rng.exponential(scale=1.0, size=NSAMP)
-    z = rng.exponential(scale=1.0, size=NSAMP)
-    p = rng.exponential(scale=1.0, size=NSAMP)
-    # add some (non-colliding) zeros
-    x[::8] = 0.0
-    y[1::8] = 0.0
-    z[2::8] = 0.0
-
+@pytest.mark.parametrize(
+    "case",
+    [
+        "general",
+        "x0",
+        "xeqy",
+        "x0_yeqz",
+        "xeqy_yeqz",
+        "zeqp",
+        "zeqp_yeqz",
+        "zeqp_yeqz_xeqy",
+    ],
+)
+def test_elliprj(case: str):
+    x, y, z, p = _gen_samples(case, n=1000)
     expected = nell.elliprj(x, y, z, p)
     actual = jax.vmap(jell.elliprj)(x, y, z, p)
-    assert actual == pytest.approx(expected, abs=2e-13)
+    # weaker due to elliprc ?
+    assert actual == pytest.approx(expected, rel=2e-14, abs=1e-15)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "general",
+        "x0",
+        "xeqy",
+        "x0_yeqz",
+        "xeqy_yeqz",
+        "zeqp",
+        "zeqp_yeqz",
+        "zeqp_yeqz_xeqy",
+    ],
+)
+def test_elliprj_deriv(case: str):
+    x, y, z, p = _gen_samples(case, n=100)
+    dRdx, dRdy, dRdz, dRdp = jax.vmap(jax.jacfwd(jell.elliprj, argnums=(0, 1, 2, 3)))(
+        x, y, z, p
+    )
+
+    failed_numerics = 0
+    for xi, yi, zi, pi, dRdxi, dRdyi, dRdzi, dRdpi in zip(
+        x, y, z, p, dRdx, dRdy, dRdz, dRdp, strict=True
+    ):
+        dRdx_exp = _scipy_ellip_deriv(scipy.special.elliprj, 0, (xi, yi, zi, pi))
+        dRdy_exp = _scipy_ellip_deriv(scipy.special.elliprj, 1, (xi, yi, zi, pi))
+        dRdz_exp = _scipy_ellip_deriv(scipy.special.elliprj, 2, (xi, yi, zi, pi))
+        dRdp_exp = _scipy_ellip_deriv(scipy.special.elliprj, 3, (xi, yi, zi, pi))
+        if any(x is None for x in (dRdx_exp, dRdy_exp, dRdz_exp, dRdp_exp)):
+            failed_numerics += 1
+            continue
+        assert dRdxi == dRdx_exp
+        assert dRdyi == dRdy_exp
+        assert dRdzi == dRdz_exp
+        assert dRdpi == dRdp_exp
+    if failed_numerics == len(x):
+        pytest.skip("All derivative computations failed numerically")
 
 
 def test_ellipk_asym(artifacts_dir):
@@ -298,3 +364,24 @@ def test_ellipkepi_deriv_zero():
     assert dKdk == 0.0
     assert dEdk == 0.0
     assert dPidk == 0.0
+
+
+def test_twiddling():
+    def twiddling(x, y, z, p):
+        neq, arg, arg2 = jell._twiddling(*jnp.array([x, y, z, p]))
+        return int(neq), float(arg), float(arg2)
+
+    assert twiddling(3.0, 3.0, 3.0, 3.0) == (3, 0.0, 1.0)
+
+    assert twiddling(1.2, 3.0, 3.0, 3.0) == (2, 1.2, 1.0)
+    assert twiddling(3.0, 1.2, 3.0, 3.0) == (2, 1.2, 1.0)
+    assert twiddling(3.0, 3.0, 1.2, 3.0) == (2, 1.2, 1.0)
+
+    assert twiddling(1.2, 2.3, 3.0, 3.0) == (1, 1.2, 2.3)
+    assert twiddling(3.0, 1.2, 2.3, 3.0) == (1, 1.2, 2.3)
+    assert twiddling(2.3, 3.0, 1.2, 3.0) == (1, 1.2, 2.3)
+    assert twiddling(1.2, 3.0, 2.3, 3.0) == (1, 2.3, 1.2)
+    assert twiddling(2.3, 1.2, 3.0, 3.0) == (1, 2.3, 1.2)
+    assert twiddling(3.0, 2.3, 1.2, 3.0) == (1, 2.3, 1.2)
+
+    assert twiddling(1.2, 2.3, 3.4, 3.0) == (0, 0.0, 1.0)
