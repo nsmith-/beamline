@@ -1,19 +1,44 @@
+from collections.abc import Callable
 from typing import Any
 
 import hepunits as u
+import jax
 import jax.numpy as jnp
 import pytest
-from diffrax import Dopri5, ODETerm, SaveAt, diffeqsolve
+from diffrax import Dopri5, ForwardMode, ODETerm, SaveAt, diffeqsolve
+from jax import Array
 from matplotlib import pyplot as plt
 
 from beamline.jax.coordinates import Cartesian3, Cartesian4, delta_phi
 from beamline.jax.emfield import SimpleEMField, particle_interaction
 from beamline.jax.kinematics import MuonState, ParticleState
+from beamline.jax.types import SFloat
 
 
 def propagate(_ct: Any, state: ParticleState, field: SimpleEMField) -> ParticleState:
     """Propagate a particle state through an electromagnetic field for use with diffrax"""
     return particle_interaction(state, field)
+
+
+def solve(
+    field: SimpleEMField,
+    start: ParticleState,
+    cts: Array,
+) -> MuonState:
+    sol = diffeqsolve(
+        terms=ODETerm(propagate),
+        solver=Dopri5(),
+        t0=cts[0],
+        t1=cts[-1],
+        dt0=1 * u.cm,
+        y0=start,
+        args=field,
+        saveat=SaveAt(ts=cts),
+        # in this case for plotting quivers we prefer forward-mode AD
+        # (more outputs than inputs)
+        adjoint=ForwardMode(),
+    )
+    return sol.ys
 
 
 @pytest.mark.parametrize(
@@ -44,17 +69,7 @@ def test_larmor_orbit(artifacts_dir, request, Bz: float, pxc: float, pzc: float)
     ct0, ct1 = 0.0, 10.0 * u.m
     cts = jnp.linspace(ct0, ct1, 30)
 
-    sol = diffeqsolve(
-        terms=ODETerm(propagate),
-        solver=Dopri5(),
-        t0=ct0,
-        t1=ct1,
-        dt0=1 * u.cm,
-        y0=start,
-        args=field,
-        saveat=SaveAt(ts=cts),
-    )
-    res: MuonState = sol.ys
+    res = solve(field, start, cts)
     res_cyl = res.kin.point.x.to_cylindrical()
     phi = res_cyl.phi
     rho = res_cyl.rho
@@ -97,3 +112,133 @@ def test_larmor_orbit(artifacts_dir, request, Bz: float, pxc: float, pzc: float)
     assert rho == pytest.approx(rho_exp, rel=2e-10)
     assert z == pytest.approx(z_exp, rel=1e-10)
     assert res_cyl.ct == pytest.approx(cts, rel=1e-10)
+
+
+def test_diff_solve(artifacts_dir, request):
+    pxc = 10.0 * u.MeV
+    pzc = 200.0 * u.MeV
+    Bz = 1.0 * u.tesla
+    larmor_radius = abs(pxc / u.c_light / Bz)
+    start = MuonState.make(
+        position=Cartesian4.make(y=larmor_radius),
+        momentum=Cartesian3.make(x=pxc, z=pzc),
+        q=1,
+    )
+    ct0, ct1 = 0.0, 4.0 * u.m
+    cts = jnp.linspace(ct0, ct1, 20)
+
+    def func(B: Cartesian3) -> MuonState:
+        field = SimpleEMField(
+            E0=Cartesian3(coords=jnp.array([0.0, 0.0, 0.0])),
+            B0=B,
+        )
+        return solve(field, start, cts)
+
+    Bstart = Cartesian3(coords=jnp.array([0.0, 0.0, Bz]))
+    path, dpath_dB = func(Bstart), jax.jacfwd(func)(Bstart)
+    """dpath_dB starts as:
+    MuonState(
+        kin=TangentVector(
+            point=Point(x=Cartesian4(coords=Cartesian3(coords=f64[10, 4, 3]))),
+            dx=Cartesian4(coords=Cartesian3(coords=f64[10, 4, 3])),
+        ),
+        q=Cartesian3(coords=f64[10, 3]),
+    )
+    We can make some utility functions to extract the components we want to plot.
+    """
+
+    def extract(dstate: MuonState, get: Callable[[Cartesian3], SFloat]) -> MuonState:
+        return jax.tree.map(
+            get,
+            dstate,
+            is_leaf=lambda x: isinstance(x, Cartesian3) and isinstance(x.coords, Array),
+        )
+
+    dpath_dBx = extract(dpath_dB, lambda c: c.x)
+    dpath_dBy = extract(dpath_dB, lambda c: c.y)
+    dpath_dBz = extract(dpath_dB, lambda c: c.z)
+
+    fig, axes = plt.subplots(2, 2, figsize=(6, 6))
+
+    axes[0, 0].set_title("d/dBx")
+    axes[0, 0].plot(
+        path.kin.point.x.x,
+        path.kin.point.x.y,
+        color="grey",
+    )
+    axes[0, 0].quiver(
+        path.kin.point.x.x,
+        path.kin.point.x.y,
+        dpath_dBx.kin.point.x.x,
+        dpath_dBx.kin.point.x.y,
+        angles="xy",
+        scale_units="xy",
+        color="C0",
+    )
+    axes[0, 0].set_xlabel("x [mm]")
+    axes[0, 0].set_ylabel("y [mm]")
+
+    axes[0, 1].set_title("d/dBy")
+    axes[0, 1].plot(
+        path.kin.point.x.x,
+        path.kin.point.x.y,
+        color="grey",
+    )
+    axes[0, 1].quiver(
+        path.kin.point.x.x,
+        path.kin.point.x.y,
+        dpath_dBy.kin.point.x.x,
+        dpath_dBy.kin.point.x.y,
+        angles="xy",
+        scale_units="xy",
+        color="C1",
+    )
+    axes[0, 1].set_xlabel("x [mm]")
+    axes[0, 1].set_ylabel("y [mm]")
+
+    axes[1, 0].set_title("d/dBz")
+    axes[1, 0].plot(
+        path.kin.point.x.x,
+        path.kin.point.x.y,
+        color="grey",
+    )
+    axes[1, 0].quiver(
+        path.kin.point.x.x,
+        path.kin.point.x.y,
+        dpath_dBz.kin.point.x.x,
+        dpath_dBz.kin.point.x.y,
+        angles="xy",
+        scale_units="xy",
+        color="C2",
+    )
+    axes[1, 0].set_xlabel("x [mm]")
+    axes[1, 0].set_ylabel("y [mm]")
+
+    axes[1, 1].plot(
+        path.kin.point.x.z,
+        path.kin.point.x.x,
+        color="grey",
+    )
+    for i, lbl, val in zip(
+        range(3),
+        ("d/dBx", "d/dBy", "d/dBz"),
+        (dpath_dBx, dpath_dBy, dpath_dBz),
+        strict=True,
+    ):
+        axes[1, 1].quiver(
+            path.kin.point.x.z,
+            path.kin.point.x.x,
+            val.kin.point.x.z,
+            val.kin.point.x.x,
+            angles="xy",
+            scale_units="xy",
+            color=f"C{i}",
+            label=lbl,
+        )
+    axes[1, 1].set_title("x-z projection")
+    axes[1, 1].set_xlabel("z [mm]")
+    axes[1, 1].set_ylabel("x [mm]")
+    axes[1, 1].legend()
+
+    fig.tight_layout()
+    fig.savefig(artifacts_dir / f"{request.node.name}.png")
