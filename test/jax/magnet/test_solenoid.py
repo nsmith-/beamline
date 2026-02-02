@@ -24,15 +24,13 @@ SOLENOID = jsol.ThinShellSolenoid(
 
 
 def _get_bfun(solenoid: jsol.ThinShellSolenoid, fun: str):
-    if fun == "Caciagli":
-        bfun = solenoid.B_Caciagli
+    if fun == "elliptic":
+        bfun = solenoid.B_elliptic
     elif fun.startswith("rhoexpansion"):
         order = int(fun.removeprefix("rhoexpansion"))
         bfun = partial(solenoid.B_rhoexpansion, order=order)
     elif fun == "quadrature":
         bfun = solenoid.B_quadloop
-    elif fun == "composite":
-        bfun = solenoid.B_composite
     elif fun == "dA":
         bfun = solenoid.B_dA
     else:
@@ -40,7 +38,7 @@ def _get_bfun(solenoid: jsol.ThinShellSolenoid, fun: str):
     return jax.jit(jnp.vectorize(bfun))
 
 
-def test_thin_shell_caciagli():
+def test_thin_shell_elliptic():
     ref = REF_SOLENOID
     solenoid = SOLENOID
 
@@ -50,7 +48,7 @@ def test_thin_shell_caciagli():
         indexing="ij",
     )
 
-    Brho, Bz = jnp.vectorize(solenoid.B_Caciagli)(rho, z)
+    Brho, Bz = jnp.vectorize(solenoid.B_elliptic)(rho, z)
     Brho_exp, Bz_exp = ref._B_Caciagli(rho, z)
 
     # actually here we're doing better for small rho than numpy
@@ -78,9 +76,9 @@ def test_thin_shell_rhoexpansion():
     [
         # Try to tighten tolerances as much as possible, so this is a good reference
         # rho expansion is very good for small rho
-        ("rhoexpansion8", "Caciagli", 0.5, 5e-7, 1e-7),
+        ("rhoexpansion8", "elliptic", 0.5, 5e-7, 1e-7),
         # but quickly becomes less accurate near R
-        ("rhoexpansion8", "Caciagli", 0.9, 0.034, 3e-3),
+        ("rhoexpansion8", "elliptic", 0.9, 0.034, 3e-3),
         ("rhoexpansion8", "quadrature", 0.5, 5e-7, 1e-7),
         # ("rhoexpansion8", "dA", 0.5, 3e-10),
     ],
@@ -122,13 +120,12 @@ def test_B_dA():
     # Brho, Bz = solenoid.B_dA(rho, z)
 
 
-@pytest.mark.parametrize("bfun", ["rhoexpansion2", "Caciagli"])
+@pytest.mark.parametrize("bfun", ["rhoexpansion2", "rhoexpansion8", "elliptic"])
 def test_thin_shell_divergence(bfun: str):
     """Test the divergence is zero in the solenoid"""
     sol = SOLENOID
 
     fun = _get_bfun(sol, bfun)
-    atol = 3e-15 if bfun == "Caciagli" else 1e-15
 
     def rhoBrho(rho, z):
         Brho, _ = fun(rho, z)
@@ -144,26 +141,28 @@ def test_thin_shell_divergence(bfun: str):
         return drhoBrho_drho / rho + dBz_dz
 
     rng_rho, rng_z = jax.random.split(jax.random.PRNGKey(1234), 2)
-    npts = 100
-    rhovals = jax.random.chisquare(rng_rho, df=2, shape=(npts,)) * sol.R / 3
+    npts = 1000
+    # stay inside solenoid (where rho expansion converges)
+    rhovals = jax.random.uniform(rng_rho, shape=(npts,), minval=0.0, maxval=sol.R)
+    rhovals.at[::10].set(0.0)  # include some on-axis points
     zvals = jax.random.uniform(
         rng_z, shape=(npts,), minval=-2 * sol.L, maxval=2 * sol.L
     )
 
-    divvals = jax.vmap(divergence)(rhovals, zvals)
-    assert divvals == pytest.approx(jnp.zeros_like(divvals), abs=atol)
+    div = jax.vmap(divergence)(rhovals, zvals)
+    div_expected = jnp.zeros_like(div)
+    assert div == pytest.approx(div_expected, rel=1e-15, abs=1e-15)
 
 
 @pytest.mark.parametrize(
     "fun",
     [
-        "Caciagli",
+        "elliptic",
         "rhoexpansion1",
         "rhoexpansion2",
         "rhoexpansion4",
         "rhoexpansion8",
         "quadrature",
-        "composite",
     ],
 )
 def test_solenoid_performance(benchmark, fun: str):
@@ -188,7 +187,7 @@ def test_solenoid_performance(benchmark, fun: str):
 def test_optimize_rho0limit(artifacts_dir):
     """How the rho -> 0 limit was optimized
 
-    As rho gets smaller, the Caciagli formula gets less accurate, with a minimum around 1e-6 in this example
+    As rho gets smaller, the elliptic formula gets less accurate, with a minimum around 1e-6 in this example
     """
 
     solenoid = SOLENOID
@@ -201,7 +200,7 @@ def test_optimize_rho0limit(artifacts_dir):
         Brho_exp, Bz_exp = jax.vmap(solenoid.B_rhoexpansion, in_axes=(None, 0))(
             rho, zpts
         )
-        Brho_cac, Bz_cac = jax.vmap(solenoid.B_Caciagli, in_axes=(None, 0))(rho, zpts)
+        Brho_cac, Bz_cac = jax.vmap(solenoid.B_elliptic, in_axes=(None, 0))(rho, zpts)
         return (
             jnp.max(jnp.abs(Bz_exp - Bz0)),
             jnp.max(jnp.abs(Brho_exp)),
@@ -225,9 +224,9 @@ def test_optimize_rho0limit(artifacts_dir):
         rhovals / solenoid.R, Brho_exp, color="C1", ls="--", label="|Brho expansion|"
     )
     ax.plot(
-        rhovals / solenoid.R, dBz_cac, color="C0", label="|Bz Caciagli - Bz on-axis|"
+        rhovals / solenoid.R, dBz_cac, color="C0", label="|Bz elliptic - Bz on-axis|"
     )
-    ax.plot(rhovals / solenoid.R, Brho_cac, color="C1", label="|Brho Caciagli|")
+    ax.plot(rhovals / solenoid.R, Brho_cac, color="C1", label="|Brho elliptic|")
     ax.axhline(Bz0_cac, color="C0", ls=":", label="|Bz diff @rho=0|")
     ax.axhline(Brho0_cac, color="C1", ls=":", label=f"|Brho={Brho0_cac} @rho=0|")
     ax.set_xscale("log")

@@ -29,21 +29,13 @@ def _hypot_ratio(x: SFloat, y: SFloat) -> SFloat:
 def _auxp12(k2: SFloat, gamma: SFloat) -> tuple[SFloat, SFloat]:
     """Auxiliary functions for implementing 10.1109/20.947050
 
-    From Eqn. 4, 6
+    From Eqn. 4, 6, alternatively formulated using Carlson integrals
+    for better numerical stability near rho = 0.
 
     Args:
         k2: Real value in (0, 1], k2 = 1 corresponds to rho = 0
         gamma: Real value in [-1, 1), gamma = -1 corresponds to rho = 0
     """
-    # sqrt1mk2 = jnp.sqrt(1 - k2)  # [0, 1)
-    # _1mgamma2 = 1 - gamma**2  # [0, 1]
-    # K, E, Pi = elliptic_kepi(n=_1mgamma2, k=sqrt1mk2)
-    # P1 = K - 2 * (K - E) / (1 - k2)
-    # P2 = -gamma / _1mgamma2 * (Pi - K) - 1 / _1mgamma2 * (gamma**2 * Pi - K)
-    # Alternative formulation using Carlson integrals (more stable numerically at rho = 0)
-    # K = Rf
-    # E = Rf - (1-k2) / 3 * Rd
-    # Pi = Rf + (1 - gamma**2) / 3 * Rj
     zero = jnp.zeros_like(k2)
     one = jnp.ones_like(k2)
     Rf = elliprf_one_zero(k2, one)
@@ -114,6 +106,7 @@ class ThinShellSolenoid(eqx.Module):
         """Vector potential A_phi at (rho, z)
 
         Following Wikipedia"""
+        raise NotImplementedError("Not yet tested")
         xip, xim = z + self.L / 2, z - self.L / 2
         rhopR = rho + self.R
         fourRrho = 4 * self.R * rho
@@ -138,14 +131,13 @@ class ThinShellSolenoid(eqx.Module):
         Bz = dA_drho + A / rho
         return Brho, Bz
 
-    def B_Caciagli(self, rho: SFloat, z: SFloat) -> tuple[SFloat, SFloat]:
+    def B_elliptic(self, rho: SFloat, z: SFloat) -> tuple[SFloat, SFloat]:
         """Return the rho and z component of the magnetic field
 
-        Using Caciagli Eqn. 3-6
-        Note this solution is nan for rho=0
+        Using Caciagli Eqn. 3-6, massaged to avoid singularities, and using
+        Carlson elliptic integrals for numerical stability.
 
         References:
-
             Callaghan:1960 https://ntrs.nasa.gov/citations/19980227402
             Conway https://doi.org/10.1109/20.947050
             Caciagli:2018 https://doi.org/10.1016/j.jmmm.2018.02.003
@@ -181,17 +173,3 @@ class ThinShellSolenoid(eqx.Module):
         Brho, _ = quadgk(quadfun_rho, bounds)
         Bz, _ = quadgk(quadfun_z, bounds)
         return self.jphi * Brho, self.jphi * Bz
-
-    def B_composite(self, rho: SFloat, z: SFloat) -> tuple[SFloat, SFloat]:
-        """Return the rho and z component of the magnetic field
-
-        Uses both a closed-form solution (Caciagli) and a series expansion
-        in rho around the on-axis field, as the derivative of the closed-form solution
-        becomes a bit inaccurate for small rho.
-        """
-        rel = 1e-7  # optimized in test_optimize_rho0limit
-        Brho_lo, Bz_lo = self.B_rhoexpansion(rho, z, order=2)
-        Brho_hi, Bz_hi = self.B_Caciagli(rho, z)
-        Brho = jax.lax.select(rho < rel * self.R, Brho_lo, Brho_hi)
-        Bz = jax.lax.select(rho < rel * self.R, Bz_lo, Bz_hi)
-        return Brho, Bz

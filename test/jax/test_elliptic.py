@@ -65,7 +65,7 @@ def _scipy_ellip_deriv(func: Callable, argnum: int, at: tuple):
     )
     if not out.success:
         # TODO: investigate
-        warnings.warn("derivative computation did not converge", stacklevel=1)
+        warnings.warn("numeric derivative computation did not converge", stacklevel=1)
         return None
     return pytest.approx(out.df, abs=max(out.error, 1e-13))
 
