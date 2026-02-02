@@ -28,7 +28,11 @@ class ParticleState(eqx.Module):
     @property
     @abstractmethod
     def mass(self) -> SFloat:
-        """Mass-energy of the particle [MeV]"""
+        """Mass-energy of the particle [MeV]
+
+        TODO: consider returning mass in MeV/c^2
+        Can add rest_energy property if needed
+        """
 
     @property
     @abstractmethod
@@ -36,7 +40,7 @@ class ParticleState(eqx.Module):
         """Charge of the particle"""
 
     @abstractmethod
-    def with_kinematics(self, kin: TangentVector[Cartesian4]) -> ParticleState:
+    def build_tangent(self, kin: TangentVector[Cartesian4]) -> ParticleState:
         """Return a the particle state structure with specified kinematics
 
         This is also an opportunity to specify any other flows. Anything that is not
@@ -45,7 +49,7 @@ class ParticleState(eqx.Module):
 
     def gamma(self) -> SFloat:
         """Compute the Lorentz factor gamma"""
-        E = self.kin.dx.coords[3]
+        E = self.kin.dx.ct
         # return E / abs(self.kin.dx)
         return E / self.mass
 
@@ -64,7 +68,7 @@ class MuonState(ParticleState):
     def charge(self) -> SFloat:
         return self.q * MUON_CHARGE
 
-    def with_kinematics(self, kin: TangentVector[Cartesian4]) -> MuonState:
+    def build_tangent(self, kin: TangentVector[Cartesian4]) -> MuonState:
         return MuonState(kin=kin, q=0)
 
     @classmethod

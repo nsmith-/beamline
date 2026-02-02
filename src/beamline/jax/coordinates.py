@@ -1,4 +1,10 @@
-"""Coordinate systems implemented in equinox"""
+"""Coordinate systems implemented in equinox
+
+Note: we try to implement everything in a broadcast-friendly way, so all
+coordinates are arrays of shape (..., N), where N is the dimension of the
+coordinate system (3 for spatial, 4 for spacetime). The leading dimensions
+are for broadcasting over multiple points/vectors.
+"""
 
 from __future__ import annotations
 
@@ -49,7 +55,53 @@ class Cartesian(CoordinateChart):
         return self
 
 
-class Cylindric3(Cylindric):
+class XYMixin:
+    coords: Vec3 | Vec4
+
+    @property
+    def x(self) -> SFloat:
+        return self.coords[..., 0]
+
+    @property
+    def y(self) -> SFloat:
+        return self.coords[..., 1]
+
+
+class PolarMixin:
+    coords: Vec3 | Vec4
+
+    @property
+    def rho(self) -> SFloat:
+        return self.coords[..., 0]
+
+    @property
+    def phi(self) -> SFloat:
+        return self.coords[..., 1]
+
+
+class ZMixin:
+    coords: Vec3 | Vec4
+
+    @property
+    def z(self) -> SFloat:
+        return self.coords[..., 2]
+
+
+class TimeMixin:
+    coords: Vec4
+
+    @property
+    def ct(self) -> SFloat:
+        return self.coords[..., 3]
+
+
+def delta_phi(phi1: SFloat, phi2: SFloat) -> SFloat:
+    """Compute (phi1-phi2) wrapped to [-pi, pi)"""
+    dphi = phi1 - phi2
+    return (dphi + jnp.pi) % (2 * jnp.pi) - jnp.pi
+
+
+class Cylindric3(Cylindric, PolarMixin, ZMixin):
     coords: Vec3
     """Cylindrical coordinates (rho, phi, z) [mm]"""
 
@@ -58,52 +110,49 @@ class Cylindric3(Cylindric):
         cls, *, rho: SFloat = 0.0, phi: SFloat = 0.0, z: SFloat = 0.0
     ) -> Cylindric3:
         """Create Cylindric3 from individual components"""
-        return cls(coords=jnp.array([rho, phi, z]))
+        return cls(coords=jnp.stack([rho, phi, z], axis=-1))
 
     def to_cartesian(self) -> Cartesian3:
-        rho, phi, z = self.coords
-        x = rho * jnp.cos(phi)
-        y = rho * jnp.sin(phi)
-        return Cartesian3(coords=jnp.array([x, y, z]))
+        x = self.rho * jnp.cos(self.phi)
+        y = self.rho * jnp.sin(self.phi)
+        return Cartesian3(coords=jnp.stack([x, y, self.z], axis=-1))
 
     def __abs__(self) -> SFloat:
-        rho, _, z = self.coords
-        return jnp.sqrt(rho**2 + z**2)
+        return jnp.sqrt(self.rho**2 + self.z**2)
 
     def differential(self) -> Vec3:
-        return jnp.array([1.0, self.coords[0], 1.0])
+        # drho, rho dphi, dz
+        return jnp.ones_like(self.coords).at[..., 1].set(self.rho)
 
     def volume_element(self) -> SFloat:
-        return self.coords[0]
+        return self.rho
 
 
-class Cartesian3(Cartesian):
+class Cartesian3(Cartesian, XYMixin, ZMixin):
     coords: Vec3
     """Cartesian coordinates (x, y, z) [mm]"""
 
     @classmethod
     def make(cls, *, x: SFloat = 0.0, y: SFloat = 0.0, z: SFloat = 0.0) -> Cartesian3:
         """Create Cartesian3 from individual components"""
-        return cls(coords=jnp.array([x, y, z]))
+        return cls(coords=jnp.stack([x, y, z], axis=-1))
 
     def to_cylindrical(self) -> Cylindric3:
-        x, y, z = self.coords
-        rho = jnp.hypot(x, y)
-        phi = jnp.arctan2(y, x)
-        return Cylindric3(coords=jnp.array([rho, phi, z]))
+        rho = jnp.hypot(self.x, self.y)
+        phi = jnp.arctan2(self.y, self.x)
+        return Cylindric3(coords=jnp.stack([rho, phi, self.z], axis=-1))
 
     def __abs__(self) -> SFloat:
-        x, y, z = self.coords
-        return jnp.sqrt(x**2 + y**2 + z**2)
+        return jnp.sqrt(self.x**2 + self.y**2 + self.z**2)
 
     def differential(self) -> Vec3:
-        return jnp.ones(3)
+        return jnp.ones_like(self.coords)
 
     def volume_element(self) -> SFloat:
-        return 1.0
+        return jnp.ones_like(self.x)
 
 
-class Cylindric4(Cylindric):
+class Cylindric4(Cylindric, PolarMixin, ZMixin, TimeMixin):
     coords: Vec4
     """Cylindrical coordinates (rho, phi, z, ct) [mm]"""
 
@@ -112,27 +161,25 @@ class Cylindric4(Cylindric):
         cls, *, rho: SFloat = 0.0, phi: SFloat = 0.0, z: SFloat = 0.0, ct: SFloat = 0.0
     ) -> Cylindric4:
         """Create Cylindric4 from individual components"""
-        return cls(coords=jnp.array([rho, phi, z, ct]))
+        return cls(coords=jnp.stack([rho, phi, z, ct], axis=-1))
 
     def to_cartesian(self) -> Cartesian4:
-        rho, phi, z, ct = self.coords
-        x = rho * jnp.cos(phi)
-        y = rho * jnp.sin(phi)
-        return Cartesian4(coords=jnp.array([x, y, z, ct]))
+        x = self.rho * jnp.cos(self.phi)
+        y = self.rho * jnp.sin(self.phi)
+        return Cartesian4(coords=jnp.stack([x, y, self.z, self.ct], axis=-1))
 
     def __abs__(self) -> SFloat:
-        rho, _, z, ct = self.coords
-        return jnp.sqrt(ct**2 - rho**2 - z**2)
+        return jnp.sqrt(self.ct**2 - self.rho**2 - self.z**2)
 
     def differential(self) -> Vec4:
         # TODO: correct for metric?
-        return jnp.array([1.0, self.coords[0], 1.0, 1.0])
+        return jnp.ones_like(self.coords).at[..., 1].set(self.rho)
 
     def volume_element(self) -> SFloat:
-        return self.coords[0]
+        return self.rho
 
 
-class Cartesian4(Cartesian):
+class Cartesian4(Cartesian, XYMixin, ZMixin, TimeMixin):
     coords: Vec4
     """Cartesian coordinates (x, y, z, ct) [mm]"""
 
@@ -153,27 +200,26 @@ class Cartesian4(Cartesian):
             ct = jnp.sqrt(x**2 + y**2 + z**2 + ctau**2)
         elif ct is None:
             ct = 0.0
-        return cls(coords=jnp.array([x, y, z, ct]))
+        return cls(coords=jnp.stack([x, y, z, ct], axis=-1))
 
     def to_cylindrical(self) -> Cylindric4:
-        x, y, z, ct = self.coords
-        rho = jnp.hypot(x, y)
-        phi = jnp.arctan2(y, x)
-        return Cylindric4(coords=jnp.array([rho, phi, z, ct]))
+        rho = jnp.hypot(self.x, self.y)
+        phi = jnp.arctan2(self.y, self.x)
+        return Cylindric4(coords=jnp.stack([rho, phi, self.z, self.ct], axis=-1))
 
     def to_cartesian3(self) -> Cartesian3:
-        return Cartesian3(coords=self.coords[:3])
+        return Cartesian3(coords=self.coords[..., :3])
 
     def __abs__(self) -> SFloat:
         metric = jnp.array([-1.0, -1.0, -1.0, 1.0])
-        return jnp.sqrt(jnp.sum(metric * self.coords**2))
+        return jnp.sqrt(jnp.sum(metric * self.coords**2, axis=-1))
 
     def differential(self) -> Vec4:
         # TODO: correct for metric?
-        return jnp.ones(4)
+        return jnp.ones_like(self.coords)
 
     def volume_element(self) -> SFloat:
-        return 1.0
+        return jnp.ones_like(self.x)
 
 
 class Point[T: CoordinateChart](eqx.Module):

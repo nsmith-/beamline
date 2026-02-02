@@ -21,14 +21,12 @@ def test_convert_point():
 
 
 def potential(p: Point[Cartesian3]) -> SFloat:
-    x, y, z = p.x.coords
-    r = jnp.sqrt(x**2 + y**2 + z**2)
+    r = jnp.sqrt(p.x.x**2 + p.x.y**2 + p.x.z**2)
     return 1 / r
 
 
 def potentialc(p: Point[Cylindric3]) -> SFloat:
-    rho, _, z = p.x.coords
-    r = jnp.sqrt(rho**2 + z**2)
+    r = jnp.sqrt(p.x.rho**2 + p.x.z**2)
     return 1 / r
 
 
@@ -54,7 +52,7 @@ def test_grad():
 
     rng = jax.random.PRNGKey(1234)
     coords = jax.random.uniform(rng, shape=(1000, 3), minval=-5.0, maxval=5.0)
-    coords.at[::5, :2].set(0.0)  # include some on-axis points
+    coords.at[..., :2].set(0.0)  # include some on-axis points
     cylval, cartval = test_roundtrip(coords)
     assert cylval == pytest.approx(cartval, rel=1e-12)
 

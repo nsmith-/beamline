@@ -17,26 +17,40 @@ class EMTensorField(eqx.Module):
     def field_strength(
         self, point: Point[Cartesian4]
     ) -> tuple[TangentVector[Cartesian3], TangentVector[Cartesian3]]:
-        """Electric field in [MeV/e/mm] and Magnetic field in [MeV*ns/e/mm^2]"""
+        """Field strength tensor components at a given point
+
+        Args:
+            point: Point in spacetime where the field is evaluated [mm]
+
+        Returns:
+            E, B: Electric and Magnetic field components at the given point
+                Electric field in [MeV/e/mm] (i.e. gigavolt/m)
+                Magnetic field in [MeV*ns/e/mm^2] (i.e. kilotesla)
+        """
 
     def __call__(self, vec: TangentVector[Cartesian4]) -> TangentVector[Cartesian4]:
         """Return the field tensor contracted with a tangent vector at a point
 
-        The result is a tangent vector at the same point.
+        The result is a tangent vector at the same point. Formally this should return
+        a covector, but we raise the index using the Minkowski metric.
 
-        Formally this should return a covector, but we raise the index using the Minkowski metric
+        Args:
+            vec: Tangent four-momentum (i.e. dx is scaled by mass) [MeV]
+
+        Returns:
+            Change in [MeV/ns * MeV/e]. Scale by q/mc^2 to get dpc/dtau.
         """
         E, B = self.field_strength(vec.point)
-        Etmp = E.dx.coords / u.c_light_sq
-        Btmp = B.dx.coords
-        p = vec.dx.coords
-        E = Etmp @ p[:3]
+        Etmp = E.dx.coords
+        Btmp = B.dx.coords * u.c_light
+        p = vec.dx.coords * u.c_light
+        Egy = Etmp @ p[:3]
         pxc = Etmp[0] * p[3] + Btmp[2] * p[1] - Btmp[1] * p[2]
         pyc = Etmp[1] * p[3] - Btmp[2] * p[0] + Btmp[0] * p[2]
         pzc = Etmp[2] * p[3] + Btmp[1] * p[0] - Btmp[0] * p[1]
         return TangentVector(
             point=vec.point,
-            dx=Cartesian4(coords=jnp.array([pxc, pyc, pzc, E])),
+            dx=Cartesian4(coords=jnp.array([pxc, pyc, pzc, Egy])),
         )
 
     def __add__(self, other: EMTensorField) -> EMTensorField:
@@ -100,13 +114,19 @@ def particle_interaction(
     with respect to frame time.
 
     TODO: other independent variables (proper time, path length, etc.)
+        (this could go here as a parameter, a new function, or be part of state.build_tangent)
     TODO: verlet integration / symplectic integrators ?
     """
-    dposition_dct = state.kin.dx.coords / state.kin.dx.coords[3]
-    dmomentum_dctau = (state.charge / state.mass) * field(state.kin).dx.coords
-    dtau_dt = state.gamma()
+    # unitless in this convention
+    dposition_dct = state.kin.dx.coords / state.kin.dx.ct
+    # Unit: [MeV/mm]
+    # Note: state.mass is in MeV
+    dmomentum_dctau = (state.charge / state.mass / u.c_light) * field(
+        state.kin
+    ).dx.coords
+    dt_dtau = state.gamma()
     dkin = TangentVector(
         point=Point(x=Cartesian4(dposition_dct)),
-        dx=Cartesian4(coords=dmomentum_dctau / dtau_dt),
+        dx=Cartesian4(coords=dmomentum_dctau / dt_dtau),
     )
-    return state.with_kinematics(dkin)
+    return state.build_tangent(dkin)
