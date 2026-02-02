@@ -5,12 +5,9 @@ import numpy as np
 import vector
 
 from beamline.numpy.emfield import EMTensorField
-from beamline.units import to_clhep, ureg
+from beamline.units import MUON_CHARGE, MUON_MASS
 
 pytree = vector.register_pytree()
-
-MUON_MASS: float = to_clhep(ureg.muon_mass)
-MUON_CHARGE: float = to_clhep(ureg.elementary_charge)
 
 
 def polar_tangents(

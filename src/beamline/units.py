@@ -28,5 +28,9 @@ ureg.define("pion_mass = 139.57039 * MeV / speed_of_light**2")
 
 MU0 = to_clhep(1 * ureg.vacuum_permeability)
 """Vacuum permeability in CLHEP units"""
+MUON_CHARGE: float = to_clhep(ureg.elementary_charge)
+"""Muon charge in CLHEP units [e]"""
+MUON_MASS: float = to_clhep(ureg.muon_mass)
+"""Muon mass in CLHEP units [MeV * ns^2 / mm^2]"""
 
 __all__ = ["MU0", "check_dimensionality", "from_clhep", "to_clhep", "ureg"]

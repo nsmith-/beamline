@@ -8,7 +8,7 @@ name = "beamline"
 authors = [{ name = "Nick Smith", email = "nick.smith@cern.ch" }]
 description = "A beamline simulator"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 classifiers = [
   "Development Status :: 1 - Planning",
   "Intended Audience :: Science/Research",
