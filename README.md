@@ -2,44 +2,21 @@
 
 A beamline simulator for particle physics applications with support for both NumPy and JAX backends.
 
-## Project Structure
+## Features
 
-```
-beamline/
-├── src/beamline/          # Main package source code
-│   ├── units.py           # Physical units handling with Pint and HEPUnits
-│   ├── numpy/             # NumPy-based implementations
-│   │   ├── bessel.py      # Bessel function implementations
-│   │   ├── convolve.py    # Convolution operations
-│   │   ├── elliptic.py    # Elliptic integrals
-│   │   ├── emfield.py     # Electromagnetic field definitions
-│   │   ├── integrate.py   # Integration utilities
-│   │   ├── kinematics.py  # Particle kinematics and state
-│   │   ├── material.py    # Material properties
-│   │   ├── multipole.py   # Multipole field expansions
-│   │   ├── pillbox.py     # Pillbox cavity simulations
-│   │   └── solenoid.py    # Solenoid magnet models
-│   └── jax/               # JAX-based implementations (optional, differentiable)
-│       ├── bessel.py      # JAX Bessel functions
-│       ├── elliptic.py    # JAX elliptic integrals
-│       ├── integrators.py # JAX integration methods
-│       ├── stencils.py    # Finite difference stencils
-│       ├── types.py       # JAX type definitions
-│       └── magnet/        # Magnet models
-│           ├── loop.py    # Current loop models
-│           └── solenoid.py # JAX solenoid implementations
-└── test/                  # Test suite
-    ├── numpy/             # Tests for NumPy implementations
-    ├── jax/               # Tests for JAX implementations
-    └── test_units.py      # Tests for unit handling
-
-```
-
-### Core Components
-
-- **units.py**: Defines unit handling using Pint with HEP-specific units from HEPUnits, including conversions to/from CLHEP units
-- **numpy/**: Standard NumPy implementations for electromagnetic field calculations, particle kinematics, and beamline element simulations
-- **jax/** (optional): JAX-based implementations that support automatic differentiation and JIT compilation for optimization and sensitivity studies
+- **Physical units handling**: Integration with Pint and HEPUnits for proper dimensional analysis, including conversions to/from CLHEP units
+- **Bessel function implementations**: Special functions for field calculations
+- **Convolution operations**: Signal processing utilities
+- **Elliptic integrals**: Mathematical functions for electromagnetic field calculations
+- **Electromagnetic field definitions**: Field strength and tensor representations
+- **Integration utilities**: Numerical integration methods
+- **Particle kinematics and state**: Relativistic particle dynamics
+- **Material properties**: Material interaction models
+- **Multipole field expansions**: Magnetic field multipole representations
+- **Pillbox cavity simulations**: RF cavity models
+- **Solenoid magnet models**: Detailed solenoid field calculations
+- **Finite difference stencils**: Numerical differentiation methods
+- **Current loop models**: Electromagnetic field from current loops
 
 ### Backend Implementations
 
