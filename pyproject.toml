@@ -87,3 +87,12 @@ ignore = [
   "T20",  # print statements in notebooks are fine
   "I001", # isort issues in notebooks are fine
 ]
+
+[tool.pytest]
+markers = [
+  "extended: mark test as extended (not run by default, e.g. because it is slow)",
+]
+addopts = [
+  "--benchmark-autosave",
+  "-m 'not extended'",
+]
