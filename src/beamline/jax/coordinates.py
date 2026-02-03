@@ -353,7 +353,9 @@ class Transform(eqx.Module):
 
     This is a rigid transformation used to wrap fields defined in local
     coordinates to global coordinates. It is 4-dimensional to allow for
-    time translations, and in principle also Lorentz boosts.
+    time translations, and in principle also Lorentz boosts, though for
+    the latter, a proper separation between covariant and contravariant
+    tensors is required.
 
     Given a field f'(x', ...) defined in local coordinates x' = T x, this
     defines the transformed field via
@@ -377,9 +379,9 @@ class Transform(eqx.Module):
         # Rodrigues' rotation formula on a set of basis vectors
         across = jnp.array(
             [
-                [0.0, axis.z, -axis.y],
-                [-axis.z, 0.0, axis.x],
-                [axis.y, -axis.x, 0.0],
+                [0.0, -axis.z, axis.y],
+                [axis.z, 0.0, -axis.x],
+                [-axis.y, axis.x, 0.0],
             ]
         ) / abs(axis)
         rot_matrix = (

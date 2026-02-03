@@ -1,9 +1,12 @@
 from collections.abc import Callable
 from functools import partial
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
 import pytest
+from matplotlib.animation import FuncAnimation
 
 from beamline.jax.coordinates import (
     Cartesian3,
@@ -12,6 +15,7 @@ from beamline.jax.coordinates import (
     DivergenceField,
     GradientField,
     Point,
+    Tangent,
     Transform,
     TransformOneForm,
 )
@@ -90,6 +94,91 @@ def test_div():
     assert div_cyl == pytest.approx(jnp.zeros_like(div_cart), abs=1e-14)
 
 
+def test_transform_rotate():
+    transform = Transform.make_axis_angle(
+        axis=Cartesian3.make(z=1.0),
+        angle=jnp.pi / 2,
+        translation=Cartesian4.make(),
+    )
+
+    vec = Tangent(
+        point=Point(x=Cartesian4.make()),
+        dx=Cartesian4.make(y=1.0),
+    )
+    vec_loc = transform.tangent_to_local(vec)
+    vec_loc_exp = Tangent(
+        point=Point(x=Cartesian4.make()),
+        dx=Cartesian4.make(x=1.0),
+    )
+    assert vec_loc.point.x.coords == pytest.approx(
+        vec_loc_exp.point.x.coords, rel=1e-12
+    )
+    assert vec_loc.dx.coords == pytest.approx(vec_loc_exp.dx.coords, rel=1e-12)
+
+    vec = Tangent(
+        point=Point(x=Cartesian4.make()),
+        dx=Cartesian4.make(z=1.0),
+    )
+    vec_loc = transform.tangent_to_local(vec)
+    vec_loc_exp = Tangent(
+        point=Point(x=Cartesian4.make()),
+        dx=Cartesian4.make(z=1.0),
+    )
+    assert vec_loc.point.x.coords == pytest.approx(
+        vec_loc_exp.point.x.coords, rel=1e-12
+    )
+    assert vec_loc.dx.coords == pytest.approx(vec_loc_exp.dx.coords, rel=1e-12)
+
+    vec = Tangent(
+        point=Point(x=Cartesian4.make(z=1.0)),
+        dx=Cartesian4.make(y=1.0),
+    )
+    vec_loc = transform.tangent_to_local(vec)
+    vec_loc_exp = Tangent(
+        point=Point(x=Cartesian4.make(z=1.0)),
+        dx=Cartesian4.make(x=1.0),
+    )
+    assert vec_loc.point.x.coords == pytest.approx(
+        vec_loc_exp.point.x.coords, rel=1e-12
+    )
+    assert vec_loc.dx.coords == pytest.approx(vec_loc_exp.dx.coords, rel=1e-12)
+
+    vec = Tangent(
+        point=Point(x=Cartesian4.make(x=1.0)),
+        dx=Cartesian4.make(y=1.0),
+    )
+    vec_loc = transform.tangent_to_local(vec)
+    vec_loc_exp = Tangent(
+        point=Point(x=Cartesian4.make(y=-1.0)),
+        dx=Cartesian4.make(x=1.0),
+    )
+    assert vec_loc.point.x.coords == pytest.approx(
+        vec_loc_exp.point.x.coords, rel=1e-12
+    )
+    assert vec_loc.dx.coords == pytest.approx(vec_loc_exp.dx.coords, rel=1e-12)
+
+
+def test_transform_both():
+    transform = Transform.make_axis_angle(
+        axis=Cartesian3.make(z=1.0),
+        angle=jnp.pi / 2,
+        translation=Cartesian4.make(x=3.0),
+    )
+    vec = Tangent(
+        point=Point(x=Cartesian4.make(x=1.0)),
+        dx=Cartesian4.make(y=1.0),
+    )
+    vec_loc = transform.tangent_to_local(vec)
+    vec_loc_exp = Tangent(
+        point=Point(x=Cartesian4.make(x=0.0, y=2.0)),
+        dx=Cartesian4.make(x=1.0),
+    )
+    assert vec_loc.point.x.coords == pytest.approx(
+        vec_loc_exp.point.x.coords, rel=1e-12
+    )
+    assert vec_loc.dx.coords == pytest.approx(vec_loc_exp.dx.coords, rel=1e-12)
+
+
 def monopole_potential(
     origin: Point[Cartesian4], moment: Cartesian3, p: Point[Cartesian4]
 ) -> SFloat:
@@ -115,7 +204,7 @@ FType = Callable[[Point[Cartesian4], Cartesian3, Point[Cartesian4]], SFloat]
 
 
 @pytest.mark.parametrize("func", [monopole_potential, dipole_potential])
-def test_transform(func: FType):
+def test_transform_tangents(func: FType):
     angle = jnp.pi / 3
     origin = Point(x=Cartesian4.make(x=1.0, y=-1.0, z=2.0))
     direction = Cartesian3.make(x=1.0, y=0.0, z=0.0)
@@ -123,7 +212,7 @@ def test_transform(func: FType):
 
     transform = Transform.make_axis_angle(
         axis=Cartesian3.make(x=0.0, y=0.0, z=1.0),
-        angle=-angle,
+        angle=angle,
         translation=origin.x,
     )
     field_local = GradientField(
@@ -146,3 +235,72 @@ def test_transform(func: FType):
         val_expected.point.x.coords, rel=1e-12
     )
     assert val_global.dx.coords == pytest.approx(val_expected.dx.coords, rel=1e-12)
+
+
+def test_pretty_dipole(artifacts_dir: Path, request):
+    """Generate a plot of the dipole potential and its gradient field"""
+
+    origin = Point(x=Cartesian4.make())
+    moment = Cartesian3.make(x=0.2, y=1.0, z=1.0)
+
+    local_field = GradientField(field=partial(dipole_potential, origin, moment))
+
+    x = jnp.linspace(-2.0, 2.0, 30)
+    z = jnp.linspace(-2.0, 2.0, 30)
+    X, Z = jnp.meshgrid(x, z)
+    X = X.ravel()
+    Z = Z.ravel()
+    Y = jnp.zeros_like(X)
+    cut = jnp.hypot(X, Z) > 0.3
+    X = X[cut]
+    Y = Y[cut]
+    Z = Z[cut]
+
+    @jax.jit
+    def get_data(angle):
+        @jax.vmap
+        def fieldvals(x, y, z):
+            global_field = TransformOneForm(
+                transform=Transform.make_axis_angle(
+                    axis=Cartesian3.make(x=1.0),
+                    angle=angle,
+                    translation=Cartesian4.make(),
+                ),
+                field=local_field,
+            )
+            return global_field(Point(x=Cartesian4.make(x=x, y=y, z=z)))
+
+        vals = fieldvals(X, Y, Z)
+        dx = vals.dx.x
+        dz = vals.dx.z
+        norm = jnp.sqrt(jnp.sum(vals.dx.coords[..., :3] ** 2, axis=-1))
+        # ad-hoc sqrt rescaling to make arrows more visible
+        dx = dx / jnp.sqrt(norm)
+        dz = dz / jnp.sqrt(norm)
+        return dx, dz
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+
+    ax.set_title("Dipole Potential Gradient Field")
+    ax.set_xlabel("x")
+    ax.set_ylabel("z")
+    dx, dz = get_data(0.0)
+    quiver = ax.quiver(
+        X, Z, dx, dz, angles="xy", scale_units="xy", pivot="middle", scale=1e1
+    )
+
+    nframes = 40
+
+    def update(frame: int):
+        angle = frame * (2 * jnp.pi / nframes)
+        dx, dz = get_data(angle)
+        quiver.set_UVC(dx, dz)
+        return (quiver,)
+
+    anim = FuncAnimation(
+        fig,
+        update,
+        frames=nframes,
+        blit=True,
+    )
+    anim.save(artifacts_dir / f"{request.node.name}.gif", writer="pillow", fps=10)
