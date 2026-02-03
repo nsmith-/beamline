@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from collections.abc import Callable
 
 import equinox as eqx
 import hepunits as u
 import jax.numpy as jnp
 
-from beamline.jax.coordinates import Cartesian3, Cartesian4, Point, TangentVector
+from beamline.jax.coordinates import Cartesian3, Cartesian4, Point, Tangent, Transform
 from beamline.jax.kinematics import ParticleState
 
 
@@ -16,7 +17,7 @@ class EMTensorField(eqx.Module):
     @abstractmethod
     def field_strength(
         self, point: Point[Cartesian4]
-    ) -> tuple[TangentVector[Cartesian3], TangentVector[Cartesian3]]:
+    ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
         """Field strength tensor components at a given point
 
         Args:
@@ -28,7 +29,7 @@ class EMTensorField(eqx.Module):
                 Magnetic field in [MeV*ns/e/mm^2] (i.e. kilotesla)
         """
 
-    def __call__(self, vec: TangentVector[Cartesian4]) -> TangentVector[Cartesian4]:
+    def __call__(self, vec: Tangent[Cartesian4]) -> Tangent[Cartesian4]:
         """Return the field tensor contracted with a tangent vector at a point
 
         The result is a tangent vector at the same point. Formally this should return
@@ -48,7 +49,7 @@ class EMTensorField(eqx.Module):
         pxc = Etmp[0] * p[3] + Btmp[2] * p[1] - Btmp[1] * p[2]
         pyc = Etmp[1] * p[3] - Btmp[2] * p[0] + Btmp[0] * p[2]
         pzc = Etmp[2] * p[3] + Btmp[1] * p[0] - Btmp[0] * p[1]
-        return TangentVector(
+        return Tangent(
             point=vec.point,
             dx=Cartesian4(coords=jnp.array([pxc, pyc, pzc, Egy])),
         )
@@ -65,10 +66,10 @@ class SimpleEMField(EMTensorField):
 
     def field_strength(
         self, point: Point[Cartesian4]
-    ) -> tuple[TangentVector[Cartesian3], TangentVector[Cartesian3]]:
+    ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
         return (
-            TangentVector(point=Point(x=point.x.to_cartesian3()), dx=self.E0),
-            TangentVector(point=Point(x=point.x.to_cartesian3()), dx=self.B0),
+            Tangent(point=Point(x=point.x.to_cartesian3()), dx=self.E0),
+            Tangent(point=Point(x=point.x.to_cartesian3()), dx=self.B0),
         )
 
 
@@ -85,7 +86,7 @@ class SumField(EMTensorField):
 
     def field_strength(
         self, point: Point[Cartesian4]
-    ) -> tuple[TangentVector[Cartesian3], TangentVector[Cartesian3]]:
+    ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
         E_total = jnp.array([0.0, 0.0, 0.0])
         B_total = jnp.array([0.0, 0.0, 0.0])
         for comp in self.components:
@@ -93,15 +94,28 @@ class SumField(EMTensorField):
             E_total.at[:].add(E.dx.coords)
             B_total.at[:].add(B.dx.coords)
         return (
-            TangentVector(
+            Tangent(
                 point=Point(x=point.x.to_cartesian3()),
                 dx=Cartesian3(coords=E_total),
             ),
-            TangentVector(
+            Tangent(
                 point=Point(x=point.x.to_cartesian3()),
                 dx=Cartesian3(coords=B_total),
             ),
         )
+
+
+class TransformEMField(eqx.Module):
+    """A container to transform EM tensor fields (i.e. (1,1) tensors)"""
+
+    transform: Transform
+    field: Callable[[Tangent[Cartesian4]], Tangent[Cartesian4]]
+    """The field in local coordinates (i.e. before transformation)"""
+
+    def __call__(self, vec: Tangent[Cartesian4]) -> Tangent[Cartesian4]:
+        in_local = self.transform.tangent_to_local(vec)
+        out_local = self.field(in_local)
+        return self.transform.tangent_to_global(out_local)
 
 
 def particle_interaction(
@@ -125,7 +139,7 @@ def particle_interaction(
         state.kin
     ).dx.coords
     dt_dtau = state.gamma()
-    dkin = TangentVector(
+    dkin = Tangent(
         point=Point(x=Cartesian4(dposition_dct)),
         dx=Cartesian4(coords=dmomentum_dctau / dt_dtau),
     )

@@ -12,14 +12,14 @@ from beamline.jax.coordinates import (
     Cylindric3,
     Cylindric4,
     Point,
-    TangentVector,
+    Tangent,
 )
 from beamline.jax.types import SFloat, SInt
 from beamline.units import MUON_CHARGE, MUON_MASS
 
 
 class ParticleState(eqx.Module):
-    kin: eqx.AbstractVar[TangentVector[Cartesian4]]
+    kin: eqx.AbstractVar[Tangent[Cartesian4]]
     """Kinematic state of a particle in Cartesian coordinates
 
     The tangent vector is scaled by mass so it is the four-momentum.
@@ -40,7 +40,7 @@ class ParticleState(eqx.Module):
         """Charge of the particle"""
 
     @abstractmethod
-    def build_tangent(self, kin: TangentVector[Cartesian4]) -> ParticleState:
+    def build_tangent(self, kin: Tangent[Cartesian4]) -> ParticleState:
         """Return a the particle state structure with specified kinematics
 
         This is also an opportunity to specify any other flows. Anything that is not
@@ -55,7 +55,7 @@ class ParticleState(eqx.Module):
 
 
 class MuonState(ParticleState):
-    kin: TangentVector[Cartesian4]
+    kin: Tangent[Cartesian4]
     """State of a muon particle"""
     q: SInt
     """Sign of the muon charge (+1 or -1)"""
@@ -68,7 +68,7 @@ class MuonState(ParticleState):
     def charge(self) -> SFloat:
         return self.q * MUON_CHARGE
 
-    def build_tangent(self, kin: TangentVector[Cartesian4]) -> MuonState:
+    def build_tangent(self, kin: Tangent[Cartesian4]) -> MuonState:
         return MuonState(kin=kin, q=0)
 
     @classmethod
@@ -88,5 +88,5 @@ class MuonState(ParticleState):
             z=mom3.coords[2],
             ct=jnp.sqrt(mom3.coords.dot(mom3.coords) + MUON_MASS**2 * u.c_light**4),
         )
-        tangent_vector = TangentVector(point=pos, dx=mom4)
+        tangent_vector = Tangent(point=pos, dx=mom4)
         return cls(kin=tangent_vector, q=q)

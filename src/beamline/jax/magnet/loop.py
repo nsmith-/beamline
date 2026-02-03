@@ -1,14 +1,21 @@
 """Simple wire loop model"""
 
-import equinox as eqx
 import jax.numpy as jnp
 
+from beamline.jax.coordinates import (
+    Cartesian3,
+    Cartesian4,
+    Cylindric3,
+    Point,
+    Tangent,
+)
 from beamline.jax.elliptic import elliptic_kepi
+from beamline.jax.emfield import EMTensorField
 from beamline.jax.types import SFloat
 from beamline.units import MU0
 
 
-class WireLoop(eqx.Module):
+class WireLoop(EMTensorField):
     R: SFloat
     """Radius of the wire loop [mm]"""
     I: SFloat  # noqa: E741
@@ -40,3 +47,13 @@ class WireLoop(eqx.Module):
         Brho = C * z / (2 * alpha2 * beta * rho) * (squares * E - alpha2 * K)
         Bz = C / (2 * alpha2 * beta) * ((self.R**2 - rho**2 - z**2) * E + alpha2 * K)
         return Brho, Bz
+
+    def field_strength(
+        self, point: Point[Cartesian4]
+    ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
+        xcyl = point.x.to_cylindric3()
+        Brho, Bz = self.B(xcyl.rho, xcyl.z)
+        Bphi = jnp.zeros_like(Brho)
+        E = Tangent(Point(x=point.x.to_cartesian3()), dx=Cartesian3.make())
+        B = Tangent(Point(x=xcyl), dx=Cylindric3.make(rho=Brho, phi=Bphi, z=Bz))
+        return E, B.to_cartesian()
