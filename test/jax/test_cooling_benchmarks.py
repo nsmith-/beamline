@@ -208,6 +208,7 @@ def reference_benchmark_3p2_solenoid():
         ("heun", "constant1cm"),
         ("dopri5", "constant10cm"),
         ("dopri5", "pid_rtol1em7"),
+        ("dopri5", "pid_rtol1em5"),
         ("dopri8", "pid_rtol1em10"),
         ("dopri5", "pid_rtol1em3"),
         ("heun", "pid_rtol1em3"),
@@ -231,6 +232,7 @@ def test_benchmark_3p2_solenoid_perf(
     # (setting to None lets diffrax pick its own but only adds a tiny overhead)
     nstepsizes = {
         "pid_rtol1em3": (1 * u.mm, diffrax.PIDController(rtol=1e-3, atol=1e-6)),
+        "pid_rtol1em5": (1 * u.mm, diffrax.PIDController(rtol=1e-5, atol=1e-7)),
         "pid_rtol1em7": (1 * u.mm, diffrax.PIDController(rtol=1e-7, atol=1e-9)),
         "pid_rtol1em10": (1 * u.mm, diffrax.PIDController(rtol=1e-10, atol=1e-12)),
         "constant1cm": (1 * u.cm, diffrax.ConstantStepSize()),

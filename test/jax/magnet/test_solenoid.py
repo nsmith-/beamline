@@ -276,4 +276,5 @@ def test_thick_shell_performance(benchmark, shells: int, vmap: str, grad: str):
 
     # warmup
     run_bfun()
+    # TODO: compare accuracy to reference
     benchmark(run_bfun)
