@@ -2,19 +2,20 @@
 
 from functools import partial
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax.experimental.jet import jet
 from jax.scipy.special import gamma
 from quadax import quadgk
 
+from beamline.jax.coordinates import Cartesian3, Cartesian4, Cylindric3, Point, Tangent
 from beamline.jax.elliptic import (
     elliprd_one_zero,
     elliprf_one_zero,
     elliprj,
     elliptic_kepi,
 )
+from beamline.jax.emfield import EMTensorField
 from beamline.jax.magnet.loop import WireLoop
 from beamline.jax.types import SFloat
 from beamline.units import MU0
@@ -58,7 +59,7 @@ def _quadarg_z(R: SFloat, rho: SFloat, z: SFloat) -> SFloat:
     return Bz
 
 
-class ThinShellSolenoid(eqx.Module):
+class ThinShellSolenoid(EMTensorField):
     R: SFloat
     """Shell radius [mm]"""
     jphi: SFloat
@@ -173,3 +174,53 @@ class ThinShellSolenoid(eqx.Module):
         Brho, _ = quadgk(quadfun_rho, bounds)
         Bz, _ = quadgk(quadfun_z, bounds)
         return self.jphi * Brho, self.jphi * Bz
+
+    def field_strength(
+        self, point: Point[Cartesian4]
+    ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
+        xcyl = point.x.to_cylindric3()
+        Brho, Bz = self.B(xcyl.rho, xcyl.z)
+        Bphi = jnp.zeros_like(Brho)
+        E = Tangent(Point(x=point.x.to_cartesian3()), dx=Cartesian3.make())
+        B = Tangent(Point(x=xcyl), dx=Cylindric3.make(rho=Brho, phi=Bphi, z=Bz))
+        return E, B.to_cartesian()
+
+
+class ThickSolenoid(EMTensorField):
+    Rin: SFloat
+    """Shell inner radius [mm]"""
+    Rout: SFloat
+    """Shell outer radius [mm]"""
+    jphi: SFloat
+    """Volume current density [e/ns/mm^2]"""
+    L: SFloat
+    """Length of the solenoid [mm]"""
+
+    def B_shells(
+        self, rho: SFloat, z: SFloat, num_shells: int = 200
+    ) -> tuple[SFloat, SFloat]:
+        dR = (self.Rout - self.Rin) / num_shells
+
+        # TODO: investigate scan vs. vmap
+        def shell_contrib(
+            carry: tuple[SFloat, SFloat], R: SFloat
+        ) -> tuple[tuple[SFloat, SFloat], None]:
+            thin_solenoid = ThinShellSolenoid(R=R, jphi=self.jphi * dR, L=self.L)
+            Brho, Bz = thin_solenoid.B_elliptic(rho, z)
+            return (carry[0] + Brho, carry[1] + Bz), None
+
+        shell_radii = jnp.linspace(self.Rin, self.Rout, num_shells)
+        out, _ = jax.lax.scan(
+            shell_contrib, (jnp.array(0.0), jnp.array(0.0)), shell_radii
+        )
+        return out
+
+    def field_strength(
+        self, point: Point[Cartesian4]
+    ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
+        xcyl = point.x.to_cylindric3()
+        Brho, Bz = self.B_shells(xcyl.rho, xcyl.z)
+        Bphi = jnp.zeros_like(Brho)
+        E = Tangent(Point(x=point.x.to_cartesian3()), dx=Cartesian3.make())
+        B = Tangent(Point(x=xcyl), dx=Cylindric3.make(rho=Brho, phi=Bphi, z=Bz))
+        return E, B.to_cartesian()

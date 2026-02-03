@@ -1,11 +1,32 @@
+"""Various integrators for Hamiltonian systems and particle propagation
+
+Everything involving hamiltonians is older code, kept for reference.
+The main integrator in use now is diffrax_solve, which uses the diffrax library
+to integrate the equations of motion for a particle in an electromagnetic field.
+"""
+
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
+from typing import Any
 
+import hepunits as u
 import jax
 import jax.numpy as jnp
+from diffrax import (
+    Dopri5,
+    ForwardMode,
+    ODETerm,
+    RecursiveCheckpointAdjoint,
+    SaveAt,
+    diffeqsolve,
+)
+from jax import Array
 from jax.experimental.ode import odeint
+
+from beamline.jax.emfield import EMTensorField, particle_interaction
+from beamline.jax.kinematics import ParticleState
 
 
 @dataclass(frozen=True)
@@ -144,3 +165,32 @@ def rk_integrator(hamiltonian: Callable, state0, times):
     track = odeint(deriv, state0, times)
     H = jax.vmap(hamiltonian, (0,), 0)(track)
     return (track[:, 0], track[:, 1], H)
+
+
+def propagate(_ct: Any, state: ParticleState, field: EMTensorField) -> ParticleState:
+    """Propagate a particle state through an electromagnetic field for use with diffrax"""
+
+    return particle_interaction(state, field)
+
+
+def diffrax_solve[T: ParticleState](
+    field: EMTensorField,
+    start: T,
+    cts: Array,
+    forward_mode: bool = True,
+) -> T:
+    """An example solver for muon propagation through non-stochastic components using diffrax"""
+    sol = diffeqsolve(
+        terms=ODETerm(propagate),
+        solver=Dopri5(),
+        t0=cts[0],
+        t1=cts[-1],
+        dt0=10.0 * u.mm,
+        y0=start,
+        args=field,
+        saveat=SaveAt(ts=cts),
+        # in case for plotting quivers we prefer forward-mode AD
+        # (more outputs than inputs)
+        adjoint=ForwardMode() if forward_mode else RecursiveCheckpointAdjoint(),
+    )
+    return sol.ys

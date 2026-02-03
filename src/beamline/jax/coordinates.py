@@ -44,13 +44,16 @@ class CoordinateChart[T: VecN](eqx.Module):
     def volume_element(self) -> SFloat:
         """Volume element in this coordinate chart"""
 
+    def __mul__(self, scalar: SFloat) -> Self:
+        return type(self)(coords=self.coords * scalar)
 
-class Cylindric(CoordinateChart):
+
+class Cylindric[T: VecN](CoordinateChart[T]):
     def to_cylindrical(self) -> Self:
         return self
 
 
-class Cartesian(CoordinateChart):
+class Cartesian[T: VecN](CoordinateChart):
     def to_cartesian(self) -> Self:
         return self
 
@@ -101,7 +104,7 @@ def delta_phi(phi1: SFloat, phi2: SFloat) -> SFloat:
     return (dphi + jnp.pi) % (2 * jnp.pi) - jnp.pi
 
 
-class Cylindric3(Cylindric, PolarMixin, ZMixin):
+class Cylindric3(Cylindric[Vec3], PolarMixin, ZMixin):
     coords: Vec3
     """Cylindrical coordinates (rho, phi, z) [mm]"""
 

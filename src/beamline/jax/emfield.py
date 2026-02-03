@@ -42,16 +42,16 @@ class EMTensorField(eqx.Module):
             Change in [MeV/ns * MeV/e]. Scale by q/mc^2 to get dpc/dtau.
         """
         E, B = self.field_strength(vec.point)
-        Etmp = E.dx.coords
-        Btmp = B.dx.coords * u.c_light
-        p = vec.dx.coords * u.c_light
-        Egy = Etmp @ p[:3]
-        pxc = Etmp[0] * p[3] + Btmp[2] * p[1] - Btmp[1] * p[2]
-        pyc = Etmp[1] * p[3] - Btmp[2] * p[0] + Btmp[0] * p[2]
-        pzc = Etmp[2] * p[3] + Btmp[1] * p[0] - Btmp[0] * p[1]
+        Etmp = E.dx
+        Btmp = B.dx * u.c_light
+        p = vec.dx * u.c_light
+        Egy = Etmp.x * p.x + Etmp.y * p.y + Etmp.z * p.z
+        pxc = Etmp.x * p.ct + Btmp.z * p.y - Btmp.y * p.z
+        pyc = Etmp.y * p.ct - Btmp.z * p.x + Btmp.x * p.z
+        pzc = Etmp.z * p.ct + Btmp.y * p.x - Btmp.x * p.y
         return Tangent(
             point=vec.point,
-            dx=Cartesian4(coords=jnp.array([pxc, pyc, pzc, Egy])),
+            dx=Cartesian4.make(x=pxc, y=pyc, z=pzc, ct=Egy),
         )
 
     def __add__(self, other: EMTensorField) -> EMTensorField:
@@ -118,10 +118,7 @@ class TransformEMField(eqx.Module):
         return self.transform.tangent_to_global(out_local)
 
 
-def particle_interaction(
-    state: ParticleState,
-    field: EMTensorField,
-) -> ParticleState:
+def particle_interaction[T: ParticleState](state: T, field: EMTensorField) -> T:
     """Compute the interaction of a particle with an electromagnetic field
 
     Returns a differential change in the particle state due to the Lorentz force,

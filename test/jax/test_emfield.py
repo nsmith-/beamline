@@ -1,44 +1,17 @@
 from collections.abc import Callable
-from typing import Any
 
 import hepunits as u
 import jax
 import jax.numpy as jnp
 import pytest
-from diffrax import Dopri5, ForwardMode, ODETerm, SaveAt, diffeqsolve
 from jax import Array
 from matplotlib import pyplot as plt
 
 from beamline.jax.coordinates import Cartesian3, Cartesian4, delta_phi
-from beamline.jax.emfield import SimpleEMField, particle_interaction
-from beamline.jax.kinematics import MuonState, ParticleState
+from beamline.jax.emfield import SimpleEMField
+from beamline.jax.integrators import diffrax_solve
+from beamline.jax.kinematics import MuonStateDct
 from beamline.jax.types import SFloat
-
-
-def propagate(_ct: Any, state: ParticleState, field: SimpleEMField) -> ParticleState:
-    """Propagate a particle state through an electromagnetic field for use with diffrax"""
-    return particle_interaction(state, field)
-
-
-def solve(
-    field: SimpleEMField,
-    start: ParticleState,
-    cts: Array,
-) -> MuonState:
-    sol = diffeqsolve(
-        terms=ODETerm(propagate),
-        solver=Dopri5(),
-        t0=cts[0],
-        t1=cts[-1],
-        dt0=1 * u.cm,
-        y0=start,
-        args=field,
-        saveat=SaveAt(ts=cts),
-        # in this case for plotting quivers we prefer forward-mode AD
-        # (more outputs than inputs)
-        adjoint=ForwardMode(),
-    )
-    return sol.ys
 
 
 @pytest.mark.parametrize(
@@ -60,7 +33,7 @@ def test_larmor_orbit(artifacts_dir, request, Bz: float, pxc: float, pzc: float)
         B0=Cartesian3(coords=jnp.array([0.0, 0.0, Bz])),
     )
     larmor_radius = abs(pxc / u.c_light / Bz)
-    start = MuonState.make(
+    start = MuonStateDct.make(
         position=Cartesian4.make(y=larmor_radius),
         momentum=Cartesian3.make(x=pxc, z=pzc),
         q=1,
@@ -69,7 +42,7 @@ def test_larmor_orbit(artifacts_dir, request, Bz: float, pxc: float, pzc: float)
     ct0, ct1 = 0.0, 10.0 * u.m
     cts = jnp.linspace(ct0, ct1, 30)
 
-    res = solve(field, start, cts)
+    res = diffrax_solve(field, start, cts)
     res_cyl = res.kin.point.x.to_cylindrical()
     phi = res_cyl.phi
     rho = res_cyl.rho
@@ -119,7 +92,7 @@ def test_diff_solve(artifacts_dir, request):
     pzc = 200.0 * u.MeV
     Bz = 1.0 * u.tesla
     larmor_radius = abs(pxc / u.c_light / Bz)
-    start = MuonState.make(
+    start = MuonStateDct.make(
         position=Cartesian4.make(y=larmor_radius),
         momentum=Cartesian3.make(x=pxc, z=pzc),
         q=1,
@@ -127,12 +100,12 @@ def test_diff_solve(artifacts_dir, request):
     ct0, ct1 = 0.0, 4.0 * u.m
     cts = jnp.linspace(ct0, ct1, 20)
 
-    def func(B: Cartesian3) -> MuonState:
+    def func(B: Cartesian3) -> MuonStateDct:
         field = SimpleEMField(
             E0=Cartesian3(coords=jnp.array([0.0, 0.0, 0.0])),
             B0=B,
         )
-        return solve(field, start, cts)
+        return diffrax_solve(field, start, cts, forward_mode=True)
 
     Bstart = Cartesian3(coords=jnp.array([0.0, 0.0, Bz]))
     path, dpath_dB = func(Bstart), jax.jacfwd(func)(Bstart)
@@ -147,7 +120,9 @@ def test_diff_solve(artifacts_dir, request):
     We can make some utility functions to extract the components we want to plot.
     """
 
-    def extract(dstate: MuonState, get: Callable[[Cartesian3], SFloat]) -> MuonState:
+    def extract(
+        dstate: MuonStateDct, get: Callable[[Cartesian3], SFloat]
+    ) -> MuonStateDct:
         return jax.tree.map(
             get,
             dstate,

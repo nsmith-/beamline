@@ -43,6 +43,7 @@ class WireLoop(EMTensorField):
         C = MU0 * self.I / jnp.pi
         beta = jnp.sqrt(beta2)
 
+        # TODO: give this the same Carlson integral treatment as in solenoid.py
         K, E, _ = elliptic_kepi(n=0.0, k=jnp.sqrt(k2))
         Brho = C * z / (2 * alpha2 * beta * rho) * (squares * E - alpha2 * K)
         Bz = C / (2 * alpha2 * beta) * ((self.R**2 - rho**2 - z**2) * E + alpha2 * K)
