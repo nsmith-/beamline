@@ -197,21 +197,27 @@ class ThickSolenoid(EMTensorField):
     """Length of the solenoid [mm]"""
 
     def B_shells(
-        self, rho: SFloat, z: SFloat, num_shells: int = 200
+        self, rho: SFloat, z: SFloat, num_shells: int = 200, vmap: bool = False
     ) -> tuple[SFloat, SFloat]:
         dR = (self.Rout - self.Rin) / num_shells
 
-        # TODO: investigate scan vs. vmap
-        def shell_contrib(
+        def shell_contrib_R(R: SFloat) -> tuple[SFloat, SFloat]:
+            thin_solenoid = ThinShellSolenoid(R=R, jphi=self.jphi * dR, L=self.L)
+            return thin_solenoid.B_elliptic(rho, z)
+
+        def shell_contrib_body(
             carry: tuple[SFloat, SFloat], R: SFloat
         ) -> tuple[tuple[SFloat, SFloat], None]:
-            thin_solenoid = ThinShellSolenoid(R=R, jphi=self.jphi * dR, L=self.L)
-            Brho, Bz = thin_solenoid.B_elliptic(rho, z)
+            Brho, Bz = shell_contrib_R(R)
             return (carry[0] + Brho, carry[1] + Bz), None
 
         shell_radii = jnp.linspace(self.Rin, self.Rout, num_shells)
+        if vmap:
+            Brho, Bz = jax.vmap(shell_contrib_R)(shell_radii)
+            return jnp.sum(Brho), jnp.sum(Bz)
+
         out, _ = jax.lax.scan(
-            shell_contrib, (jnp.array(0.0), jnp.array(0.0)), shell_radii
+            shell_contrib_body, (jnp.array(0.0), jnp.array(0.0)), shell_radii
         )
         return out
 

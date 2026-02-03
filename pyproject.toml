@@ -94,5 +94,5 @@ markers = [
 ]
 addopts = [
   "--benchmark-autosave",
-  "-m 'not extended'",
+  "-m not extended",
 ]

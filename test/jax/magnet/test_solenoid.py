@@ -235,3 +235,45 @@ def test_optimize_rho0limit(artifacts_dir):
     ax.set_ylabel("Max Difference (kT)")
     ax.legend()
     fig.savefig(artifacts_dir / "optimize_rho0limit.png")
+
+
+@pytest.mark.extended
+@pytest.mark.parametrize("shells", [10, 50, 200])
+@pytest.mark.parametrize("vmap", ["vmap", "scan"])
+@pytest.mark.parametrize("grad", ["grad", "val"])
+def test_thick_shell_performance(benchmark, shells: int, vmap: str, grad: str):
+    """Performance of thick shell solenoid field/gradient calculation
+
+    Conclusion seems to be that for values, vmap is faster, by about 10% for
+    10 shells and up to 2x for 200 shells. With gradients, they are about the
+    same performance.
+    """
+
+    solenoid = jsol.ThickSolenoid(
+        Rin=250.0 * u.mm,
+        Rout=419.3 * u.mm,
+        jphi=500.0 * u.A / u.mm**2,
+        L=140.0 * u.mm,
+    )
+
+    rho, z = jnp.meshgrid(
+        jnp.linspace(0, 0.95 * solenoid.Rout, 20),
+        jnp.linspace(-2 * solenoid.L, 2 * solenoid.L, 10),
+        indexing="ij",
+    )
+
+    @jax.jit
+    @jnp.vectorize
+    def bfun(rho, z):
+        if grad == "grad":
+            return jax.jacfwd(solenoid.B_shells, argnums=(0, 1))(
+                rho, z, num_shells=shells, vmap=vmap
+            )
+        return solenoid.B_shells(rho, z, num_shells=shells, vmap=vmap == "vmap")
+
+    def run_bfun():
+        jax.block_until_ready(bfun(rho, z))
+
+    # warmup
+    run_bfun()
+    benchmark(run_bfun)
