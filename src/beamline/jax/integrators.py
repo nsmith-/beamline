@@ -18,6 +18,7 @@ from diffrax import (
     Dopri5,
     ForwardMode,
     ODETerm,
+    PIDController,
     RecursiveCheckpointAdjoint,
     SaveAt,
     diffeqsolve,
@@ -179,18 +180,27 @@ def diffrax_solve[T: ParticleState](
     cts: Array,
     forward_mode: bool = True,
 ) -> T:
-    """An example solver for muon propagation through non-stochastic components using diffrax"""
+    """An example solver for muon propagation through non-stochastic components using diffrax
+
+    Probably you want to design your solver per your use case, this is just an example.
+
+    Args:
+        field: The electromagnetic field to propagate through
+        start: The initial particle state
+        cts: The positions along the beamline to solve at
+        forward_mode: Whether to use forward-mode AD for the adjoint method
+            (more efficient when there are more outputs than inputs)
+    """
     sol = diffeqsolve(
         terms=ODETerm(propagate),
         solver=Dopri5(),
         t0=cts[0],
         t1=cts[-1],
-        dt0=10.0 * u.mm,
+        dt0=1.0 * u.mm,
         y0=start,
         args=field,
         saveat=SaveAt(ts=cts),
-        # in case for plotting quivers we prefer forward-mode AD
-        # (more outputs than inputs)
         adjoint=ForwardMode() if forward_mode else RecursiveCheckpointAdjoint(),
+        stepsize_controller=PIDController(rtol=1e-5, atol=1e-7),
     )
     return sol.ys
