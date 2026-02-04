@@ -179,7 +179,7 @@ class ThinShellSolenoid(EMTensorField):
         self, point: Point[Cartesian4]
     ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
         xcyl = point.x.to_cylindric3()
-        Brho, Bz = self.B(xcyl.rho, xcyl.z)
+        Brho, Bz = self.B_elliptic(xcyl.rho, xcyl.z)
         Bphi = jnp.zeros_like(Brho)
         E = Tangent(Point(x=point.x.to_cartesian3()), dx=Cartesian3.make())
         B = Tangent(Point(x=xcyl), dx=Cylindric3.make(rho=Brho, phi=Bphi, z=Bz))

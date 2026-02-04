@@ -13,6 +13,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 from matplotlib import pyplot as plt
+from matplotlib.animation import FuncAnimation
 
 from beamline.jax.coordinates import Cartesian3, Cartesian4
 from beamline.jax.integrators import diffrax_solve, propagate
@@ -34,7 +35,8 @@ def test_benchmark_3p2_solenoid(artifacts_dir):
     Parameters from Table 2
     """
     xpos = jnp.arange(-200.0 * u.mm, 201.0 * u.mm, 10.0 * u.mm)
-    z_span = (-500.0 * u.mm, 500.0 * u.mm)
+    xpos = xpos.at[xpos == 0.0].set(1e-6)
+    zs = jnp.linspace(-500.0 * u.mm, 500.0 * u.mm, 100)
 
     @jax.jit
     def run(fieldobj: ThickSolenoid, xstart: SFloat) -> MuonStateDz:
@@ -43,13 +45,14 @@ def test_benchmark_3p2_solenoid(artifacts_dir):
             momentum=Cartesian3.make(z=200 * u.MeV),
             q=1,
         )
-        zs = jnp.array(z_span)
-        sol = diffrax_solve(fieldobj, start, zs, forward_mode=False)
-        return jax.tree.map(lambda x: x[-1], sol)
+        sol = diffrax_solve(fieldobj, start, zs, forward_mode=True)
+        return sol
 
-    end: MuonStateDz = jax.vmap(run, in_axes=(None, 0))(SOLENOID, xpos)
+    track: MuonStateDz = jax.vmap(run, in_axes=(None, 0))(SOLENOID, xpos)
+    end: MuonStateDz = jax.tree.map(lambda x: x[:, -1], track)
     # TODO: understand why forward_mode=True fails here (when using jacfwd) at x=0.0
-    grad: MuonStateDz = jax.vmap(jax.jacrev(run), in_axes=(None, 0))(SOLENOID, xpos)
+    grad: MuonStateDz = jax.vmap(jax.jacfwd(run), in_axes=(None, 0))(SOLENOID, xpos)
+    assert track.kin.point.x.x.shape == (len(xpos), len(zs))
 
     def extract(
         dstate: MuonStateDz, get: Callable[[ThickSolenoid], SFloat]
@@ -82,7 +85,7 @@ def test_benchmark_3p2_solenoid(artifacts_dir):
 
     # Plot results
     fig, ax = plt.subplots(figsize=(8, 8))
-    ax.plot(
+    (dots,) = ax.plot(
         end.kin.point.x.x,
         end.kin.point.x.y,
         marker=".",
@@ -107,7 +110,7 @@ def test_benchmark_3p2_solenoid(artifacts_dir):
     ax.set_aspect("equal")
     ax.set_xlabel("x [mm]")
     ax.set_ylabel("y [mm]")
-    ax.set_title("Benchmark 3.2: Muon through solenoid")
+    title = ax.set_title("Benchmark 3.2: Muon through solenoid")
     ax.set_xlim(-SOLENOID.Rin, SOLENOID.Rin)
     ax.set_ylim(-SOLENOID.Rin, SOLENOID.Rin)
     ax.legend(loc="upper center")
@@ -116,12 +119,30 @@ def test_benchmark_3p2_solenoid(artifacts_dir):
     # fig.set_facecolor("none")
     fig.savefig(artifacts_dir / "benchmark_3p2_solenoid.png", dpi=150)
 
+    def get_framedata(frame: int):
+        return {
+            "x": track.kin.point.x.x[:, frame],
+            "y": track.kin.point.x.y[:, frame],
+            "grad_Rin_x": grad_Rin.kin.point.x.x[:, frame],
+            "grad_Rin_y": grad_Rin.kin.point.x.y[:, frame],
+            "grad_Rout_x": grad_Rout.kin.point.x.x[:, frame],
+            "grad_Rout_y": grad_Rout.kin.point.x.y[:, frame],
+            "grad_jphi_x": grad_jphi.kin.point.x.x[:, frame] * (u.A / u.mm**2),
+            "grad_jphi_y": grad_jphi.kin.point.x.y[:, frame] * (u.A / u.mm**2),
+            "grad_L_x": grad_L.kin.point.x.x[:, frame],
+            "grad_L_y": grad_L.kin.point.x.y[:, frame],
+        }
+
     scale = 0.5
-    ax.quiver(
-        end.kin.point.x.x,
-        end.kin.point.x.y,
-        grad_Rin.kin.point.x.x,
-        grad_Rin.kin.point.x.y,
+    frame = 0
+    framedata = get_framedata(frame)
+
+    dots.set_data(framedata["x"], framedata["y"])
+    q_Rin = ax.quiver(
+        framedata["x"],
+        framedata["y"],
+        framedata["grad_Rin_x"],
+        framedata["grad_Rin_y"],
         color="blue",
         label="d/dRin",
         angles="xy",
@@ -129,11 +150,11 @@ def test_benchmark_3p2_solenoid(artifacts_dir):
         scale=scale,
         width=3e-3,
     )
-    ax.quiver(
-        end.kin.point.x.x,
-        end.kin.point.x.y,
-        grad_Rout.kin.point.x.x,
-        grad_Rout.kin.point.x.y,
+    q_Rout = ax.quiver(
+        framedata["x"],
+        framedata["y"],
+        framedata["grad_Rout_x"],
+        framedata["grad_Rout_y"],
         color="orange",
         label="d/dRout",
         angles="xy",
@@ -141,11 +162,11 @@ def test_benchmark_3p2_solenoid(artifacts_dir):
         scale=scale,
         width=3e-3,
     )
-    ax.quiver(
-        end.kin.point.x.x,
-        end.kin.point.x.y,
-        grad_jphi.kin.point.x.x * (u.A / u.mm**2),
-        grad_jphi.kin.point.x.x * (u.A / u.mm**2),
+    q_jphi = ax.quiver(
+        framedata["x"],
+        framedata["y"],
+        framedata["grad_jphi_x"],
+        framedata["grad_jphi_y"],
         color="green",
         label="d/djphi",
         angles="xy",
@@ -153,11 +174,11 @@ def test_benchmark_3p2_solenoid(artifacts_dir):
         scale=scale,
         width=3e-3,
     )
-    ax.quiver(
-        end.kin.point.x.x,
-        end.kin.point.x.y,
-        grad_L.kin.point.x.x,
-        grad_L.kin.point.x.y,
+    q_L = ax.quiver(
+        framedata["x"],
+        framedata["y"],
+        framedata["grad_L_x"],
+        framedata["grad_L_y"],
         color="red",
         label="d/dL",
         angles="xy",
@@ -166,6 +187,31 @@ def test_benchmark_3p2_solenoid(artifacts_dir):
         width=3e-3,
     )
     ax.legend(loc="upper center")
+
+    def update_quiver(frame: int):
+        framedata = get_framedata(frame)
+        dots.set_data(framedata["x"], framedata["y"])
+        offsets = jnp.stack((framedata["x"], framedata["y"]), axis=-1)
+        q_Rin.set_offsets(offsets)
+        q_Rin.set_UVC(framedata["grad_Rin_x"], framedata["grad_Rin_y"])
+        q_Rout.set_offsets(offsets)
+        q_Rout.set_UVC(framedata["grad_Rout_x"], framedata["grad_Rout_y"])
+        q_jphi.set_offsets(offsets)
+        q_jphi.set_UVC(framedata["grad_jphi_x"], framedata["grad_jphi_y"])
+        q_L.set_offsets(offsets)
+        q_L.set_UVC(framedata["grad_L_x"], framedata["grad_L_y"])
+        title.set_text(f"3.2: Muon through solenoid (z={zs[frame]: 3.0f} mm)")
+        return (dots, q_Rin, q_Rout, q_jphi, q_L, title)
+
+    anim = FuncAnimation(
+        fig,
+        update_quiver,
+        frames=len(zs),
+        blit=True,
+    )
+    anim.save(
+        artifacts_dir / "benchmark_3p2_solenoid_grads.gif", writer="pillow", fps=10
+    )
     fig.savefig(artifacts_dir / "benchmark_3p2_solenoid_grads.png", dpi=300)
 
 
