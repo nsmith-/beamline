@@ -84,6 +84,16 @@ MATERIALS: dict[str, Material] = {
         plasma_energy=31.05 * u.eV,
         is_atomic=True,
     ),
+    # https://pdg.lbl.gov/2025/AtomicNuclearProperties/HTML/lithium_hydride_LiH.html
+    "lithium_hydride_LiH": Material(
+        name="Lithium Hydride",
+        Z=2,
+        mass=(2 / 0.50321) * u.g / u.mol,
+        density=0.8200 * u.g / u.cm3,
+        mean_excitation=36.5 * u.eV,
+        plasma_energy=18.51 * u.eV,
+        is_atomic=False,
+    ),
 }
 
 
