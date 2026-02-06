@@ -19,6 +19,8 @@ from beamline.units import to_clhep, ureg
 class Material:
     """A material that particles may pass through"""
 
+    # TODO: abstract and have atomic / compound materials, with the latter being made up of the former
+
     name: str
     """Display name"""
     Z: int
@@ -209,7 +211,7 @@ class MaterialInteraction:
         )
 
     def w_norm(self, pc):
-        """Total probability of particle scattering with E > mean excitation"""
+        """Total probability of particle scattering per unit length"""
         beta, _ = self.particle.bg(pc)
         Wmax = self.Wmax(pc)
         landau_norm = (
