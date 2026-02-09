@@ -16,6 +16,36 @@ from beamline.units import to_clhep, ureg
 
 
 @dataclass
+class DensityCorrection:
+    """Parameters for Sternheimer density correction
+
+    Per Sternheimer:1952jn or PDG 34.7
+    """
+
+    C: float
+    x0: float
+    x1: float
+    a: float
+    k: float
+    delta0: float
+    """Only non-zero for conductors"""
+
+    def __call__(self, bg):
+        x = np.log10(bg)
+        return np.where(
+            x < self.x0,
+            self.delta0 * np.pow(10, 2 * (x - self.x0)),
+            np.where(
+                x < self.x1,
+                2 * np.log(10) * x
+                - self.C
+                + self.a * np.power(abs(self.x1 - x), self.k),
+                2 * np.log(10) * x - self.C,
+            ),
+        )
+
+
+@dataclass
 class Material:
     """A material that particles may pass through"""
 
@@ -35,13 +65,7 @@ class Material:
     """Plasma energy [MeV]"""
     is_atomic: bool
     """True if this is an atomic element (rather than a compound)"""
-
-    def density_correction(self, bg: float):
-        """Density correction delta(beta*gamma)
-
-        Sternheimer's parameterization
-        """
-        return 0.0  # TODO
+    density_correction: DensityCorrection
 
 
 @dataclass
@@ -75,6 +99,9 @@ MATERIALS: dict[str, Material] = {
         mean_excitation=166.0 * u.eV,
         plasma_energy=32.86 * u.eV,
         is_atomic=True,
+        density_correction=DensityCorrection(
+            C=4.2395, x0=0.1708, x1=3.0127, a=0.0802, k=3.6345, delta0=0.0
+        ),
     ),
     # https://pdg.lbl.gov/2025/AtomicNuclearProperties/HTML/silicon_Si.html
     "silicon_Si": Material(
@@ -85,6 +112,9 @@ MATERIALS: dict[str, Material] = {
         mean_excitation=173.0 * u.eV,
         plasma_energy=31.05 * u.eV,
         is_atomic=True,
+        density_correction=DensityCorrection(
+            C=4.4355, x0=0.2015, x1=2.8716, a=0.1492, k=3.2546, delta0=0.14
+        ),
     ),
     # https://pdg.lbl.gov/2025/AtomicNuclearProperties/HTML/lithium_hydride_LiH.html
     "lithium_hydride_LiH": Material(
@@ -95,6 +125,9 @@ MATERIALS: dict[str, Material] = {
         mean_excitation=36.5 * u.eV,
         plasma_energy=18.51 * u.eV,
         is_atomic=False,
+        density_correction=DensityCorrection(
+            C=2.3580, x0=-0.0988, x1=1.4515, a=0.9057, k=2.5849, delta0=0.0
+        ),
     ),
 }
 
@@ -160,7 +193,8 @@ class MaterialInteraction:
     Bichsel_k: ClassVar[float] = 2.5496e-19 * u.eV * u.cm2
     r"""Bichsel's k constant
 
-    Equal to K / 2 / Avogadro's number
+    From Bichsel:1998if, Eqn. 2.2
+    Equal to K / 2 / N_A / z^2
     """
 
     @property
@@ -227,36 +261,29 @@ class MaterialInteraction:
         beta, gamma = self.particle.bg(pc)
         bg = beta * gamma
         Wmax = self.Wmax(pc)
-        return (
-            self.prefactor
-            / beta**2
-            * (
-                0.5
-                * np.log(2 * ele.mass * bg**2 * Wmax / self.material.mean_excitation**2)
-                - beta**2
-                - 0.5 * self.material.density_correction(bg)
-            )
+        # use xi/thickness to more easily relate to landau
+        xi_x = 0.5 * self.prefactor / beta**2
+        return xi_x * (
+            np.log(2 * ele.mass * bg**2 * Wmax / self.material.mean_excitation**2)
+            - 2 * beta**2
+            - self.material.density_correction(bg)
         )
 
     def straggling_params(self, pc: float, thickness: float) -> StragglingParams:
         """Landau/Vavilov/Shulek parameters"""
-        beta, gamma = self.particle.bg(pc)
+        beta, _ = self.particle.bg(pc)
         xi = 0.5 * self.prefactor * thickness / beta**2
         kappa = xi / self.Wmax(pc)
-        mean_Delta = self.dEdx_mean_BetheBloch(pc) * thickness
-        mean_lambda = -(1 - np.euler_gamma) - beta**2 - np.log(kappa)
-        landau_loc = mean_Delta - xi * mean_lambda
-        delta_p = xi * (
-            np.log(2 * ele.mass * (beta * gamma) ** 2 / self.material.mean_excitation)
-            + np.log(xi / self.material.mean_excitation)
-            # + 0.2  # TODO: add when density correction is in
-            - beta**2
-            - self.material.density_correction(beta * gamma)
+        mean_energy_loss = self.dEdx_mean_BetheBloch(pc) * thickness
+        landau_loc = mean_energy_loss + xi * (
+            1 + beta**2 - np.euler_gamma + np.log(kappa)
         )
+        # (0.2 is with density correction, 0.37 is without, per Bichsel:1998if)
+        delta_p = landau_loc - xi * (1 - np.euler_gamma - 0.20005183774398613)
         return StragglingParams(
             xi=xi,
             kappa=kappa,
-            mean_energy_loss=mean_Delta,
+            mean_energy_loss=mean_energy_loss,
             landau_mean=landau_loc,
             delta_p=delta_p,
         )
