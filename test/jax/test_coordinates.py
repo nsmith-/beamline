@@ -24,7 +24,7 @@ from beamline.jax.types import SFloat, Vec3
 def test_convert_point():
     p_cart = Cartesian4(coords=jnp.array([3.0, 0.0, 0.0, 5.0]))
     assert abs(p_cart) == 4.0
-    p_cyl = p_cart.to_cylindrical()
+    p_cyl = p_cart.to_cylindric()
     assert abs(p_cyl) == 4.0
 
 
@@ -51,7 +51,7 @@ def test_grad():
     @jax.vmap
     def test_roundtrip(coords: Vec3) -> tuple[Vec3, Vec3]:
         p_cart = Cartesian3(coords=coords)
-        p_cyl = p_cart.to_cylindrical()
+        p_cyl = p_cart.to_cylindric()
 
         grad_at_cart = field_cart(p_cart)
         grad_at_cyl = field_cyl(p_cyl)
@@ -74,7 +74,7 @@ def test_div():
     @jax.vmap
     def test_roundtrip(coords: Vec3) -> tuple[SFloat, SFloat]:
         p_cart = Cartesian3(coords=coords)
-        p_cyl = p_cart.to_cylindrical()
+        p_cyl = p_cart.to_cylindric()
 
         div_at_cart = field_cart(p_cart)
         div_at_cyl = field_cyl(p_cyl)

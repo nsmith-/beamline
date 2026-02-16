@@ -29,7 +29,7 @@ class CoordinateChart[T: VecN](eqx.Module):
         """Convert to Cartesian coordinates"""
 
     @abstractmethod
-    def to_cylindrical(self) -> Cylindric:
+    def to_cylindric(self) -> Cylindric:
         """Convert to Cylindrical coordinates"""
 
     @abstractmethod
@@ -37,25 +37,31 @@ class CoordinateChart[T: VecN](eqx.Module):
         """Norm of the vector"""
 
     @abstractmethod
-    def differential(self) -> T:
-        """Differential element in this coordinate chart"""
+    def tangent_basis(self) -> T:
+        r"""Tangent basis at this point ($\partial_\mu$)
+
+        TODO: right now it is probably the cotangent basis, need to check
+        """
 
     @abstractmethod
     def volume_element(self) -> SFloat:
         """Volume element in this coordinate chart"""
 
-    def __mul__(self, scalar: SFloat) -> Self:
-        return type(self)(coords=self.coords * scalar)
-
 
 class Cylindric[T: VecN](CoordinateChart[T]):
-    def to_cylindrical(self) -> Self:
+    def to_cylindric(self) -> Self:
         return self
 
 
-class Cartesian[T: VecN](CoordinateChart):
+class Cartesian[T: VecN](CoordinateChart[T]):
     def to_cartesian(self) -> Self:
         return self
+
+
+def delta_phi(phi1: SFloat, phi2: SFloat) -> SFloat:
+    """Compute (phi1-phi2) wrapped to [-pi, pi)"""
+    dphi = phi1 - phi2
+    return (dphi + jnp.pi) % (2 * jnp.pi) - jnp.pi
 
 
 class XYMixin:
@@ -69,9 +75,28 @@ class XYMixin:
     def y(self) -> SFloat:
         return self.coords[..., 1]
 
+    @property
+    def rho(self) -> SFloat:
+        return jnp.hypot(self.x, self.y)
+
+    @property
+    def phi(self) -> SFloat:
+        return jnp.arctan2(self.y, self.x)
+
+    def delta_phi(self, other: Self) -> SFloat:
+        return delta_phi(self.phi, other.phi)
+
 
 class PolarMixin:
     coords: Vec3 | Vec4
+
+    @property
+    def x(self) -> SFloat:
+        return self.rho * jnp.cos(self.phi)
+
+    @property
+    def y(self) -> SFloat:
+        return self.rho * jnp.sin(self.phi)
 
     @property
     def rho(self) -> SFloat:
@@ -80,6 +105,9 @@ class PolarMixin:
     @property
     def phi(self) -> SFloat:
         return self.coords[..., 1]
+
+    def delta_phi(self, other: Self) -> SFloat:
+        return delta_phi(self.phi, other.phi)
 
 
 class ZMixin:
@@ -98,12 +126,6 @@ class TimeMixin:
         return self.coords[..., 3]
 
 
-def delta_phi(phi1: SFloat, phi2: SFloat) -> SFloat:
-    """Compute (phi1-phi2) wrapped to [-pi, pi)"""
-    dphi = phi1 - phi2
-    return (dphi + jnp.pi) % (2 * jnp.pi) - jnp.pi
-
-
 class Cylindric3(Cylindric[Vec3], PolarMixin, ZMixin):
     coords: Vec3
     """Cylindrical coordinates (rho, phi, z) [mm]"""
@@ -116,22 +138,22 @@ class Cylindric3(Cylindric[Vec3], PolarMixin, ZMixin):
         return cls(coords=jnp.stack([rho, phi, z], axis=-1))
 
     def to_cartesian(self) -> Cartesian3:
-        x = self.rho * jnp.cos(self.phi)
-        y = self.rho * jnp.sin(self.phi)
-        return Cartesian3.make(x=x, y=y, z=self.z)
+        return Cartesian3.make(x=self.x, y=self.y, z=self.z)
 
     def __abs__(self) -> SFloat:
         return jnp.sqrt(self.rho**2 + self.z**2)
 
-    def differential(self) -> Vec3:
+    def tangent_basis(self) -> Vec3:
         # drho, rho dphi, dz
         return jnp.ones_like(self.coords).at[..., 1].set(self.rho)
 
     def volume_element(self) -> SFloat:
         return self.rho
 
+    # TODO: implement add, mul, dot, cross etc. (or maybe we should just convert to Cartesian for that?)
 
-class Cartesian3(Cartesian, XYMixin, ZMixin):
+
+class Cartesian3(Cartesian[Vec3], XYMixin, ZMixin):
     coords: Vec3
     """Cartesian coordinates (x, y, z) [mm]"""
 
@@ -140,25 +162,44 @@ class Cartesian3(Cartesian, XYMixin, ZMixin):
         """Create Cartesian3 from individual components"""
         return cls(coords=jnp.stack([x, y, z], axis=-1))
 
-    def to_cylindrical(self) -> Cylindric3:
-        rho = jnp.hypot(self.x, self.y)
-        phi = jnp.arctan2(self.y, self.x)
-        return Cylindric3.make(rho=rho, phi=phi, z=self.z)
+    def to_cylindric(self) -> Cylindric3:
+        return Cylindric3.make(rho=self.rho, phi=self.phi, z=self.z)
 
     def __abs__(self) -> SFloat:
         return jnp.sqrt(self.x**2 + self.y**2 + self.z**2)
 
-    def differential(self) -> Vec3:
+    def tangent_basis(self) -> Vec3:
         return jnp.ones_like(self.coords)
 
     def volume_element(self) -> SFloat:
         return jnp.ones_like(self.x)
 
+    def __mul__(self, scalar: SFloat) -> Self:
+        return type(self)(coords=self.coords * scalar)
+
+    def __rmul__(self, scalar: SFloat) -> Self:
+        return self * scalar
+
+    def __add__(self, other: Cartesian3) -> Cartesian3:
+        return Cartesian3(coords=self.coords + other.coords)
+
+    def __sub__(self, other: Cartesian3) -> Cartesian3:
+        return Cartesian3(coords=self.coords - other.coords)
+
+    # TODO: should these only be defined on Tangent[Cartesian3]?
+
     def dot(self, other: Cartesian3) -> SFloat:
         return jnp.sum(self.coords * other.coords, axis=-1)
 
+    def cross(self, other: Cartesian3) -> Cartesian3:
+        return Cartesian3.make(
+            x=self.y * other.z - self.z * other.y,
+            y=self.z * other.x - self.x * other.z,
+            z=self.x * other.y - self.y * other.x,
+        )
 
-class Cylindric4(Cylindric, PolarMixin, ZMixin, TimeMixin):
+
+class Cylindric4(Cylindric[Vec4], PolarMixin, ZMixin, TimeMixin):
     coords: Vec4
     """Cylindrical coordinates (rho, phi, z, ct) [mm]"""
 
@@ -170,22 +211,19 @@ class Cylindric4(Cylindric, PolarMixin, ZMixin, TimeMixin):
         return cls(coords=jnp.stack([rho, phi, z, ct], axis=-1))
 
     def to_cartesian(self) -> Cartesian4:
-        x = self.rho * jnp.cos(self.phi)
-        y = self.rho * jnp.sin(self.phi)
-        return Cartesian4.make(x=x, y=y, z=self.z, ct=self.ct)
+        return Cartesian4.make(x=self.x, y=self.y, z=self.z, ct=self.ct)
 
     def __abs__(self) -> SFloat:
         return jnp.sqrt(self.ct**2 - self.rho**2 - self.z**2)
 
-    def differential(self) -> Vec4:
-        # TODO: correct for metric?
+    def tangent_basis(self) -> Vec4:
         return jnp.ones_like(self.coords).at[..., 1].set(self.rho)
 
     def volume_element(self) -> SFloat:
         return self.rho
 
 
-class Cartesian4(Cartesian, XYMixin, ZMixin, TimeMixin):
+class Cartesian4(Cartesian[Vec4], XYMixin, ZMixin, TimeMixin):
     coords: Vec4
     """Cartesian coordinates (x, y, z, ct) [mm]"""
 
@@ -208,27 +246,40 @@ class Cartesian4(Cartesian, XYMixin, ZMixin, TimeMixin):
             ct = 0.0
         return cls(coords=jnp.stack([x, y, z, ct], axis=-1))
 
-    def to_cylindrical(self) -> Cylindric4:
-        rho = jnp.hypot(self.x, self.y)
-        phi = jnp.arctan2(self.y, self.x)
-        return Cylindric4.make(rho=rho, phi=phi, z=self.z, ct=self.ct)
+    def to_cylindric(self) -> Cylindric4:
+        return Cylindric4.make(rho=self.rho, phi=self.phi, z=self.z, ct=self.ct)
 
     def to_cartesian3(self) -> Cartesian3:
         return Cartesian3(coords=self.coords[..., :3])
 
     def to_cylindric3(self) -> Cylindric3:
-        return Cylindric3(coords=self.to_cylindrical().coords[..., :3])
+        return Cylindric3(coords=self.to_cylindric().coords[..., :3])
 
     def __abs__(self) -> SFloat:
-        metric = jnp.array([-1.0, -1.0, -1.0, 1.0])
-        return jnp.sqrt(jnp.sum(metric * self.coords**2, axis=-1))
+        return jnp.sqrt(self.dot(self))
 
-    def differential(self) -> Vec4:
-        # TODO: correct for metric?
+    def tangent_basis(self) -> Vec4:
         return jnp.ones_like(self.coords)
 
     def volume_element(self) -> SFloat:
         return jnp.ones_like(self.x)
+
+    def __mul__(self, scalar: SFloat) -> Self:
+        return type(self)(coords=self.coords * scalar)
+
+    def __rmul__(self, scalar: SFloat) -> Self:
+        return self * scalar
+
+    def __add__(self, other: Cartesian4) -> Cartesian4:
+        return Cartesian4(coords=self.coords + other.coords)
+
+    def __sub__(self, other: Cartesian4) -> Cartesian4:
+        return Cartesian4(coords=self.coords - other.coords)
+
+    def dot(self, other: Cartesian4) -> SFloat:
+        # Flat space for now :)
+        metric = jnp.array([-1.0, -1.0, -1.0, 1.0])
+        return jnp.sum(metric * (self.coords * other.coords), axis=-1)
 
 
 class Tangent[T: CoordinateChart](eqx.Module):
@@ -242,6 +293,8 @@ class Tangent[T: CoordinateChart](eqx.Module):
     def __abs__(self) -> SFloat:
         return abs(self.t)
 
+    # In any coordinate chart, the tangents are a vector space
+
     def __add__(self, other: Tangent[T]) -> Tangent[T]:
         if self.p != other.p:
             raise ValueError("Cannot add tangent vectors at different points")
@@ -249,6 +302,23 @@ class Tangent[T: CoordinateChart](eqx.Module):
             p=self.p,
             t=type(self.t)(coords=self.t.coords + other.t.coords),
         )
+
+    def __sub__(self, other: Tangent[T]) -> Tangent[T]:
+        if self.p != other.p:
+            raise ValueError("Cannot subtract tangent vectors at different points")
+        return Tangent(
+            p=self.p,
+            t=type(self.t)(coords=self.t.coords - other.t.coords),
+        )
+
+    def __mul__(self, scalar: SFloat) -> Tangent[T]:
+        return Tangent(
+            p=self.p,
+            t=type(self.t)(coords=self.t.coords * scalar),
+        )
+
+    def __rmul__(self, scalar: SFloat) -> Tangent[T]:
+        return self * scalar
 
     @overload
     def to_cartesian(self: Tangent[Cartesian3]) -> Tangent[Cartesian3]: ...
@@ -260,39 +330,29 @@ class Tangent[T: CoordinateChart](eqx.Module):
     def to_cartesian(self: Tangent[Cylindric4]) -> Tangent[Cartesian4]: ...
 
     def to_cartesian(self) -> Tangent:
-        tup: tuple[T, T] = jax.jvp(lambda v: v.to_cartesian(), (self.p,), (self.t,))
-        p, t = tup
+        p, t = jax.jvp(lambda v: v.to_cartesian(), (self.p,), (self.t,))
         return Tangent(p=p, t=t)
 
     @overload
-    def to_cylindric(
-        self: Tangent[Cartesian3],
-    ) -> Tangent[Cylindric3]: ...
+    def to_cylindric(self: Tangent[Cartesian3]) -> Tangent[Cylindric3]: ...
     @overload
-    def to_cylindric(
-        self: Tangent[Cylindric3],
-    ) -> Tangent[Cylindric3]: ...
+    def to_cylindric(self: Tangent[Cylindric3]) -> Tangent[Cylindric3]: ...
     @overload
-    def to_cylindric(
-        self: Tangent[Cylindric4],
-    ) -> Tangent[Cylindric4]: ...
+    def to_cylindric(self: Tangent[Cylindric4]) -> Tangent[Cylindric4]: ...
     @overload
-    def to_cylindric(
-        self: Tangent[Cartesian4],
-    ) -> Tangent[Cylindric4]: ...
+    def to_cylindric(self: Tangent[Cartesian4]) -> Tangent[Cylindric4]: ...
 
     def to_cylindric(self) -> Tangent:
-        tup: tuple[T, T] = jax.jvp(lambda v: v.to_cylindrical(), (self.p,), (self.t,))
-        p, t = tup
+        p, t = jax.jvp(lambda v: v.to_cylindric(), (self.p,), (self.t,))
         return Tangent(p=p, t=t)
 
 
 class Cotangent[T: CoordinateChart](eqx.Module):
-    """A cotangent vector on a manifold, represented in a given coordinate chart"""
+    """TODO"""
 
     p: T
     """Point"""
-    ct: T
+    t_co: T
     """Cotangent vector at p"""
 
 
@@ -304,7 +364,7 @@ class GradientField[T: CoordinateChart](eqx.Module):
     # TODO: this should return Cotangent
     def __call__(self, point: T) -> Tangent[T]:
         grad: T = jax.grad(self.field)(point)
-        value = type(point)(coords=grad.coords * point.differential())
+        value = type(point)(coords=grad.coords * point.tangent_basis())
         return Tangent(p=point, t=value)
 
 

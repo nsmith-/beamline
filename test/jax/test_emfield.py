@@ -43,7 +43,7 @@ def test_larmor_orbit(artifacts_dir, request, Bz: float, pxc: float, pzc: float)
     cts = jnp.linspace(ct0, ct1, 30)
 
     res = diffrax_solve(field, start, cts)
-    res_cyl = res.kin.p.to_cylindrical()
+    res_cyl = res.kin.p.to_cylindric()
     phi = res_cyl.phi
     rho = res_cyl.rho
     z = res_cyl.z

@@ -39,12 +39,12 @@ class EMTensorField(eqx.Module):
             vec: Tangent four-momentum (i.e. dx is scaled by mass) [MeV]
 
         Returns:
-            Change in [MeV/ns * MeV/e]. Scale by q/mc^2 to get dpc/dtau.
+            Change in [MeV/mm * MeV/e]. Scale by q/mc^2 to get dpc/dctau.
         """
         E, B = self.field_strength(vec.p)
         Etmp = E.t
         Btmp = B.t * u.c_light
-        p = vec.t * u.c_light
+        p = vec.t
         Egy = Etmp.x * p.x + Etmp.y * p.y + Etmp.z * p.z
         pxc = Etmp.x * p.ct + Btmp.z * p.y - Btmp.y * p.z
         pyc = Etmp.y * p.ct - Btmp.z * p.x + Btmp.x * p.z
@@ -128,16 +128,13 @@ def particle_interaction[T: ParticleState](state: T, field: EMTensorField) -> T:
         (this could go here as a parameter, a new function, or be part of state.build_tangent)
     TODO: verlet integration / symplectic integrators ?
     """
+    # Note: to have ctau be the independent variable, divide by mc^2 instead of E (kin.t.ct)
     # unitless in this convention
-    dposition_dct = state.kin.t.coords / state.kin.t.ct
+    dposition_dct = state.kin * (1 / state.kin.t.ct)
     # Unit: [MeV/mm]
-    # Note: state.mass is in MeV
-    dmomentum_dctau = (state.charge / state.mass / u.c_light) * field(
-        state.kin
-    ).t.coords
-    dt_dtau = state.gamma()
+    dmomentum_dct = (state.charge / state.kin.t.ct) * field(state.kin)
     dkin = Tangent(
-        p=Cartesian4(dposition_dct),
-        t=Cartesian4(coords=dmomentum_dctau / dt_dtau),
+        p=dposition_dct.t,
+        t=dmomentum_dct.t,
     )
     return state.build_tangent(dkin)
