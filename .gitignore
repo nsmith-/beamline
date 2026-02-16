@@ -1,4 +1,6 @@
 *.pyc
+.DS_Store
 src/beamline/_version.py
 .vscode
+.benchmarks
 test_artifacts

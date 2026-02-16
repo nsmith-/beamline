@@ -118,7 +118,7 @@ class Cylindric3(Cylindric[Vec3], PolarMixin, ZMixin):
     def to_cartesian(self) -> Cartesian3:
         x = self.rho * jnp.cos(self.phi)
         y = self.rho * jnp.sin(self.phi)
-        return Cartesian3(coords=jnp.stack([x, y, self.z], axis=-1))
+        return Cartesian3.make(x=x, y=y, z=self.z)
 
     def __abs__(self) -> SFloat:
         return jnp.sqrt(self.rho**2 + self.z**2)
@@ -143,7 +143,7 @@ class Cartesian3(Cartesian, XYMixin, ZMixin):
     def to_cylindrical(self) -> Cylindric3:
         rho = jnp.hypot(self.x, self.y)
         phi = jnp.arctan2(self.y, self.x)
-        return Cylindric3(coords=jnp.stack([rho, phi, self.z], axis=-1))
+        return Cylindric3.make(rho=rho, phi=phi, z=self.z)
 
     def __abs__(self) -> SFloat:
         return jnp.sqrt(self.x**2 + self.y**2 + self.z**2)
@@ -172,7 +172,7 @@ class Cylindric4(Cylindric, PolarMixin, ZMixin, TimeMixin):
     def to_cartesian(self) -> Cartesian4:
         x = self.rho * jnp.cos(self.phi)
         y = self.rho * jnp.sin(self.phi)
-        return Cartesian4(coords=jnp.stack([x, y, self.z, self.ct], axis=-1))
+        return Cartesian4.make(x=x, y=y, z=self.z, ct=self.ct)
 
     def __abs__(self) -> SFloat:
         return jnp.sqrt(self.ct**2 - self.rho**2 - self.z**2)
@@ -211,7 +211,7 @@ class Cartesian4(Cartesian, XYMixin, ZMixin, TimeMixin):
     def to_cylindrical(self) -> Cylindric4:
         rho = jnp.hypot(self.x, self.y)
         phi = jnp.arctan2(self.y, self.x)
-        return Cylindric4(coords=jnp.stack([rho, phi, self.z, self.ct], axis=-1))
+        return Cylindric4.make(rho=rho, phi=phi, z=self.z, ct=self.ct)
 
     def to_cartesian3(self) -> Cartesian3:
         return Cartesian3(coords=self.coords[..., :3])

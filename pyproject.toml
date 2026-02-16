@@ -28,6 +28,7 @@ dependencies = [
   "matplotlib",
   "vector",
   "optree",
+  "rich",
 ]
 
 [project.optional-dependencies]

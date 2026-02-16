@@ -216,9 +216,8 @@ class ThickSolenoid(EMTensorField):
             Brho, Bz = jax.vmap(shell_contrib_R)(shell_radii)
             return jnp.sum(Brho), jnp.sum(Bz)
 
-        out, _ = jax.lax.scan(
-            shell_contrib_body, (jnp.array(0.0), jnp.array(0.0)), shell_radii
-        )
+        zero = jnp.zeros_like(rho)
+        out, _ = jax.lax.scan(shell_contrib_body, (zero, zero), shell_radii)
         return out
 
     def field_strength(
