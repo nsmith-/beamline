@@ -29,8 +29,8 @@ def test_larmor_orbit(artifacts_dir, request, Bz: float, pxc: float, pzc: float)
     and uniform angular velocity, and linear motion in the longitudinal direction.
     """
     field = SimpleEMField(
-        E0=Cartesian3(coords=jnp.array([0.0, 0.0, 0.0])),
-        B0=Cartesian3(coords=jnp.array([0.0, 0.0, Bz])),
+        E0=Cartesian3.make(),
+        B0=Cartesian3.make(z=Bz),
     )
     larmor_radius = abs(pxc / u.c_light / Bz)
     start = MuonStateDct.make(
@@ -38,20 +38,20 @@ def test_larmor_orbit(artifacts_dir, request, Bz: float, pxc: float, pzc: float)
         momentum=Cartesian3.make(x=pxc, z=pzc),
         q=1,
     )
-    larmor_frequency = start.charge * Bz * u.c_light_sq / start.kin.dx.ct
+    larmor_frequency = start.charge * Bz * u.c_light_sq / start.kin.t.ct
     ct0, ct1 = 0.0, 10.0 * u.m
     cts = jnp.linspace(ct0, ct1, 30)
 
     res = diffrax_solve(field, start, cts)
-    res_cyl = res.kin.point.x.to_cylindrical()
+    res_cyl = res.kin.p.to_cylindrical()
     phi = res_cyl.phi
     rho = res_cyl.rho
     z = res_cyl.z
 
     phi_exp = delta_phi(jnp.pi / 2, (cts - ct0) * larmor_frequency / u.c_light)
     rho_exp = jnp.full_like(cts, larmor_radius)
-    betaz = start.kin.dx.z / start.kin.dx.ct
-    z_exp = start.kin.point.x.z + betaz * (cts - ct0)
+    betaz = start.kin.t.z / start.kin.t.ct
+    z_exp = start.kin.p.z + betaz * (cts - ct0)
 
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(6, 6))
 
@@ -70,7 +70,7 @@ def test_larmor_orbit(artifacts_dir, request, Bz: float, pxc: float, pzc: float)
     ax3.set_ylabel("Longitudinal abs error [mm]")
     ax3.set_yscale("log")
 
-    ax4.plot(res.kin.point.x.x, res.kin.point.x.y, label="Numerical")
+    ax4.plot(res.kin.p.x, res.kin.p.y, label="Numerical")
     ax4.plot(
         rho_exp * jnp.cos(phi_exp), rho_exp * jnp.sin(phi_exp), "--", label="Expected"
     )
@@ -81,8 +81,9 @@ def test_larmor_orbit(artifacts_dir, request, Bz: float, pxc: float, pzc: float)
     fig.tight_layout()
     fig.savefig(artifacts_dir / f"{request.node.name}.png")
 
-    assert phi == pytest.approx(phi_exp, rel=3e-10)
-    assert rho == pytest.approx(rho_exp, rel=2e-10)
+    # default diffrax_solve tolerances are 1e-5 rel
+    assert delta_phi(phi, phi_exp) == pytest.approx(jnp.zeros_like(phi), abs=1e-4)
+    assert rho == pytest.approx(rho_exp, rel=1e-4)
     assert z == pytest.approx(z_exp, rel=1e-10)
     assert res_cyl.ct == pytest.approx(cts, rel=1e-10)
 
@@ -102,18 +103,18 @@ def test_diff_solve(artifacts_dir, request):
 
     def func(B: Cartesian3) -> MuonStateDct:
         field = SimpleEMField(
-            E0=Cartesian3(coords=jnp.array([0.0, 0.0, 0.0])),
+            E0=Cartesian3.make(),
             B0=B,
         )
         return diffrax_solve(field, start, cts, forward_mode=True)
 
-    Bstart = Cartesian3(coords=jnp.array([0.0, 0.0, Bz]))
+    Bstart = Cartesian3.make(z=Bz)
     path, dpath_dB = func(Bstart), jax.jacfwd(func)(Bstart)
     """dpath_dB starts as:
     MuonState(
         kin=TangentVector(
-            point=Point(x=Cartesian4(coords=Cartesian3(coords=f64[10, 4, 3]))),
-            dx=Cartesian4(coords=Cartesian3(coords=f64[10, 4, 3])),
+            p=Cartesian4(coords=Cartesian3(coords=f64[10, 4, 3])),
+            t=Cartesian4(coords=Cartesian3(coords=f64[10, 4, 3])),
         ),
         q=Cartesian3(coords=f64[10, 3]),
     )
@@ -137,15 +138,15 @@ def test_diff_solve(artifacts_dir, request):
 
     axes[0, 0].set_title("d/dBx")
     axes[0, 0].plot(
-        path.kin.point.x.x,
-        path.kin.point.x.y,
+        path.kin.p.x,
+        path.kin.p.y,
         color="grey",
     )
     axes[0, 0].quiver(
-        path.kin.point.x.x,
-        path.kin.point.x.y,
-        dpath_dBx.kin.point.x.x,
-        dpath_dBx.kin.point.x.y,
+        path.kin.p.x,
+        path.kin.p.y,
+        dpath_dBx.kin.p.x,
+        dpath_dBx.kin.p.y,
         angles="xy",
         scale_units="xy",
         color="C0",
@@ -155,15 +156,15 @@ def test_diff_solve(artifacts_dir, request):
 
     axes[0, 1].set_title("d/dBy")
     axes[0, 1].plot(
-        path.kin.point.x.x,
-        path.kin.point.x.y,
+        path.kin.p.x,
+        path.kin.p.y,
         color="grey",
     )
     axes[0, 1].quiver(
-        path.kin.point.x.x,
-        path.kin.point.x.y,
-        dpath_dBy.kin.point.x.x,
-        dpath_dBy.kin.point.x.y,
+        path.kin.p.x,
+        path.kin.p.y,
+        dpath_dBy.kin.p.x,
+        dpath_dBy.kin.p.y,
         angles="xy",
         scale_units="xy",
         color="C1",
@@ -173,15 +174,15 @@ def test_diff_solve(artifacts_dir, request):
 
     axes[1, 0].set_title("d/dBz")
     axes[1, 0].plot(
-        path.kin.point.x.x,
-        path.kin.point.x.y,
+        path.kin.p.x,
+        path.kin.p.y,
         color="grey",
     )
     axes[1, 0].quiver(
-        path.kin.point.x.x,
-        path.kin.point.x.y,
-        dpath_dBz.kin.point.x.x,
-        dpath_dBz.kin.point.x.y,
+        path.kin.p.x,
+        path.kin.p.y,
+        dpath_dBz.kin.p.x,
+        dpath_dBz.kin.p.y,
         angles="xy",
         scale_units="xy",
         color="C2",
@@ -190,8 +191,8 @@ def test_diff_solve(artifacts_dir, request):
     axes[1, 0].set_ylabel("y [mm]")
 
     axes[1, 1].plot(
-        path.kin.point.x.z,
-        path.kin.point.x.x,
+        path.kin.p.z,
+        path.kin.p.x,
         color="grey",
     )
     for i, lbl, val in zip(
@@ -201,10 +202,10 @@ def test_diff_solve(artifacts_dir, request):
         strict=True,
     ):
         axes[1, 1].quiver(
-            path.kin.point.x.z,
-            path.kin.point.x.x,
-            val.kin.point.x.z,
-            val.kin.point.x.x,
+            path.kin.p.z,
+            path.kin.p.x,
+            val.kin.p.z,
+            val.kin.p.x,
             angles="xy",
             scale_units="xy",
             color=f"C{i}",

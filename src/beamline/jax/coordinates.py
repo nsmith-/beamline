@@ -231,51 +231,23 @@ class Cartesian4(Cartesian, XYMixin, ZMixin, TimeMixin):
         return jnp.ones_like(self.x)
 
 
-class Point[T: CoordinateChart](eqx.Module):
-    """A point on a manifold, represented in a given coordinate chart"""
-
-    x: T
-
-    @overload
-    def to_cartesian(self: Point[Cartesian3]) -> Point[Cartesian3]: ...
-    @overload
-    def to_cartesian(self: Point[Cartesian4]) -> Point[Cartesian4]: ...
-    @overload
-    def to_cartesian(self: Point[Cylindric3]) -> Point[Cartesian3]: ...
-    @overload
-    def to_cartesian(self: Point[Cylindric4]) -> Point[Cartesian4]: ...
-
-    def to_cartesian(self) -> Point:
-        return Point(x=self.x.to_cartesian())
-
-    @overload
-    def to_cylindrical(self: Point[Cartesian3]) -> Point[Cylindric3]: ...
-    @overload
-    def to_cylindrical(self: Point[Cylindric3]) -> Point[Cylindric3]: ...
-    @overload
-    def to_cylindrical(self: Point[Cylindric4]) -> Point[Cylindric4]: ...
-    @overload
-    def to_cylindrical(self: Point[Cartesian4]) -> Point[Cylindric4]: ...
-
-    def to_cylindrical(self) -> Point:
-        return Point(x=self.x.to_cylindrical())
-
-
 class Tangent[T: CoordinateChart](eqx.Module):
     """A tangent vector on a manifold, represented in a given coordinate chart"""
 
-    point: Point[T]
-    dx: T
+    p: T
+    """Point """
+    t: T
+    """Tangent vector at p"""
 
     def __abs__(self) -> SFloat:
-        return abs(self.dx)
+        return abs(self.t)
 
     def __add__(self, other: Tangent[T]) -> Tangent[T]:
-        if self.point != other.point:
+        if self.p != other.p:
             raise ValueError("Cannot add tangent vectors at different points")
         return Tangent(
-            point=self.point,
-            dx=type(self.dx)(coords=self.dx.coords + other.dx.coords),
+            p=self.p,
+            t=type(self.t)(coords=self.t.coords + other.t.coords),
         )
 
     @overload
@@ -288,67 +260,65 @@ class Tangent[T: CoordinateChart](eqx.Module):
     def to_cartesian(self: Tangent[Cylindric4]) -> Tangent[Cartesian4]: ...
 
     def to_cartesian(self) -> Tangent:
-        tup: tuple[T, T] = jax.jvp(
-            lambda v: v.to_cartesian(), (self.point.x,), (self.dx,)
-        )
-        x, dx = tup
-        return Tangent(point=Point(x=x), dx=dx)
+        tup: tuple[T, T] = jax.jvp(lambda v: v.to_cartesian(), (self.p,), (self.t,))
+        p, t = tup
+        return Tangent(p=p, t=t)
 
     @overload
-    def to_cylindrical(
+    def to_cylindric(
         self: Tangent[Cartesian3],
     ) -> Tangent[Cylindric3]: ...
     @overload
-    def to_cylindrical(
+    def to_cylindric(
         self: Tangent[Cylindric3],
     ) -> Tangent[Cylindric3]: ...
     @overload
-    def to_cylindrical(
+    def to_cylindric(
         self: Tangent[Cylindric4],
     ) -> Tangent[Cylindric4]: ...
     @overload
-    def to_cylindrical(
+    def to_cylindric(
         self: Tangent[Cartesian4],
     ) -> Tangent[Cylindric4]: ...
 
-    def to_cylindrical(self) -> Tangent:
-        tup: tuple[T, T] = jax.jvp(
-            lambda v: v.to_cylindrical(), (self.point.x,), (self.dx,)
-        )
-        x, dx = tup
-        return Tangent(point=Point(x=x), dx=dx)
+    def to_cylindric(self) -> Tangent:
+        tup: tuple[T, T] = jax.jvp(lambda v: v.to_cylindrical(), (self.p,), (self.t,))
+        p, t = tup
+        return Tangent(p=p, t=t)
 
 
 class Cotangent[T: CoordinateChart](eqx.Module):
     """A cotangent vector on a manifold, represented in a given coordinate chart"""
 
-    point: Point[T]
-    dx: T
+    p: T
+    """Point"""
+    ct: T
+    """Cotangent vector at p"""
 
 
 class GradientField[T: CoordinateChart](eqx.Module):
     """Gradient vector field of a scalar field"""
 
-    field: Callable[[Point[T]], SFloat]
+    field: Callable[[T], SFloat]
 
     # TODO: this should return Cotangent
-    def __call__(self, point: Point[T]) -> Tangent[T]:
-        grad: Point[T] = jax.grad(self.field)(point)
-        value = type(point.x)(coords=grad.x.coords * point.x.differential())
-        return Tangent(point=point, dx=value)
+    def __call__(self, point: T) -> Tangent[T]:
+        grad: T = jax.grad(self.field)(point)
+        value = type(point)(coords=grad.coords * point.differential())
+        return Tangent(p=point, t=value)
 
 
 class DivergenceField[T: CoordinateChart](eqx.Module):
     """Divergence of a vector field"""
 
-    field: Callable[[Point[T]], Tangent[T]]
+    field: Callable[[T], Tangent[T]]
 
-    def __call__(self, point: Point[T]) -> SFloat:
-        def func(p: Point[T]) -> VecN:
-            return self.field(p).dx.coords * p.x.volume_element()
+    def __call__(self, point: T) -> SFloat:
+        def func(p: T) -> VecN:
+            return self.field(p).t.coords * p.volume_element()
 
-        jac: Point[T] = jax.jacobian(func)(point)
-        return jnp.trace(jac.x.coords) / point.x.volume_element()
+        jac: T = jax.jacobian(func)(point)
+        return jnp.trace(jac.coords) / point.volume_element()
 
 
 class Transform(eqx.Module):
@@ -397,25 +367,23 @@ class Transform(eqx.Module):
 
     # TODO maybe someday we can make this more generic
 
-    def to_local(self, point: Point[Cartesian4]) -> Point[Cartesian4]:
-        xyzg = point.x
-        xyzl = jnp.linalg.inv(self.rotation) @ (xyzg.coords - self.translation.coords)
-        return Point(x=Cartesian4(coords=xyzl))
+    def to_local(self, point: Cartesian4) -> Cartesian4:
+        xyzl = jnp.linalg.inv(self.rotation) @ (point.coords - self.translation.coords)
+        return Cartesian4(coords=xyzl)
 
-    def to_global(self, point: Point[Cartesian4]) -> Point[Cartesian4]:
-        xyzl = point.x
-        xyzg = self.rotation @ xyzl.coords + self.translation.coords
-        return Point(x=Cartesian4(coords=xyzg))
+    def to_global(self, point: Cartesian4) -> Cartesian4:
+        xyzg = self.rotation @ point.coords + self.translation.coords
+        return Cartesian4(coords=xyzg)
 
     def tangent_to_local(self, vec: Tangent[Cartesian4]) -> Tangent[Cartesian4]:
-        point_local = self.to_local(vec.point)
-        dx_local = jnp.linalg.inv(self.rotation) @ vec.dx.coords
-        return Tangent(point=point_local, dx=Cartesian4(coords=dx_local))
+        point_local = self.to_local(vec.p)
+        dx_local = jnp.linalg.inv(self.rotation) @ vec.t.coords
+        return Tangent(p=point_local, t=Cartesian4(coords=dx_local))
 
     def tangent_to_global(self, vec: Tangent[Cartesian4]) -> Tangent[Cartesian4]:
-        point_global = self.to_global(vec.point)
-        dx_global = self.rotation @ vec.dx.coords
-        return Tangent(point=point_global, dx=Cartesian4(coords=dx_global))
+        point_global = self.to_global(vec.p)
+        dx_global = self.rotation @ vec.t.coords
+        return Tangent(p=point_global, t=Cartesian4(coords=dx_global))
 
     # TODO: implement for Cotangent?
 
@@ -424,11 +392,11 @@ class TransformOneForm(eqx.Module):
     """A container to transform 1-forms (i.e. gradients)"""
 
     transform: Transform
-    field: Callable[[Point[Cartesian4]], Tangent[Cartesian4]]
+    field: Callable[[Cartesian4], Tangent[Cartesian4]]
     """The field in local coordinates (i.e. before transformation)"""
 
     # TODO: this should return Cotangent
-    def __call__(self, point: Point[Cartesian4]) -> Tangent[Cartesian4]:
+    def __call__(self, point: Cartesian4) -> Tangent[Cartesian4]:
         in_local = self.transform.to_local(point)
         out_local = self.field(in_local)
         return self.transform.tangent_to_global(out_local)

@@ -13,7 +13,6 @@ from beamline.jax.coordinates import (
     Cartesian4,
     Cylindric3,
     Cylindric4,
-    Point,
     Tangent,
 )
 from beamline.jax.types import SFloat, SInt
@@ -54,7 +53,7 @@ class ParticleState(eqx.Module):
 
     def gamma(self) -> SFloat:
         """Compute the Lorentz factor gamma"""
-        E = self.kin.dx.ct
+        E = self.kin.t.ct
         # return E / abs(self.kin.dx)
         return E / self.mass
 
@@ -79,7 +78,7 @@ class MuonState(ParticleState):
         q: SInt,
     ) -> Self:
         """Create a MuonState from position and momentum components"""
-        pos = Point(x=position.to_cartesian())
+        pos = position.to_cartesian()
         mom3 = momentum.to_cartesian()
         mom4 = Cartesian4.make(
             x=mom3.coords[0],
@@ -87,7 +86,7 @@ class MuonState(ParticleState):
             z=mom3.coords[2],
             ct=jnp.sqrt(mom3.coords.dot(mom3.coords) + MUON_MASS**2 * u.c_light**4),
         )
-        tangent_vector = Tangent(point=pos, dx=mom4)
+        tangent_vector = Tangent(p=pos, t=mom4)
         return cls(kin=tangent_vector, q=q)
 
 
@@ -112,6 +111,6 @@ class MuonStateDz(MuonState):
     """Sign of the muon charge (+1 or -1)"""
 
     def build_tangent(self, dkin: Tangent[Cartesian4]) -> MuonStateDz:
-        dct_dz = self.kin.dx.ct / self.kin.dx.z
+        dct_dz = self.kin.t.ct / self.kin.t.z
         dkin_dz = jax.tree.map(lambda x: x * dct_dz, dkin)
         return MuonStateDz(kin=dkin_dz, q=self.q)

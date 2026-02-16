@@ -52,7 +52,7 @@ def test_benchmark_3p2_solenoid(artifacts_dir):
     end: MuonStateDz = jax.tree.map(lambda x: x[:, -1], track)
     # TODO: understand why forward_mode=True fails here (when using jacfwd) at x=0.0
     grad: MuonStateDz = jax.vmap(jax.jacfwd(run), in_axes=(None, 0))(SOLENOID, xpos)
-    assert track.kin.point.x.x.shape == (len(xpos), len(zs))
+    assert track.kin.p.x.shape == (len(xpos), len(zs))
 
     def extract(
         dstate: MuonStateDz, get: Callable[[ThickSolenoid], SFloat]
@@ -71,14 +71,14 @@ def test_benchmark_3p2_solenoid(artifacts_dir):
     with open(artifacts_dir / "benchmark_3p2_solenoid_data.csv", "w") as f:
         f.write("xf,yf,zf,tf,pxf,pyf,pzf,Ef\n")
         cols = [
-            end.kin.point.x.x / u.mm,
-            end.kin.point.x.y / u.mm,
-            end.kin.point.x.z / u.mm,
-            end.kin.point.x.ct / u.mm,
-            end.kin.dx.x / u.MeV,
-            end.kin.dx.y / u.MeV,
-            end.kin.dx.z / u.MeV,
-            end.kin.dx.ct / u.MeV,
+            end.kin.p.x / u.mm,
+            end.kin.p.y / u.mm,
+            end.kin.p.z / u.mm,
+            end.kin.p.ct / u.mm,
+            end.kin.t.x / u.MeV,
+            end.kin.t.y / u.MeV,
+            end.kin.t.z / u.MeV,
+            end.kin.t.ct / u.MeV,
         ]
         for row in zip(*cols, strict=True):
             f.write(",".join(f"{val:.6f}" for val in row) + "\n")
@@ -86,8 +86,8 @@ def test_benchmark_3p2_solenoid(artifacts_dir):
     # Plot results
     fig, ax = plt.subplots(figsize=(8, 8))
     (dots,) = ax.plot(
-        end.kin.point.x.x,
-        end.kin.point.x.y,
+        end.kin.p.x,
+        end.kin.p.y,
         marker=".",
         color="k",
         ls="none",
@@ -121,16 +121,16 @@ def test_benchmark_3p2_solenoid(artifacts_dir):
 
     def get_framedata(frame: int):
         return {
-            "x": track.kin.point.x.x[:, frame],
-            "y": track.kin.point.x.y[:, frame],
-            "grad_Rin_x": grad_Rin.kin.point.x.x[:, frame],
-            "grad_Rin_y": grad_Rin.kin.point.x.y[:, frame],
-            "grad_Rout_x": grad_Rout.kin.point.x.x[:, frame],
-            "grad_Rout_y": grad_Rout.kin.point.x.y[:, frame],
-            "grad_jphi_x": grad_jphi.kin.point.x.x[:, frame] * (u.A / u.mm**2),
-            "grad_jphi_y": grad_jphi.kin.point.x.y[:, frame] * (u.A / u.mm**2),
-            "grad_L_x": grad_L.kin.point.x.x[:, frame],
-            "grad_L_y": grad_L.kin.point.x.y[:, frame],
+            "x": track.kin.p.x[:, frame],
+            "y": track.kin.p.y[:, frame],
+            "grad_Rin_x": grad_Rin.kin.p.x[:, frame],
+            "grad_Rin_y": grad_Rin.kin.p.y[:, frame],
+            "grad_Rout_x": grad_Rout.kin.p.x[:, frame],
+            "grad_Rout_y": grad_Rout.kin.p.y[:, frame],
+            "grad_jphi_x": grad_jphi.kin.p.x[:, frame] * (u.A / u.mm**2),
+            "grad_jphi_y": grad_jphi.kin.p.y[:, frame] * (u.A / u.mm**2),
+            "grad_L_x": grad_L.kin.p.x[:, frame],
+            "grad_L_y": grad_L.kin.p.y[:, frame],
         }
 
     scale = 0.5
@@ -318,9 +318,9 @@ def test_benchmark_3p2_solenoid_perf(
 
     def reduce(leaf_func, a, b) -> float:
         out = jax.tree.reduce(
-            lambda x, y: jnp.maximum(x, y),
+            jnp.maximum,
             jax.tree.map(
-                lambda x, y: leaf_func(x, y),
+                leaf_func,
                 a,
                 b,
             ),
@@ -339,23 +339,23 @@ def test_benchmark_3p2_solenoid_perf(
     benchmark.extra_info = {
         "max_abs_diff_pos": reduce(
             abs_diff,
-            result.kin.point,
-            reference_benchmark_3p2_solenoid.kin.point,
+            result.kin.p,
+            reference_benchmark_3p2_solenoid.kin.p,
         ),
         "max_abs_diff_mom": reduce(
             abs_diff,
-            result.kin.dx,
-            reference_benchmark_3p2_solenoid.kin.dx,
+            result.kin.t,
+            reference_benchmark_3p2_solenoid.kin.t,
         ),
         "max_rel_diff_pos": reduce(
             rel_diff,
-            result.kin.point,
-            reference_benchmark_3p2_solenoid.kin.point,
+            result.kin.p,
+            reference_benchmark_3p2_solenoid.kin.p,
         ),
         "max_rel_diff_mom": reduce(
             rel_diff,
-            result.kin.dx,
-            reference_benchmark_3p2_solenoid.kin.dx,
+            result.kin.t,
+            reference_benchmark_3p2_solenoid.kin.t,
         ),
     }
     benchmark(runbench)

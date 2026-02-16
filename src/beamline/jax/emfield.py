@@ -7,7 +7,7 @@ import equinox as eqx
 import hepunits as u
 import jax.numpy as jnp
 
-from beamline.jax.coordinates import Cartesian3, Cartesian4, Point, Tangent, Transform
+from beamline.jax.coordinates import Cartesian3, Cartesian4, Tangent, Transform
 from beamline.jax.kinematics import ParticleState
 
 
@@ -16,7 +16,7 @@ class EMTensorField(eqx.Module):
 
     @abstractmethod
     def field_strength(
-        self, point: Point[Cartesian4]
+        self, point: Cartesian4
     ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
         """Field strength tensor components at a given point
 
@@ -41,17 +41,17 @@ class EMTensorField(eqx.Module):
         Returns:
             Change in [MeV/ns * MeV/e]. Scale by q/mc^2 to get dpc/dtau.
         """
-        E, B = self.field_strength(vec.point)
-        Etmp = E.dx
-        Btmp = B.dx * u.c_light
-        p = vec.dx * u.c_light
+        E, B = self.field_strength(vec.p)
+        Etmp = E.t
+        Btmp = B.t * u.c_light
+        p = vec.t * u.c_light
         Egy = Etmp.x * p.x + Etmp.y * p.y + Etmp.z * p.z
         pxc = Etmp.x * p.ct + Btmp.z * p.y - Btmp.y * p.z
         pyc = Etmp.y * p.ct - Btmp.z * p.x + Btmp.x * p.z
         pzc = Etmp.z * p.ct + Btmp.y * p.x - Btmp.x * p.y
         return Tangent(
-            point=vec.point,
-            dx=Cartesian4.make(x=pxc, y=pyc, z=pzc, ct=Egy),
+            p=vec.p,
+            t=Cartesian4.make(x=pxc, y=pyc, z=pzc, ct=Egy),
         )
 
     def __add__(self, other: EMTensorField) -> EMTensorField:
@@ -65,11 +65,11 @@ class SimpleEMField(EMTensorField):
     B0: Cartesian3
 
     def field_strength(
-        self, point: Point[Cartesian4]
+        self, point: Cartesian4
     ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
         return (
-            Tangent(point=Point(x=point.x.to_cartesian3()), dx=self.E0),
-            Tangent(point=Point(x=point.x.to_cartesian3()), dx=self.B0),
+            Tangent(p=point.to_cartesian3(), t=self.E0),
+            Tangent(p=point.to_cartesian3(), t=self.B0),
         )
 
 
@@ -85,22 +85,22 @@ class SumField(EMTensorField):
                 self.components.append(comp)
 
     def field_strength(
-        self, point: Point[Cartesian4]
+        self, point: Cartesian4
     ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
         E_total = jnp.array([0.0, 0.0, 0.0])
         B_total = jnp.array([0.0, 0.0, 0.0])
         for comp in self.components:
             E, B = comp.field_strength(point)
-            E_total.at[:].add(E.dx.coords)
-            B_total.at[:].add(B.dx.coords)
+            E_total.at[:].add(E.t.coords)
+            B_total.at[:].add(B.t.coords)
         return (
             Tangent(
-                point=Point(x=point.x.to_cartesian3()),
-                dx=Cartesian3(coords=E_total),
+                p=point.to_cartesian3(),
+                t=Cartesian3(coords=E_total),
             ),
             Tangent(
-                point=Point(x=point.x.to_cartesian3()),
-                dx=Cartesian3(coords=B_total),
+                p=point.to_cartesian3(),
+                t=Cartesian3(coords=B_total),
             ),
         )
 
@@ -129,15 +129,15 @@ def particle_interaction[T: ParticleState](state: T, field: EMTensorField) -> T:
     TODO: verlet integration / symplectic integrators ?
     """
     # unitless in this convention
-    dposition_dct = state.kin.dx.coords / state.kin.dx.ct
+    dposition_dct = state.kin.t.coords / state.kin.t.ct
     # Unit: [MeV/mm]
     # Note: state.mass is in MeV
     dmomentum_dctau = (state.charge / state.mass / u.c_light) * field(
         state.kin
-    ).dx.coords
+    ).t.coords
     dt_dtau = state.gamma()
     dkin = Tangent(
-        point=Point(x=Cartesian4(dposition_dct)),
-        dx=Cartesian4(coords=dmomentum_dctau / dt_dtau),
+        p=Cartesian4(dposition_dct),
+        t=Cartesian4(coords=dmomentum_dctau / dt_dtau),
     )
     return state.build_tangent(dkin)

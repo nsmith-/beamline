@@ -8,7 +8,7 @@ from jax.experimental.jet import jet
 from jax.scipy.special import gamma
 from quadax import quadgk
 
-from beamline.jax.coordinates import Cartesian3, Cartesian4, Cylindric3, Point, Tangent
+from beamline.jax.coordinates import Cartesian3, Cartesian4, Cylindric3, Tangent
 from beamline.jax.elliptic import (
     elliprd_one_zero,
     elliprf_one_zero,
@@ -176,13 +176,13 @@ class ThinShellSolenoid(EMTensorField):
         return self.jphi * Brho, self.jphi * Bz
 
     def field_strength(
-        self, point: Point[Cartesian4]
+        self, point: Cartesian4
     ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
-        xcyl = point.x.to_cylindric3()
+        xcyl = point.to_cylindric3()
         Brho, Bz = self.B_elliptic(xcyl.rho, xcyl.z)
         Bphi = jnp.zeros_like(Brho)
-        E = Tangent(Point(x=point.x.to_cartesian3()), dx=Cartesian3.make())
-        B = Tangent(Point(x=xcyl), dx=Cylindric3.make(rho=Brho, phi=Bphi, z=Bz))
+        E = Tangent(p=point.to_cartesian3(), t=Cartesian3.make())
+        B = Tangent(p=xcyl, t=Cylindric3.make(rho=Brho, phi=Bphi, z=Bz))
         return E, B.to_cartesian()
 
 
@@ -221,11 +221,11 @@ class ThickSolenoid(EMTensorField):
         return out
 
     def field_strength(
-        self, point: Point[Cartesian4]
+        self, point: Cartesian4
     ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
-        xcyl = point.x.to_cylindric3()
+        xcyl = point.to_cylindric3()
         Brho, Bz = self.B_shells(xcyl.rho, xcyl.z)
         Bphi = jnp.zeros_like(Brho)
-        E = Tangent(Point(x=point.x.to_cartesian3()), dx=Cartesian3.make())
-        B = Tangent(Point(x=xcyl), dx=Cylindric3.make(rho=Brho, phi=Bphi, z=Bz))
+        E = Tangent(p=point.to_cartesian3(), t=Cartesian3.make())
+        B = Tangent(p=xcyl, t=Cylindric3.make(rho=Brho, phi=Bphi, z=Bz))
         return E, B.to_cartesian()

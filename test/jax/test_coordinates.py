@@ -14,7 +14,6 @@ from beamline.jax.coordinates import (
     Cylindric3,
     DivergenceField,
     GradientField,
-    Point,
     Tangent,
     Transform,
     TransformOneForm,
@@ -23,25 +22,21 @@ from beamline.jax.types import SFloat, Vec3
 
 
 def test_convert_point():
-    p_cart = Point(x=Cartesian4(coords=jnp.array([3.0, 0.0, 0.0, 5.0])))
-    assert abs(p_cart.x) == 4.0
-    p_cyl = Point(x=p_cart.x.to_cylindrical())
-    assert abs(p_cyl.x) == 4.0
+    p_cart = Cartesian4(coords=jnp.array([3.0, 0.0, 0.0, 5.0]))
+    assert abs(p_cart) == 4.0
+    p_cyl = p_cart.to_cylindrical()
+    assert abs(p_cyl) == 4.0
 
 
-def potential(p: Point[Cartesian3], origin: Point[Cartesian3] | None = None) -> SFloat:
+def potential(p: Cartesian3, origin: Cartesian3 | None = None) -> SFloat:
     if origin is None:
-        origin = Point(x=Cartesian3.make())
-    r = jnp.sqrt(
-        (p.x.x - origin.x.x) ** 2
-        + (p.x.y - origin.x.y) ** 2
-        + (p.x.z - origin.x.z) ** 2
-    )
+        origin = Cartesian3.make()
+    r = jnp.sqrt((p.x - origin.x) ** 2 + (p.y - origin.y) ** 2 + (p.z - origin.z) ** 2)
     return 1 / r
 
 
-def potentialc(p: Point[Cylindric3]) -> SFloat:
-    r = jnp.sqrt(p.x.rho**2 + p.x.z**2)
+def potentialc(p: Cylindric3) -> SFloat:
+    r = jnp.sqrt(p.rho**2 + p.z**2)
     return 1 / r
 
 
@@ -55,14 +50,14 @@ def test_grad():
 
     @jax.vmap
     def test_roundtrip(coords: Vec3) -> tuple[Vec3, Vec3]:
-        p_cart = Point(x=Cartesian3(coords=coords))
+        p_cart = Cartesian3(coords=coords)
         p_cyl = p_cart.to_cylindrical()
 
         grad_at_cart = field_cart(p_cart)
         grad_at_cyl = field_cyl(p_cyl)
 
-        cylval = grad_at_cyl.to_cartesian().dx.coords
-        cartval = grad_at_cart.dx.coords
+        cylval = grad_at_cyl.to_cartesian().t.coords
+        cartval = grad_at_cart.t.coords
         return cylval, cartval
 
     rng = jax.random.PRNGKey(1234)
@@ -78,7 +73,7 @@ def test_div():
 
     @jax.vmap
     def test_roundtrip(coords: Vec3) -> tuple[SFloat, SFloat]:
-        p_cart = Point(x=Cartesian3(coords=coords))
+        p_cart = Cartesian3(coords=coords)
         p_cyl = p_cart.to_cylindrical()
 
         div_at_cart = field_cart(p_cart)
@@ -102,60 +97,52 @@ def test_transform_rotate():
     )
 
     vec = Tangent(
-        point=Point(x=Cartesian4.make()),
-        dx=Cartesian4.make(y=1.0),
+        p=Cartesian4.make(),
+        t=Cartesian4.make(y=1.0),
     )
     vec_loc = transform.tangent_to_local(vec)
     vec_loc_exp = Tangent(
-        point=Point(x=Cartesian4.make()),
-        dx=Cartesian4.make(x=1.0),
+        p=Cartesian4.make(),
+        t=Cartesian4.make(x=1.0),
     )
-    assert vec_loc.point.x.coords == pytest.approx(
-        vec_loc_exp.point.x.coords, rel=1e-12
-    )
-    assert vec_loc.dx.coords == pytest.approx(vec_loc_exp.dx.coords, rel=1e-12)
+    assert vec_loc.p.coords == pytest.approx(vec_loc_exp.p.coords, rel=1e-12)
+    assert vec_loc.t.coords == pytest.approx(vec_loc_exp.t.coords, rel=1e-12)
 
     vec = Tangent(
-        point=Point(x=Cartesian4.make()),
-        dx=Cartesian4.make(z=1.0),
+        p=Cartesian4.make(),
+        t=Cartesian4.make(z=1.0),
     )
     vec_loc = transform.tangent_to_local(vec)
     vec_loc_exp = Tangent(
-        point=Point(x=Cartesian4.make()),
-        dx=Cartesian4.make(z=1.0),
+        p=Cartesian4.make(),
+        t=Cartesian4.make(z=1.0),
     )
-    assert vec_loc.point.x.coords == pytest.approx(
-        vec_loc_exp.point.x.coords, rel=1e-12
-    )
-    assert vec_loc.dx.coords == pytest.approx(vec_loc_exp.dx.coords, rel=1e-12)
+    assert vec_loc.p.coords == pytest.approx(vec_loc_exp.p.coords, rel=1e-12)
+    assert vec_loc.t.coords == pytest.approx(vec_loc_exp.t.coords, rel=1e-12)
 
     vec = Tangent(
-        point=Point(x=Cartesian4.make(z=1.0)),
-        dx=Cartesian4.make(y=1.0),
+        p=Cartesian4.make(z=1.0),
+        t=Cartesian4.make(y=1.0),
     )
     vec_loc = transform.tangent_to_local(vec)
     vec_loc_exp = Tangent(
-        point=Point(x=Cartesian4.make(z=1.0)),
-        dx=Cartesian4.make(x=1.0),
+        p=Cartesian4.make(z=1.0),
+        t=Cartesian4.make(x=1.0),
     )
-    assert vec_loc.point.x.coords == pytest.approx(
-        vec_loc_exp.point.x.coords, rel=1e-12
-    )
-    assert vec_loc.dx.coords == pytest.approx(vec_loc_exp.dx.coords, rel=1e-12)
+    assert vec_loc.p.coords == pytest.approx(vec_loc_exp.p.coords, rel=1e-12)
+    assert vec_loc.t.coords == pytest.approx(vec_loc_exp.t.coords, rel=1e-12)
 
     vec = Tangent(
-        point=Point(x=Cartesian4.make(x=1.0)),
-        dx=Cartesian4.make(y=1.0),
+        p=Cartesian4.make(x=1.0),
+        t=Cartesian4.make(y=1.0),
     )
     vec_loc = transform.tangent_to_local(vec)
     vec_loc_exp = Tangent(
-        point=Point(x=Cartesian4.make(y=-1.0)),
-        dx=Cartesian4.make(x=1.0),
+        p=Cartesian4.make(y=-1.0),
+        t=Cartesian4.make(x=1.0),
     )
-    assert vec_loc.point.x.coords == pytest.approx(
-        vec_loc_exp.point.x.coords, rel=1e-12
-    )
-    assert vec_loc.dx.coords == pytest.approx(vec_loc_exp.dx.coords, rel=1e-12)
+    assert vec_loc.p.coords == pytest.approx(vec_loc_exp.p.coords, rel=1e-12)
+    assert vec_loc.t.coords == pytest.approx(vec_loc_exp.t.coords, rel=1e-12)
 
 
 def test_transform_both():
@@ -165,82 +152,69 @@ def test_transform_both():
         translation=Cartesian4.make(x=3.0),
     )
     vec = Tangent(
-        point=Point(x=Cartesian4.make(x=1.0)),
-        dx=Cartesian4.make(y=1.0),
+        p=Cartesian4.make(x=1.0),
+        t=Cartesian4.make(y=1.0),
     )
     vec_loc = transform.tangent_to_local(vec)
     vec_loc_exp = Tangent(
-        point=Point(x=Cartesian4.make(x=0.0, y=2.0)),
-        dx=Cartesian4.make(x=1.0),
+        p=Cartesian4.make(x=0.0, y=2.0),
+        t=Cartesian4.make(x=1.0),
     )
-    assert vec_loc.point.x.coords == pytest.approx(
-        vec_loc_exp.point.x.coords, rel=1e-12
-    )
-    assert vec_loc.dx.coords == pytest.approx(vec_loc_exp.dx.coords, rel=1e-12)
+    assert vec_loc.p.coords == pytest.approx(vec_loc_exp.p.coords, rel=1e-12)
+    assert vec_loc.t.coords == pytest.approx(vec_loc_exp.t.coords, rel=1e-12)
 
 
-def monopole_potential(
-    origin: Point[Cartesian4], moment: Cartesian3, p: Point[Cartesian4]
-) -> SFloat:
+def monopole_potential(origin: Cartesian4, moment: Cartesian3, p: Cartesian4) -> SFloat:
     "Something rotationally symmetric"
-    r = jnp.sqrt(
-        (p.x.x - origin.x.x) ** 2
-        + (p.x.y - origin.x.y) ** 2
-        + (p.x.z - origin.x.z) ** 2
-    )
+    r = jnp.sqrt((p.x - origin.x) ** 2 + (p.y - origin.y) ** 2 + (p.z - origin.z) ** 2)
     return 1 / r
 
 
-def dipole_potential(
-    origin: Point[Cartesian4], moment: Cartesian3, p: Point[Cartesian4]
-) -> SFloat:
+def dipole_potential(origin: Cartesian4, moment: Cartesian3, p: Cartesian4) -> SFloat:
     "Something not rotationally symmetric"
-    pshift = Cartesian4(coords=p.x.coords - origin.x.coords)
+    # TODO: __sub__ mixin
+    pshift = Cartesian4(coords=p.coords - origin.coords)
     p3 = pshift.to_cartesian3()
     return p3.dot(moment) / abs(p3) ** 3
 
 
-FType = Callable[[Point[Cartesian4], Cartesian3, Point[Cartesian4]], SFloat]
+FType = Callable[[Cartesian4, Cartesian3, Cartesian4], SFloat]
 
 
 @pytest.mark.parametrize("func", [monopole_potential, dipole_potential])
 def test_transform_tangents(func: FType):
     angle = jnp.pi / 3
-    origin = Point(x=Cartesian4.make(x=1.0, y=-1.0, z=2.0))
+    origin = Cartesian4.make(x=1.0, y=-1.0, z=2.0)
     direction = Cartesian3.make(x=1.0, y=0.0, z=0.0)
     rotated_direction = Cartesian3.make(x=jnp.cos(angle), y=jnp.sin(angle), z=0.0)
 
     transform = Transform.make_axis_angle(
         axis=Cartesian3.make(x=0.0, y=0.0, z=1.0),
         angle=angle,
-        translation=origin.x,
+        translation=origin,
     )
-    field_local = GradientField(
-        field=partial(func, Point(Cartesian4.make()), direction)
-    )
+    field_local = GradientField(field=partial(func, Cartesian4.make(), direction))
     field_global = TransformOneForm(transform=transform, field=field_local)
     expected_global = GradientField(field=partial(func, origin, rotated_direction))
 
     @jax.vmap
-    def test_roundtrip(point: Point[Cartesian4]):
+    def test_roundtrip(point: Cartesian4):
         val_global = field_global(point)
         val_expected = expected_global(point)
         return val_global, val_expected
 
     rng = jax.random.PRNGKey(91011)
     coords = jax.random.uniform(rng, shape=(1000, 4), minval=-5.0, maxval=5.0)
-    points = Point(x=Cartesian4(coords=coords))
+    points = Cartesian4(coords=coords)
     val_global, val_expected = test_roundtrip(points)
-    assert val_global.point.x.coords == pytest.approx(
-        val_expected.point.x.coords, rel=1e-12
-    )
-    assert val_global.dx.coords == pytest.approx(val_expected.dx.coords, rel=1e-12)
+    assert val_global.p.coords == pytest.approx(val_expected.p.coords, rel=1e-12)
+    assert val_global.t.coords == pytest.approx(val_expected.t.coords, rel=1e-12)
 
 
 def test_pretty_dipole(artifacts_dir: Path, request):
     """Generate a plot of the dipole potential and its gradient field"""
 
-    origin = Point(x=Cartesian4.make())
+    origin = Cartesian4.make()
     moment = Cartesian3.make(x=0.2, y=1.0, z=1.0)
 
     local_field = GradientField(field=partial(dipole_potential, origin, moment))
@@ -268,12 +242,12 @@ def test_pretty_dipole(artifacts_dir: Path, request):
                 ),
                 field=local_field,
             )
-            return global_field(Point(x=Cartesian4.make(x=x, y=y, z=z)))
+            return global_field(Cartesian4.make(x=x, y=y, z=z))
 
         vals = fieldvals(X, Y, Z)
-        dx = vals.dx.x
-        dz = vals.dx.z
-        norm = jnp.sqrt(jnp.sum(vals.dx.coords[..., :3] ** 2, axis=-1))
+        dx = vals.t.x
+        dz = vals.t.z
+        norm = jnp.sqrt(jnp.sum(vals.t.coords[..., :3] ** 2, axis=-1))
         # ad-hoc sqrt rescaling to make arrows more visible
         dx = dx / jnp.sqrt(norm)
         dz = dz / jnp.sqrt(norm)

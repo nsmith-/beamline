@@ -6,7 +6,6 @@ from beamline.jax.coordinates import (
     Cartesian3,
     Cartesian4,
     Cylindric3,
-    Point,
     Tangent,
 )
 from beamline.jax.elliptic import elliptic_kepi
@@ -50,11 +49,11 @@ class WireLoop(EMTensorField):
         return Brho, Bz
 
     def field_strength(
-        self, point: Point[Cartesian4]
+        self, point: Cartesian4
     ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
-        xcyl = point.x.to_cylindric3()
+        xcyl = point.to_cylindric3()
         Brho, Bz = self.B(xcyl.rho, xcyl.z)
         Bphi = jnp.zeros_like(Brho)
-        E = Tangent(Point(x=point.x.to_cartesian3()), dx=Cartesian3.make())
-        B = Tangent(Point(x=xcyl), dx=Cylindric3.make(rho=Brho, phi=Bphi, z=Bz))
+        E = Tangent(point.to_cartesian3(), t=Cartesian3.make())
+        B = Tangent(p=xcyl, t=Cylindric3.make(rho=Brho, phi=Bphi, z=Bz))
         return E, B.to_cartesian()
