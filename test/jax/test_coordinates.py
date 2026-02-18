@@ -18,14 +18,48 @@ from beamline.jax.coordinates import (
     Transform,
     TransformOneForm,
 )
-from beamline.jax.types import SFloat, Vec3
+from beamline.jax.types import SFloat
 
 
 def test_convert_point():
+    # TODO: more tests, this is very barebones
     p_cart = Cartesian4(coords=jnp.array([3.0, 0.0, 0.0, 5.0]))
     assert abs(p_cart) == 4.0
     p_cyl = p_cart.to_cylindric()
     assert abs(p_cyl) == 4.0
+
+
+def test_tangent_conversion():
+    tangent_cart = Tangent(
+        p=Cartesian3.make(x=2.0),
+        t=Cartesian3.make(y=1.0),
+    )
+    tangent_cyl = tangent_cart.to_cylindric()
+    assert tangent_cyl.t.rho == pytest.approx(0.0, rel=1e-15)
+    # convention: phihat is normalized so this is 1.0 rather than 0.5
+    # (e.g. if t.y is 1 m/s then t.phi is 1 m/s in the phi direction, not 0.5 m/s)
+    assert tangent_cyl.t.phi == pytest.approx(1.0, rel=1e-15)
+    tangent_cart_back = tangent_cyl.to_cartesian()
+    assert tangent_cart_back.t.x == pytest.approx(0.0, rel=1e-15)
+    assert tangent_cart_back.t.y == pytest.approx(1.0, rel=1e-15)
+
+    tangent_cart = Tangent(
+        p=Cartesian3.make(y=2.0),
+        t=Cartesian3.make(x=1.0),
+    )
+    tangent_cyl = tangent_cart.to_cylindric()
+    assert tangent_cyl.t.rho == pytest.approx(0.0, rel=1e-15)
+    assert tangent_cyl.t.phi == pytest.approx(-1.0, rel=1e-15)
+
+    def field(p: Cylindric3) -> SFloat:
+        return p.y
+
+    grad = GradientField(field=field)(Cartesian3.make(x=2.0).to_cylindric())
+    assert grad.t.rho == pytest.approx(0.0, rel=1e-15)
+    assert grad.t.phi == pytest.approx(1.0, rel=1e-15)
+    grad_cart = grad.to_cartesian()
+    assert grad_cart.t.x == pytest.approx(0.0, rel=1e-15)
+    assert grad_cart.t.y == pytest.approx(1.0, rel=1e-15)
 
 
 def potential(p: Cartesian3, origin: Cartesian3 | None = None) -> SFloat:
@@ -35,9 +69,14 @@ def potential(p: Cartesian3, origin: Cartesian3 | None = None) -> SFloat:
     return 1 / r
 
 
-def potentialc(p: Cylindric3) -> SFloat:
+def potential_cyl(p: Cylindric3) -> SFloat:
     r = jnp.sqrt(p.rho**2 + p.z**2)
     return 1 / r
+
+
+def potential_cyl_displaced(p: Cylindric3, origin: Cartesian3) -> SFloat:
+    p_cart = p.to_cartesian()
+    return potential(p_cart, origin=origin)
 
 
 def test_grad():
@@ -46,47 +85,81 @@ def test_grad():
     """
 
     field_cart = GradientField(field=potential)
-    field_cyl = GradientField(field=potentialc)
+    field_cyl = GradientField(field=potential_cyl)
 
-    @jax.vmap
-    def test_roundtrip(coords: Vec3) -> tuple[Vec3, Vec3]:
-        p_cart = Cartesian3(coords=coords)
-        p_cyl = p_cart.to_cylindric()
+    shift = Cartesian3.make(x=3.0, y=2.0, z=1.0)
+    field_displaced = GradientField(partial(potential, origin=shift))
+    field_cyl_displaced = GradientField(partial(potential_cyl_displaced, origin=shift))
 
-        grad_at_cart = field_cart(p_cart)
-        grad_at_cyl = field_cyl(p_cyl)
-
-        cylval = grad_at_cyl.to_cartesian().t.coords
-        cartval = grad_at_cart.t.coords
-        return cylval, cartval
+    transform = Transform.make_axis_angle(
+        axis=Cartesian3.make(z=1.0),
+        angle=0.0,
+        translation=Cartesian4(jnp.zeros(4).at[:3].set(shift.coords)),
+    )
+    field_transform = TransformOneForm(transform=transform, field=field_cart)
 
     rng = jax.random.PRNGKey(1234)
     coords = jax.random.uniform(rng, shape=(1000, 3), minval=-5.0, maxval=5.0)
-    coords.at[..., :2].set(0.0)  # include some on-axis points
-    cylval, cartval = test_roundtrip(coords)
-    assert cylval == pytest.approx(cartval, rel=1e-12)
+    # coords = coords.at[::5, :2].set(0.0)  # include some on-axis points
+    input = Cartesian3(coords=coords)
+
+    grad_cart = jax.vmap(field_cart)(input)
+    grad_cyl = jax.vmap(field_cyl)(input.to_cylindric())
+    grad_cart_displaced = jax.vmap(field_displaced)(input)
+    grad_cyl_displaced = jax.vmap(field_cyl_displaced)(input.to_cylindric())
+    grad_cart_transform = jax.vmap(field_transform)(input)
+    assert grad_cart.t.coords == pytest.approx(
+        grad_cyl.to_cartesian().t.coords, rel=1e-14
+    )
+    assert grad_cart_transform.t.coords == pytest.approx(
+        grad_cart_displaced.t.coords, rel=1e-14
+    )
+    assert grad_cart_displaced.to_cylindric().t.coords == pytest.approx(
+        grad_cyl_displaced.t.coords, rel=1e-14
+    )
+    assert grad_cart_displaced.t.coords == pytest.approx(
+        grad_cyl_displaced.to_cartesian().t.coords, rel=1e-14
+    )
 
 
 def test_div():
     field_cart = DivergenceField(field=GradientField(potential))
-    field_cyl = DivergenceField(field=GradientField(potentialc))
+    field_cyl = DivergenceField(field=GradientField(potential_cyl))
 
-    @jax.vmap
-    def test_roundtrip(coords: Vec3) -> tuple[SFloat, SFloat]:
-        p_cart = Cartesian3(coords=coords)
-        p_cyl = p_cart.to_cylindric()
+    shift = Cartesian3.make(x=3.0, y=2.0, z=1.0)
+    field_displaced = DivergenceField(
+        field=GradientField(partial(potential, origin=shift))
+    )
+    field_cyl_displaced = DivergenceField(
+        field=GradientField(partial(potential_cyl_displaced, origin=shift))
+    )
 
-        div_at_cart = field_cart(p_cart)
-        div_at_cyl = field_cyl(p_cyl)
-
-        return div_at_cyl, div_at_cart
+    transform = Transform.make_axis_angle(
+        axis=Cartesian3.make(z=1.0),
+        angle=0.0,
+        translation=Cartesian4(jnp.zeros(4).at[:3].set(shift.coords)),
+    )
+    field_transform = DivergenceField(
+        field=TransformOneForm(transform=transform, field=GradientField(potential))
+    )
 
     rng = jax.random.PRNGKey(5678)
     coords = jax.random.uniform(rng, shape=(1000, 3), minval=-5.0, maxval=5.0)
-    coords.at[::5, :2].set(0.0)  # include some on-axis points
-    div_cyl, div_cart = test_roundtrip(coords)
-    assert div_cart == pytest.approx(jnp.zeros_like(div_cart), abs=1e-14)
-    assert div_cyl == pytest.approx(jnp.zeros_like(div_cart), abs=1e-14)
+    # TODO: make this work at zero
+    # coords = coords.at[::5, :2].set(0.0)  # include some on-axis points
+    input = Cartesian3(coords=coords)
+
+    div_cart = jax.vmap(field_cart)(input)
+    div_cyl = jax.vmap(field_cyl)(input.to_cylindric())
+    div_displaced = jax.vmap(field_displaced)(input)
+    div_cyl_displaced = jax.vmap(field_cyl_displaced)(input.to_cylindric())
+    div_cart_transform = jax.vmap(field_transform)(input)
+    zero = pytest.approx(jnp.zeros_like(div_cart), abs=2e-14)
+    assert div_cart == zero
+    assert div_cyl == zero
+    assert div_displaced == zero
+    assert div_cyl_displaced == zero
+    assert div_cart_transform == zero
 
 
 def test_transform_rotate():

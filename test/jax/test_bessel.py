@@ -50,3 +50,23 @@ def test_jax_bessel_jvprime(v: int):
     jv_func = partial(jbessel.jv, v)
     actual = jax.vmap(jax.grad(jv_func))(x)
     assert actual == pytest.approx(expected, abs=3e-14)
+
+
+@pytest.mark.parametrize("v", [1, 2])
+def test_jv_over_z(artifacts_dir, v: int):
+    """Study of jv(z)/z
+
+    Unlike in numpy case, this seems to be stable at small z
+    """
+
+    cutoff = 1e-8
+    z = jnp.geomspace(1e-4 * cutoff, 1e1 * cutoff, 100)
+
+    jvz = jax.vmap(jbessel.jv, in_axes=(None, 0))(v, z) / z
+    asym = jnp.pow(z, v - 1) / (2**v * jbessel.gamma(v + 1))
+
+    fig, ax = plt.subplots()
+    ax.plot(z, jvz - asym, label="jv(z)/z - asym")
+    ax.legend()
+    ax.set_xscale("log")
+    fig.savefig(artifacts_dir / f"jv_over_z_v{v}.png")

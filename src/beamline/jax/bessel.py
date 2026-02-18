@@ -12,6 +12,8 @@ A cosine-based series expansion can be found in https://arxiv.org/pdf/2206.05334
 It is good for small x
 """
 
+from __future__ import annotations
+
 from functools import partial
 
 import jax
@@ -268,7 +270,7 @@ _FwdState = tuple[SFloat, SFloat, SInt]
 """J_{v-1}, J_v, v"""
 
 
-def _jv_forward_recurrence(v: SFloat, x: SFloat) -> SFloat:
+def _jv_forward_recurrence(v: SInt, x: SFloat) -> SFloat:
     def cond(state: _FwdState):
         _, _, n = state
         return n < jnp.abs(v)
@@ -287,7 +289,7 @@ _BwdState = tuple[SFloat, SFloat, SInt, SFloat]
 """J_n, J_{n+1}, n, J_v"""
 
 
-def _jv_backward_recurrence(v: SFloat, x: SFloat) -> SFloat:
+def _jv_backward_recurrence(v: SInt, x: SFloat) -> SFloat:
     """Use Miller's algorithm to compute for x < 1"""
 
     def cond(state: _BwdState):
@@ -304,7 +306,7 @@ def _jv_backward_recurrence(v: SFloat, x: SFloat) -> SFloat:
     start = (
         jnp.full_like(x, 0.1),
         jnp.zeros_like(x),
-        v + 6,
+        v + jnp.ceil(jnp.sqrt(jnp.abs(v)) + 4).astype(int),
         jnp.zeros_like(x),
     )
     j0, _, _, out = jax.lax.while_loop(cond, body, start)
@@ -329,10 +331,7 @@ def _jv_small_asymptotic(v: SInt, x: SFloat) -> SFloat:
     return jax.lax.fori_loop(0, 7, body, jnp.zeros_like(x))
 
 
-# TODO: we might rather have custom_jvp here
-
-
-@partial(jax.custom_vjp, nondiff_argnums=(0,))
+@partial(jax.custom_jvp, nondiff_argnums=(0,))
 def jv(v: SInt, x: SFloat) -> SFloat:
     """Compute the Bessel function J_v(x)
 
@@ -375,15 +374,10 @@ def jv(v: SInt, x: SFloat) -> SFloat:
     )
 
 
-def _jv_fwd(v: SInt, x: SFloat):
+@jv.defjvp
+def _jv_jvp_fwd(v: SInt, primals, tangents):
+    (x,) = primals
+    (dx,) = tangents
     y = jv(v, x)
-    return y, (x,)
-
-
-def _jv_bwd(v, res, g):
-    (x,) = res
     dydx = (jv(v - 1, x) - jv(v + 1, x)) / 2
-    return (dydx * g,)
-
-
-jv.defvjp(_jv_fwd, _jv_bwd)
+    return y, dx * dydx

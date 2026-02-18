@@ -37,10 +37,10 @@ class CoordinateChart[T: VecN](eqx.Module):
         """Norm of the vector"""
 
     @abstractmethod
-    def tangent_basis(self) -> T:
-        r"""Tangent basis at this point ($\partial_\mu$)
+    def lame_coefficients(self) -> T:
+        r"""Lengths of the covariant basis vectors $e_i$
 
-        TODO: right now it is probably the cotangent basis, need to check
+        See https://en.wikipedia.org/wiki/Orthogonal_coordinates#Basis_vectors
         """
 
     @abstractmethod
@@ -81,7 +81,7 @@ class XYMixin:
 
     @property
     def phi(self) -> SFloat:
-        return jnp.arctan2(self.y, self.x)
+        return jnp.atan2(self.y, self.x)
 
     def delta_phi(self, other: Self) -> SFloat:
         return delta_phi(self.phi, other.phi)
@@ -143,7 +143,7 @@ class Cylindric3(Cylindric[Vec3], PolarMixin, ZMixin):
     def __abs__(self) -> SFloat:
         return jnp.sqrt(self.rho**2 + self.z**2)
 
-    def tangent_basis(self) -> Vec3:
+    def lame_coefficients(self) -> Vec3:
         # drho, rho dphi, dz
         return jnp.ones_like(self.coords).at[..., 1].set(self.rho)
 
@@ -168,7 +168,7 @@ class Cartesian3(Cartesian[Vec3], XYMixin, ZMixin):
     def __abs__(self) -> SFloat:
         return jnp.sqrt(self.x**2 + self.y**2 + self.z**2)
 
-    def tangent_basis(self) -> Vec3:
+    def lame_coefficients(self) -> Vec3:
         return jnp.ones_like(self.coords)
 
     def volume_element(self) -> SFloat:
@@ -216,7 +216,7 @@ class Cylindric4(Cylindric[Vec4], PolarMixin, ZMixin, TimeMixin):
     def __abs__(self) -> SFloat:
         return jnp.sqrt(self.ct**2 - self.rho**2 - self.z**2)
 
-    def tangent_basis(self) -> Vec4:
+    def lame_coefficients(self) -> Vec4:
         return jnp.ones_like(self.coords).at[..., 1].set(self.rho)
 
     def volume_element(self) -> SFloat:
@@ -258,7 +258,7 @@ class Cartesian4(Cartesian[Vec4], XYMixin, ZMixin, TimeMixin):
     def __abs__(self) -> SFloat:
         return jnp.sqrt(self.dot(self))
 
-    def tangent_basis(self) -> Vec4:
+    def lame_coefficients(self) -> Vec4:
         return jnp.ones_like(self.coords)
 
     def volume_element(self) -> SFloat:
@@ -283,7 +283,12 @@ class Cartesian4(Cartesian[Vec4], XYMixin, ZMixin, TimeMixin):
 
 
 class Tangent[T: CoordinateChart](eqx.Module):
-    """A tangent vector on a manifold, represented in a given coordinate chart"""
+    """A tangent vector on a manifold, represented in a given coordinate chart
+
+    The tangent basis vectors are **normalized** so that the coordinates of the
+    tangent vector are the physical components of the vector and always have
+    uniform units (e.g. mm for spatial components).
+    """
 
     p: T
     """Point """
@@ -320,31 +325,50 @@ class Tangent[T: CoordinateChart](eqx.Module):
     def __rmul__(self, scalar: SFloat) -> Tangent[T]:
         return self * scalar
 
-    @overload
-    def to_cartesian(self: Tangent[Cartesian3]) -> Tangent[Cartesian3]: ...
-    @overload
-    def to_cartesian(self: Tangent[Cartesian4]) -> Tangent[Cartesian4]: ...
+    def __truediv__(self, scalar: SFloat) -> Tangent[T]:
+        return Tangent(
+            p=self.p,
+            t=type(self.t)(coords=self.t.coords / scalar),
+        )
+
+    def __rtruediv__(self, scalar: SFloat) -> Tangent[T]:
+        return self / scalar
+
+    def _change_basis[U: CoordinateChart](self, func: Callable[[T], U]) -> Tangent[U]:
+        """Change the coordinate chart of the tangent vector using the given function
+
+        This is a bit delicate because we want to maintain unit normalization of each
+        basis vector.
+
+        Args:
+            func: Function that changes basis of the manifold point (e.g. to_cartesian or to_cylindric)
+        """
+        tscaled = type(self.t)(coords=self.t.coords / self.p.lame_coefficients())
+        p_out, t_out = jax.jvp(func, (self.p,), (tscaled,))
+        t_out_norm = type(t_out)(coords=t_out.coords * p_out.lame_coefficients())
+        return Tangent(p=p_out, t=t_out_norm)
+
     @overload
     def to_cartesian(self: Tangent[Cylindric3]) -> Tangent[Cartesian3]: ...
     @overload
     def to_cartesian(self: Tangent[Cylindric4]) -> Tangent[Cartesian4]: ...
 
     def to_cartesian(self) -> Tangent:
-        p, t = jax.jvp(lambda v: v.to_cartesian(), (self.p,), (self.t,))
-        return Tangent(p=p, t=t)
+        def func(v: T):
+            return v.to_cartesian()
+
+        return self._change_basis(func)
 
     @overload
     def to_cylindric(self: Tangent[Cartesian3]) -> Tangent[Cylindric3]: ...
     @overload
-    def to_cylindric(self: Tangent[Cylindric3]) -> Tangent[Cylindric3]: ...
-    @overload
-    def to_cylindric(self: Tangent[Cylindric4]) -> Tangent[Cylindric4]: ...
-    @overload
     def to_cylindric(self: Tangent[Cartesian4]) -> Tangent[Cylindric4]: ...
 
     def to_cylindric(self) -> Tangent:
-        p, t = jax.jvp(lambda v: v.to_cylindric(), (self.p,), (self.t,))
-        return Tangent(p=p, t=t)
+        def func(v: T) -> Cylindric:
+            return v.to_cylindric()
+
+        return self._change_basis(func)
 
 
 class Cotangent[T: CoordinateChart](eqx.Module):
@@ -357,25 +381,37 @@ class Cotangent[T: CoordinateChart](eqx.Module):
 
 
 class GradientField[T: CoordinateChart](eqx.Module):
-    """Gradient vector field of a scalar field"""
+    """Gradient vector field of a scalar field
+
+    This probably only works for orthogonal coordinates at the moment
+    Generalize with: https://en.wikipedia.org/wiki/Gradient#Riemannian_manifolds
+
+    Note: jax.grad will return the gradient with respect to the coordinates, which
+    are the covariant basis vectors. We have to manually divide by the Lamé coefficients
+    to have normalized tangents.
+    https://en.wikipedia.org/wiki/Orthogonal_coordinates#Contravariant_basis
+    """
 
     field: Callable[[T], SFloat]
 
-    # TODO: this should return Cotangent
     def __call__(self, point: T) -> Tangent[T]:
         grad: T = jax.grad(self.field)(point)
-        value = type(point)(coords=grad.coords * point.tangent_basis())
-        return Tangent(p=point, t=value)
+        val = type(point)(coords=grad.coords / point.lame_coefficients())
+        return Tangent(p=point, t=val)
 
 
 class DivergenceField[T: CoordinateChart](eqx.Module):
-    """Divergence of a vector field"""
+    """Divergence of a vector field
+
+    Note: the general form requires un-normalized basis vectors
+    https://en.wikipedia.org/wiki/Divergence#General_coordinates
+    """
 
     field: Callable[[T], Tangent[T]]
 
     def __call__(self, point: T) -> SFloat:
         def func(p: T) -> VecN:
-            return self.field(p).t.coords * p.volume_element()
+            return self.field(p).t.coords * p.volume_element() / p.lame_coefficients()
 
         jac: T = jax.jacobian(func)(point)
         return jnp.trace(jac.coords) / point.volume_element()
@@ -426,37 +462,58 @@ class Transform(eqx.Module):
         return cls(translation=translation, rotation=rot4_matrix)
 
     # TODO maybe someday we can make this more generic
+    @overload
+    def to_local(self, point: Cartesian4) -> Cartesian4: ...
+    @overload
+    def to_local(self, point: Cartesian3) -> Cartesian3: ...
 
-    def to_local(self, point: Cartesian4) -> Cartesian4:
-        xyzl = jnp.linalg.inv(self.rotation) @ (point.coords - self.translation.coords)
-        return Cartesian4(coords=xyzl)
+    def to_local(self, point: Cartesian) -> Cartesian:
+        if isinstance(point, Cartesian4):
+            xyzl = jnp.linalg.inv(self.rotation) @ (
+                point.coords - self.translation.coords
+            )
+        elif isinstance(point, Cartesian3):
+            xyzl = jnp.linalg.inv(self.rotation)[:3, :3] @ (
+                point.coords - self.translation.coords[:3]
+            )
+        else:
+            raise ValueError("Unsupported coordinate dimension")
+        return type(point)(coords=xyzl)
 
-    def to_global(self, point: Cartesian4) -> Cartesian4:
-        xyzg = self.rotation @ point.coords + self.translation.coords
-        return Cartesian4(coords=xyzg)
+    @overload
+    def to_global(self, point: Cartesian4) -> Cartesian4: ...
+    @overload
+    def to_global(self, point: Cartesian3) -> Cartesian3: ...
 
-    def tangent_to_local(self, vec: Tangent[Cartesian4]) -> Tangent[Cartesian4]:
-        point_local = self.to_local(vec.p)
-        dx_local = jnp.linalg.inv(self.rotation) @ vec.t.coords
-        return Tangent(p=point_local, t=Cartesian4(coords=dx_local))
+    def to_global(self, point: Cartesian) -> Cartesian:
+        if isinstance(point, Cartesian4):
+            xyzg = self.rotation @ point.coords + self.translation.coords
+        elif isinstance(point, Cartesian3):
+            xyzg = self.rotation[:3, :3] @ point.coords + self.translation.coords[:3]
+        else:
+            raise ValueError("Unsupported coordinate dimension")
+        return type(point)(coords=xyzg)
 
-    def tangent_to_global(self, vec: Tangent[Cartesian4]) -> Tangent[Cartesian4]:
-        point_global = self.to_global(vec.p)
-        dx_global = self.rotation @ vec.t.coords
-        return Tangent(p=point_global, t=Cartesian4(coords=dx_global))
+    def tangent_to_local[T: Cartesian](self, vec: Tangent[T]) -> Tangent[T]:
+        p, t = jax.jvp(self.to_local, (vec.p,), (vec.t,))
+        return Tangent(p=p, t=t)
+
+    def tangent_to_global[T: Cartesian](self, vec: Tangent[T]) -> Tangent[T]:
+        p, t = jax.jvp(self.to_global, (vec.p,), (vec.t,))
+        return Tangent(p=p, t=t)
 
     # TODO: implement for Cotangent?
 
 
-class TransformOneForm(eqx.Module):
+class TransformOneForm[T: Cartesian3 | Cartesian4](eqx.Module):
     """A container to transform 1-forms (i.e. gradients)"""
 
     transform: Transform
-    field: Callable[[Cartesian4], Tangent[Cartesian4]]
+    field: Callable[[T], Tangent[T]]
     """The field in local coordinates (i.e. before transformation)"""
 
     # TODO: this should return Cotangent
-    def __call__(self, point: Cartesian4) -> Tangent[Cartesian4]:
+    def __call__(self, point: T) -> Tangent[T]:
         in_local = self.transform.to_local(point)
         out_local = self.field(in_local)
         return self.transform.tangent_to_global(out_local)

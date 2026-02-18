@@ -35,7 +35,7 @@ def test_construct():
 
     ctvals = np.arange(4) * tm010.wavelength / 4
     evals = [5.0, 0.0, -5.0, 0.0]  # MV/m
-    for ct, E_expected in zip(ctvals, evals):
+    for ct, E_expected in zip(ctvals, evals, strict=False):
         field0 = tm010.field_strength(
             vector.obj(rho=0.0 * u.mm, phi=0.0, z=0.0 * u.mm, t=ct)
         )
