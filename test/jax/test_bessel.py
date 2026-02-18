@@ -37,7 +37,7 @@ def test_plot_bessel(artifacts_dir: Path):
 # We don't need very large orders for RF cavities
 @pytest.mark.parametrize("v", range(-2, 5))
 def test_jax_bessel_jv(v: int):
-    x = jnp.geomspace(1e-10, 1e3, NSAMP)
+    x = jnp.geomspace(1e-10, 1e3, NSAMP).at[0].set(0.0)
     expected = scipy.special.jv(v, x)
     actual = jax.vmap(jbessel.jv, in_axes=(None, 0))(v, x)
     assert actual == pytest.approx(expected, abs=1e-14)
@@ -45,7 +45,7 @@ def test_jax_bessel_jv(v: int):
 
 @pytest.mark.parametrize("v", range(5))
 def test_jax_bessel_jvprime(v: int):
-    x = jnp.geomspace(1e-10, 1e3, NSAMP)
+    x = jnp.geomspace(1e-10, 1e3, NSAMP).at[0].set(0.0)
     expected = scipy.special.jvp(v, x)
     jv_func = partial(jbessel.jv, v)
     actual = jax.vmap(jax.grad(jv_func))(x)

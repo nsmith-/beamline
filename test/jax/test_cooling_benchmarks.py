@@ -19,6 +19,7 @@ from beamline.jax.coordinates import Cartesian3, Cartesian4
 from beamline.jax.integrators import diffrax_solve, propagate
 from beamline.jax.kinematics import MuonStateDz
 from beamline.jax.magnet.solenoid import ThickSolenoid
+from beamline.jax.pillbox import PillboxCavity
 from beamline.jax.types import SFloat
 
 SOLENOID = ThickSolenoid(
@@ -359,3 +360,103 @@ def test_benchmark_3p2_solenoid_perf(
         ),
     }
     benchmark(runbench)
+
+
+def test_benchmark_3p3_rf_cavity(artifacts_dir, benchmark):
+    """Benchmark 3.3: Muon through RF cavity
+
+    Parameters from Table 3
+    """
+    frequency = 704.0 * u.MHz
+    # time to get to 0 position is 500mm / beta*c
+    ref_muon = MuonStateDz.make(
+        position=Cartesian4.make(),
+        momentum=Cartesian3.make(z=200.0 * u.MeV),
+        q=1,
+    )
+    t0 = 500 * u.mm / (ref_muon.beta() * u.c_light)
+    # advance by pi/2 so we are in bunching mode
+    # i.e. refence particle momentum is unchanged
+    phase = -2 * u.pi * ((t0 * frequency - 0.25) % 1.0)
+
+    cavity = PillboxCavity(
+        length=183.6 * u.mm,
+        frequency=frequency,
+        E0=30.0 * u.MV / u.m,
+        mode="TM",
+        m=0,
+        n=1,
+        p=0,
+        phase=phase,
+    )
+
+    X, CT = jnp.meshgrid(
+        # TODO: fix singularity at origin
+        jnp.linspace(0.0 * u.mm, 200.0 * u.mm, 21).at[0].set(1e-8 * u.mm),
+        jnp.linspace(0.0 * u.mm, 1.0 / 0.704 * u.ns * u.c_light, 21),
+        indexing="ij",
+    )
+    x, ct = X.flatten(), CT.flatten()
+    starts = MuonStateDz.make(
+        position=Cartesian4.make(x=x, z=-500.0 * u.mm, ct=ct),
+        momentum=Cartesian3.make(z=200.0 * u.MeV),
+        q=1,
+    )
+
+    def run(start: MuonStateDz) -> MuonStateDz:
+        sol = diffrax.diffeqsolve(
+            terms=diffrax.ODETerm(propagate),
+            solver=diffrax.Dopri5(),
+            t0=-500.0 * u.mm,
+            t1=500.0 * u.mm,
+            dt0=1 * u.mm,
+            y0=start,
+            args=cavity,
+            # saveat=diffrax.SaveAt(ts=zs),
+            stepsize_controller=diffrax.PIDController(
+                rtol=1e-7, atol=1e-9, dtmax=10 * u.mm
+            ),
+            max_steps=2**16,
+        )
+        return jax.tree.map(lambda x: x[-1], sol.ys)
+
+    # start1 = jax.tree.map(lambda x: x[0], starts)
+    # print(propagate(-500.0 * u.mm, start1, cavity))
+    # end = run(start1)
+    # return
+
+    ends = jax.vmap(run)(starts)
+    ends = jax.tree.map(lambda x: x.reshape((*X.shape, -1)), ends)
+
+    # Plot results
+    fig, ax = plt.subplots()
+
+    for ix in [0, 10, 16, 20]:
+        xstart = X[ix, 0]
+        ctvals = CT[ix, :]
+        Evals = ends.kin.t.ct[ix, :] - ref_muon.kin.t.ct
+
+        ax.plot(
+            (ctvals - ctvals.min()) / (u.c_light * u.ns),
+            Evals / u.MeV,
+            marker="^",
+            color="green",
+            ls="none",
+            label=f"x={xstart} mm",
+        )
+        ax.set_xlabel("t-t0 [ns]")
+        ax.set_ylabel("Delta E [MeV]")
+        ax.set_title("Benchmark 3.3: Muon through RF cell")
+        ax.legend()
+
+        # ax.set_facecolor("none")
+        # fig.set_facecolor("none")
+        fig.savefig(artifacts_dir / f"benchmark_3p3_rf_x{ix:02d}.png")
+        ax.clear()
+
+    def bench_func():
+        f = jax.jit(jax.vmap(run))
+        return jax.block_until_ready(f(starts))
+
+    bench_func()
+    benchmark(bench_func)

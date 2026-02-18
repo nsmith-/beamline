@@ -139,25 +139,12 @@ def test_jax_pillbox(m, n, p, mode):
     pos_int = interior_samples(cavity.radius, cavity.length, ntests)
     ctpi4 = cavity.wavelength / 8
 
-    def E(p: Cylindric3):
-        E, _ = cavity._cylindric_field(p, ctpi4)
-        return E
-
-    divE = jax.vmap(DivergenceField(E))(pos_int.to_cylindric())
-    assert divE == zero
-
-    def B(p: Cylindric3):
-        _, B = cavity._cylindric_field(p, ctpi4)
-        return B
-
-    divB = jax.vmap(DivergenceField(B))(pos_int.to_cylindric())
-    assert divB == zero
-
     def Efield(p: Cartesian3):
         E, _ = cavity.field_strength(Cartesian4.make(x=p.x, y=p.y, z=p.z, ct=ctpi4))
         return E
 
     divE = jax.vmap(DivergenceField(Efield))(pos_int)
+    assert divE == zero
 
     def Bfield(p: Cartesian3):
         _, B = cavity.field_strength(Cartesian4.make(x=p.x, y=p.y, z=p.z, ct=ctpi4))

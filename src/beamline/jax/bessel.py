@@ -138,7 +138,16 @@ def _j1_large_c(x: SFloat) -> SFloat:
 
 
 def _j1(x: SFloat) -> SFloat:
-    return jnp.where(x < 5.0, _j1_small(x), _j1_large_c(x))
+    x0 = jax.lax.select(x == 0.0, 1e-10, x)
+    return jax.lax.select(
+        x == 0.0,
+        jnp.zeros_like(x),
+        jax.lax.select(
+            x < 5.0,
+            _j1_small(x0),
+            _j1_large_c(x0),
+        ),
+    )
 
 
 PP0 = jnp.array(
@@ -263,7 +272,16 @@ def _j0_large(x: SFloat) -> SFloat:
 
 
 def _j0(x: SFloat) -> SFloat:
-    return jnp.where(x < 5.0, _j0_small(x), _j0_large(x))
+    x0 = jax.lax.select(x == 0.0, 1e-10, x)
+    return jax.lax.select(
+        x == 0.0,
+        jnp.ones_like(x),
+        jax.lax.select(
+            x < 5.0,
+            _j0_small(x0),
+            _j0_large(x0),
+        ),
+    )
 
 
 _FwdState = tuple[SFloat, SFloat, SInt]
@@ -354,6 +372,7 @@ def jv(v: SInt, x: SFloat) -> SFloat:
     # reflect x if negative
     xfact = jnp.where(x < 0, jnp.pow(-1.0, v), 1.0)
     x = jnp.abs(x)
+    x0 = jax.lax.select(x == 0.0, 1e-10, x)
 
     return (
         vfact
@@ -365,9 +384,13 @@ def jv(v: SInt, x: SFloat) -> SFloat:
                 v == 1,
                 _j1(x),
                 jax.lax.select(
-                    x < 1.0,
-                    _jv_backward_recurrence(v, x),
-                    _jv_forward_recurrence(v, x),
+                    x == 0.0,
+                    x,
+                    jax.lax.select(
+                        x < 1.0,
+                        _jv_backward_recurrence(v, x0),
+                        _jv_forward_recurrence(v, x0),
+                    ),
                 ),
             ),
         )

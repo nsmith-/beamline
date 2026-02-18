@@ -17,6 +17,7 @@ from beamline.jax.coordinates import (
     Tangent,
     Transform,
     TransformOneForm,
+    line_plane_intersection,
 )
 from beamline.jax.types import SFloat
 
@@ -351,3 +352,36 @@ def test_pretty_dipole(artifacts_dir: Path, request):
         blit=True,
     )
     anim.save(artifacts_dir / f"{request.node.name}.gif", writer="pillow", fps=10)
+
+
+def test_line_plane_intersection():
+    pcenter = Cartesian3.make()
+    pu = Cartesian3.make(x=1.0)
+    pv = Cartesian3.make(y=1.0)
+
+    ray = Tangent(
+        p=Cartesian3.make(z=-1.0),
+        t=Cartesian3.make(z=1.0),
+    )
+    t, u, v = line_plane_intersection(ray, pcenter, pu, pv)
+    assert t == pytest.approx(1.0, rel=1e-15)
+    assert u == pytest.approx(0.0, rel=1e-15)
+    assert v == pytest.approx(0.0, rel=1e-15)
+
+    ray = Tangent(
+        p=Cartesian3.make(z=-1.0),
+        t=Cartesian3.make(x=1.0, z=1.0),
+    )
+    t, u, v = line_plane_intersection(ray, pcenter, pu, pv)
+    assert t == pytest.approx(1.0, rel=1e-15)
+    assert u == pytest.approx(1.0, rel=1e-15)
+    assert v == pytest.approx(0.0, rel=1e-15)
+
+    ray = Tangent(
+        p=Cartesian3.make(z=-1.0),
+        t=Cartesian3.make(x=1.0),
+    )
+    t, u, v = line_plane_intersection(ray, pcenter, pu, pv)
+    assert jnp.isnan(t)
+    assert u == jnp.inf
+    assert v == -jnp.inf  # must be an artifact of the algorithm

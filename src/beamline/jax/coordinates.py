@@ -135,6 +135,7 @@ class Cylindric3(Cylindric[Vec3], PolarMixin, ZMixin):
         cls, *, rho: SFloat = 0.0, phi: SFloat = 0.0, z: SFloat = 0.0
     ) -> Cylindric3:
         """Create Cylindric3 from individual components"""
+        rho, phi, z = jnp.broadcast_arrays(rho, phi, z)
         return cls(coords=jnp.stack([rho, phi, z], axis=-1))
 
     def to_cartesian(self) -> Cartesian3:
@@ -160,6 +161,7 @@ class Cartesian3(Cartesian[Vec3], XYMixin, ZMixin):
     @classmethod
     def make(cls, *, x: SFloat = 0.0, y: SFloat = 0.0, z: SFloat = 0.0) -> Cartesian3:
         """Create Cartesian3 from individual components"""
+        x, y, z = jnp.broadcast_arrays(x, y, z)
         return cls(coords=jnp.stack([x, y, z], axis=-1))
 
     def to_cylindric(self) -> Cylindric3:
@@ -208,6 +210,7 @@ class Cylindric4(Cylindric[Vec4], PolarMixin, ZMixin, TimeMixin):
         cls, *, rho: SFloat = 0.0, phi: SFloat = 0.0, z: SFloat = 0.0, ct: SFloat = 0.0
     ) -> Cylindric4:
         """Create Cylindric4 from individual components"""
+        rho, phi, z, ct = jnp.broadcast_arrays(rho, phi, z, ct)
         return cls(coords=jnp.stack([rho, phi, z, ct], axis=-1))
 
     def to_cartesian(self) -> Cartesian4:
@@ -244,6 +247,7 @@ class Cartesian4(Cartesian[Vec4], XYMixin, ZMixin, TimeMixin):
             ct = jnp.sqrt(x**2 + y**2 + z**2 + ctau**2)
         elif ct is None:
             ct = 0.0
+        x, y, z, ct = jnp.broadcast_arrays(x, y, z, ct)
         return cls(coords=jnp.stack([x, y, z, ct], axis=-1))
 
     def to_cylindric(self) -> Cylindric4:
@@ -517,3 +521,37 @@ class TransformOneForm[T: Cartesian3 | Cartesian4](eqx.Module):
         in_local = self.transform.to_local(point)
         out_local = self.field(in_local)
         return self.transform.tangent_to_global(out_local)
+
+
+def line_plane_intersection(
+    vec: Tangent[Cartesian3],
+    plane_point: Cartesian3,
+    plane_u: Cartesian3,
+    plane_v: Cartesian3,
+) -> tuple[SFloat, SFloat, SFloat]:
+    """Line-plane intersection
+
+    Computes the time and u, v coordinates of the intersection of a vector
+    with a plane defined by a point and two basis vectors. Uses parametric
+    form to capture plane coordinates of the intersection, useful for checking
+    if inside some boundary in the plane.
+    https://en.wikipedia.org/wiki/Line%E2%80%93plane_intersection#Parametric_form
+
+    Args:
+        vec: Tangent vector representing the line (e.g. a particle trajectory)
+        plane_point: A point on the plane
+        plane_u: A point one unit away from plane_point in the u direction of the plane
+        plane_v: A point one unit away from plane_point in the v direction of the plane
+
+    Returns:
+        (t, u, v): Time of intersection and plane coordinates of the intersection point
+    """
+    p01 = plane_u - plane_point
+    p02 = plane_v - plane_point
+    lmp = vec.p - plane_point
+    # lmp = -vec.t * t + p01 * u + p02 * v
+    mat = jnp.stack([-vec.t.coords, p01.coords, p02.coords], axis=-1)
+    rhs = lmp.coords
+    sol = jnp.linalg.solve(mat, rhs)
+    t, u, v = sol[..., 0], sol[..., 1], sol[..., 2]
+    return t, u, v

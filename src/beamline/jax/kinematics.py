@@ -51,6 +51,12 @@ class ParticleState(eqx.Module):
         fields and copied over from the current instance.
         """
 
+    def beta(self) -> SFloat:
+        """Compute the velocity beta = v/c"""
+        E = self.kin.t.ct
+        p = jnp.sum(self.kin.t.coords[..., :3] ** 2, axis=-1) ** 0.5
+        return p / E
+
     def gamma(self) -> SFloat:
         """Compute the Lorentz factor gamma"""
         E = self.kin.t.ct
@@ -81,12 +87,13 @@ class MuonState(ParticleState):
         pos = position.to_cartesian()
         mom3 = momentum.to_cartesian()
         mom4 = Cartesian4.make(
-            x=mom3.coords[0],
-            y=mom3.coords[1],
-            z=mom3.coords[2],
+            x=mom3.coords[..., 0],
+            y=mom3.coords[..., 1],
+            z=mom3.coords[..., 2],
             ct=jnp.sqrt(mom3.coords.dot(mom3.coords) + MUON_MASS**2 * u.c_light**4),
         )
-        tangent_vector = Tangent(p=pos, t=mom4)
+        p4, t4 = jnp.broadcast_arrays(pos.coords, mom4.coords)
+        tangent_vector = Tangent(p=Cartesian4(p4), t=Cartesian4(t4))
         return cls(kin=tangent_vector, q=q)
 
 
