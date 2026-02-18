@@ -76,7 +76,22 @@ class PillboxCavity(EMTensorField):
     ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
         """Field strength at a given position"""
         pcyl = point.to_cylindric3()
-        E, B = self._cylindric_field(pcyl, point.ct)
+        boundary = (
+            (pcyl.z >= -self.length / 2)
+            & (pcyl.z <= self.length / 2)
+            & (pcyl.rho <= self.radius)
+        )
+        E, B = jax.lax.cond(
+            boundary,
+            lambda p, ct: self._cylindric_field(pcyl, point.ct),
+            lambda p, ct: (
+                Tangent(p=p, t=Cylindric3.make()),
+                Tangent(p=p, t=Cylindric3.make()),
+            ),
+            pcyl,
+            point.ct,
+        )
+        # E, B = self._cylindric_field(pcyl, point.ct)
         return E.to_cartesian(), B.to_cartesian()
 
     def _cylindric_field(
@@ -125,7 +140,6 @@ class PillboxCavity(EMTensorField):
             B = Tangent(p=pcyl, t=Cylindric3.make(rho=Brho, phi=Bphi, z=Bz))
         tRe = jnp.cos(omega * ct / u.c_light + self.phase)
         tIm = jnp.sin(omega * ct / u.c_light + self.phase)
-        boundary = 1.0 * ((zrel >= 0.0) & (zrel <= 1.0) & (pcyl.rho <= self.radius))
-        E = E * tRe * boundary
-        B = B * tIm * boundary
+        E = E * tRe
+        B = B * tIm
         return E, B

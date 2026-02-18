@@ -16,7 +16,7 @@ from matplotlib import pyplot as plt
 from matplotlib.animation import FuncAnimation
 
 from beamline.jax.coordinates import Cartesian3, Cartesian4
-from beamline.jax.integrators import diffrax_solve, propagate
+from beamline.jax.integrate.propagate import diffrax_solve, propagate
 from beamline.jax.kinematics import MuonStateDz
 from beamline.jax.magnet.solenoid import ThickSolenoid
 from beamline.jax.pillbox import PillboxCavity
@@ -403,6 +403,7 @@ def test_benchmark_3p3_rf_cavity(artifacts_dir, benchmark):
         q=1,
     )
 
+    @jax.jit
     def run(start: MuonStateDz) -> MuonStateDz:
         sol = diffrax.diffeqsolve(
             terms=diffrax.ODETerm(propagate),
@@ -425,6 +426,8 @@ def test_benchmark_3p3_rf_cavity(artifacts_dir, benchmark):
     # end = run(start1)
     # return
 
+    # not much performance difference between scan and vmap here
+    # _, ends = jax.lax.scan(lambda _, s: (None, run(s)), None, starts)
     ends = jax.vmap(run)(starts)
     ends = jax.tree.map(lambda x: x.reshape((*X.shape, -1)), ends)
 

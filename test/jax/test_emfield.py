@@ -9,7 +9,7 @@ from matplotlib import pyplot as plt
 
 from beamline.jax.coordinates import Cartesian3, Cartesian4, delta_phi
 from beamline.jax.emfield import SimpleEMField
-from beamline.jax.integrators import diffrax_solve
+from beamline.jax.integrate.propagate import diffrax_solve
 from beamline.jax.kinematics import MuonStateDct
 from beamline.jax.types import SFloat
 
