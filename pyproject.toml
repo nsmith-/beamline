@@ -42,7 +42,7 @@ docs = [
   "sphinx_autodoc_typehints",
   "furo>=2023.08.17",
 ]
-dev = ["beamline[jax]", "ipykernel", { include-group = "test" }]
+dev = ["beamline[jax]", "ipykernel", "pre-commit", { include-group = "test" }]
 
 [project.urls]
 Homepage = "https://github.com/nsmith-/beamline"
