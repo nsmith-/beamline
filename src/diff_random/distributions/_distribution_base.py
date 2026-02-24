@@ -86,14 +86,3 @@ class _DistributionBase[LogWeightT: (LogWeight, None), AuxT: Any, **DistParamSpe
             aux_info = aux_info.reshape(batch_shape + aux_info.shape[1:])
 
         return samples, log_weights, aux_info
-
-
-# key = jax.random.key(0)
-# N = 1_000_000
-
-# def p_sq_estimate(p):
-#     X, log_W = Bernoulli(p=p).generate(key, batch_shape=(N,))
-#     p_estimate = jnp.sum(X * jnp.exp(log_W))/N
-#     return p_estimate**2
-
-# dbydp_of_p_sq = jax.grad(p_sq_estimate)
