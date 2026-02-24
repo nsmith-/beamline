@@ -12,29 +12,10 @@ from jax.typing import DTypeLike
 # The different type aliases are primarily for documentation purposes
 
 type ShapeLike = Sequence[int]
-
 type DistParam = float | np.floating | np.ndarray | jnp.ndarray
-
 type Sample = jax.Array
 type LogWeight = jax.Array
-
-# type BatchedSample = jax.Array
-# type BatchedLogWeight = jax.Array
-# type BatchedAuxInfo = jax.Array
-
-# (sample, optional log-weight, optional aux-info)
-# type GenResult = tuple[Sample, LogWeight | None, AuxInfo | None]
-# type BatchedGenResult = \
-#     tuple[BatchedSample, BatchedLogWeight | None, BatchedAuxInfo | None]
-# type MaybeBatchedGenResult = GenResult | BatchedGenResult
-
-# type Genresult_Simple = tuple[Sample, None, None]
-# type GenResult_HasWeight = tuple[Sample, LogWeight, AuxInfo | None]
-# type GenResult_HasAuxInfo = tuple[Sample, LogWeight | None, AuxInfo]
-# type GenResult_HasWeightAuxInfo = tuple[Sample, LogWeight, AuxInfo]
-
 type LogWeightRatio = jax.Array
-
 type PRNGKeyArray = jax.Array
 
 

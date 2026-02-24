@@ -16,7 +16,7 @@ from ._distribution_base import (
 
 ## log-weight for Bernoulli samples, with a custom gradient ####################
 @jax.custom_jvp
-def _bernoulli_log_w_func(p: DistParam, x: jax.Array) -> jax.Array:
+def _bernoulli_log_w_func(p: DistParam, x: Sample) -> LogWeight:
     assert jnp.shape(p) == jnp.shape(x)
     return jnp.zeros_like(p)
 
@@ -47,7 +47,7 @@ def _jvp(
 del _jvp
 
 ## Functionally (but not operationally) equivalent definition ########
-# def _bernoulli_log_w_func(p: DistParam, x: jax.Array) -> jax.Array:
+# def _bernoulli_log_w_func(p: DistParam, x: Sample) -> LogWeight:
 #     ## With nan grad_log_w at p = 0. and p = 1.
 #     p_no_grad = jax.lax.stop_gradient(p)
 #     return jnp.where(
@@ -64,7 +64,7 @@ del _jvp
 ################################################################################
 
 
-class Bernoulli(_DistributionBase[jax.Array, None, [DistParam]]):
+class Bernoulli(_DistributionBase[LogWeight, None, [DistParam]]):
     p: DistParam = 0.5
 
     def _generate_one_sample(

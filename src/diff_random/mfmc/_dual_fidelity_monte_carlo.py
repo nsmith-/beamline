@@ -37,7 +37,7 @@ class DualFidelityMonteCarlo[StateT: Any, ParamT: Any, LogWeightT: (LogWeight, N
       'compute_step_param' after each "inner-loop" step (this is what makes it high
       fidelity). Optionally, this method can also return a reweight factor to convert
       the high fidelity simulation into a low fidelity one. This may not sound useful,
-      but is in the context of error estimation, multi fidielity MC estimation, etc.
+      but is in the context of error estimation, multi fidelity MC estimation, etc.
     """
 
     def __init__(
