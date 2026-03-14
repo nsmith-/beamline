@@ -404,7 +404,7 @@ def test_benchmark_3p3_rf_cavity(artifacts_dir, benchmark):
     )
 
     @jax.jit
-    def run(start: MuonStateDz) -> MuonStateDz:
+    def run(start: MuonStateDz) -> tuple[MuonStateDz, dict]:
         sol = diffrax.diffeqsolve(
             terms=diffrax.ODETerm(propagate),
             solver=diffrax.Dopri5(),
@@ -415,11 +415,10 @@ def test_benchmark_3p3_rf_cavity(artifacts_dir, benchmark):
             args=cavity,
             # saveat=diffrax.SaveAt(ts=zs),
             stepsize_controller=diffrax.PIDController(
-                rtol=1e-7, atol=1e-9, dtmax=10 * u.mm
+                rtol=1e-7, atol=1e-9, dtmax=20 * u.mm
             ),
-            max_steps=2**16,
         )
-        return jax.tree.map(lambda x: x[-1], sol.ys)
+        return jax.tree.map(lambda x: x[-1], sol.ys), sol.stats
 
     # start1 = jax.tree.map(lambda x: x[0], starts)
     # print(propagate(-500.0 * u.mm, start1, cavity))
@@ -428,8 +427,16 @@ def test_benchmark_3p3_rf_cavity(artifacts_dir, benchmark):
 
     # not much performance difference between scan and vmap here
     # _, ends = jax.lax.scan(lambda _, s: (None, run(s)), None, starts)
-    ends = jax.vmap(run)(starts)
+    ends, stats = jax.vmap(run)(starts)
     ends = jax.tree.map(lambda x: x.reshape((*X.shape, -1)), ends)
+
+    # histogram of number of steps taken
+    fig, ax = plt.subplots()
+    ax.hist(stats["num_steps"], bins=20, label="total steps")
+    ax.hist(stats["num_rejected_steps"], bins=20, alpha=0.5, label="rejected steps")
+    ax.set_ylabel("Count")
+    ax.legend()
+    fig.savefig(artifacts_dir / "benchmark_3p3_rf_steps.png")
 
     # Plot results
     fig, ax = plt.subplots()
