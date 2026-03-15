@@ -14,15 +14,13 @@ Carlson "Numerical computation of real or complex elliptic integrals"
 https://arxiv.org/abs/math/9409227
 """
 
-from typing import TypeAlias
-
 import jax
 import jax.numpy as jnp
 from jax import lax
 
-from beamline.jax.types import SFloat
+from beamline.jax.types import SFloat, eps_of
 
-_RFState: TypeAlias = tuple[SFloat, SFloat, SFloat, SFloat, SFloat, SFloat]
+type _RFState = tuple[SFloat, SFloat, SFloat, SFloat, SFloat, SFloat]
 """x, y, z, A, Q, f"""
 
 
@@ -49,7 +47,7 @@ def _elliprf_full_iter(x: SFloat, y: SFloat, z: SFloat) -> SFloat:
         return x_new, y_new, z_new, A_new, Q_new, f_new
 
     A0 = (x + y + z) / 3
-    Q = jnp.pow(3 * jnp.finfo(x.dtype).eps, -1 / 8) * jnp.max(
+    Q = jnp.pow(3 * eps_of(x), -1 / 8) * jnp.max(
         jnp.array([jnp.abs(A0 - x), jnp.abs(A0 - y), jnp.abs(A0 - z)])
     )
     f = jnp.ones_like(x)
@@ -86,7 +84,7 @@ def _elliprf_full_iter_fwd(primals, tangents):
     return rf, drf
 
 
-_RF0State: TypeAlias = tuple[SFloat, SFloat]
+type _RF0State = tuple[SFloat, SFloat]
 """x, y"""
 
 
@@ -98,7 +96,7 @@ def _elliprf_one_zero_iter(x: SFloat, y: SFloat) -> SFloat:
 
     def cond_fn(state: _RF0State):
         x, y = state
-        return jnp.abs(x - y) >= 2.7 * jnp.sqrt(jnp.finfo(x.dtype).eps) * jnp.abs(x)
+        return jnp.abs(x - y) >= 2.7 * jnp.sqrt(eps_of(x)) * jnp.abs(x)
 
     def body_fn(state: _RF0State) -> _RF0State:
         x, y = state
@@ -170,7 +168,7 @@ def elliprf(x: SFloat, y: SFloat, z: SFloat) -> SFloat:
     )
 
 
-_RDState: TypeAlias = tuple[SFloat, SFloat, SFloat, SFloat, SFloat, SFloat, SFloat]
+type _RDState = tuple[SFloat, SFloat, SFloat, SFloat, SFloat, SFloat, SFloat]
 """x, y, z, A, Q, sum_term, f"""
 
 
@@ -199,7 +197,7 @@ def _elliprd_general_iter(x: SFloat, y: SFloat, z: SFloat) -> SFloat:
 
     A0 = (x + y + 3 * z) / 5
     Q = (
-        jnp.pow(jnp.finfo(x).eps / 4, -1 / 8)
+        jnp.pow(eps_of(x) / 4, -1 / 8)
         * jnp.max(jnp.array([jnp.abs(A0 - x), jnp.abs(A0 - y), jnp.abs(A0 - z)]))
         * 1.2
     )
@@ -301,7 +299,7 @@ def _elliprd_general_iter_fwd(primals, tangents):
     return rd_xyz, drd
 
 
-_RD0State: TypeAlias = tuple[SFloat, SFloat, SFloat, SFloat]
+type _RD0State = tuple[SFloat, SFloat, SFloat, SFloat]
 """x, y, sum_term, sum_pow"""
 
 
@@ -314,7 +312,7 @@ def _elliprd_one_zero_iter(y: SFloat, z: SFloat) -> SFloat:
 
     def cond_fn(state: _RD0State):
         xn, yn, _, _ = state
-        return jnp.abs(xn - yn) >= 2.7 * jnp.finfo(y.dtype).eps * jnp.abs(xn)
+        return jnp.abs(xn - yn) >= 2.7 * eps_of(y) * jnp.abs(xn)
 
     def body_fn(state: _RD0State) -> _RD0State:
         xn, yn, sum_term, sum_pow = state
@@ -490,7 +488,7 @@ def elliprj(x: SFloat, y: SFloat, z: SFloat, p: SFloat) -> SFloat:
     return _elliprj_impl(x, y, z, p)
 
 
-_RJState: TypeAlias = tuple[
+type _RJState = tuple[
     SFloat, SFloat, SFloat, SFloat, SFloat, SFloat, SFloat, SFloat, SFloat
 ]
 """x, y, z, p, A, delta, Q, fmn, sum_term
@@ -545,7 +543,7 @@ def _elliprj_impl(x: SFloat, y: SFloat, z: SFloat, p: SFloat) -> SFloat:
 
     An0 = (x + y + z + 2 * p) / 5
     delta0 = (p - x) * (p - y) * (p - z)
-    Q = jnp.pow(jnp.finfo(x).eps / 5, -1 / 8) * jnp.max(
+    Q = jnp.pow(eps_of(x) / 5, -1 / 8) * jnp.max(
         jnp.array(
             [jnp.abs(An0 - x), jnp.abs(An0 - y), jnp.abs(An0 - z), jnp.abs(An0 - p)]
         )

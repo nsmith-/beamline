@@ -7,7 +7,6 @@ import jax.numpy as jnp
 
 from beamline.jax.coordinates import Cartesian3, Cartesian4, Tangent, Transform
 from beamline.jax.geometry import Volume
-from beamline.jax.kinematics import ParticleState
 from beamline.jax.types import SBool, SFloat
 
 
@@ -155,25 +154,3 @@ class TransformEMField(EMTensorField):
         in_local = self.transform.tangent_to_local(vec)
         out_local = self.field(in_local)
         return self.transform.tangent_to_global(out_local)
-
-
-def particle_interaction[T: ParticleState](state: T, field: EMTensorField) -> T:
-    """Compute the interaction of a particle with an electromagnetic field
-
-    Returns a differential change in the particle state due to the Lorentz force,
-    with respect to frame time.
-
-    TODO: other independent variables (proper time, path length, etc.)
-        (this could go here as a parameter, a new function, or be part of state.build_tangent)
-    TODO: verlet integration / symplectic integrators ?
-    """
-    # Note: to have ctau be the independent variable, divide by mc^2 instead of E (kin.t.ct)
-    # unitless in this convention
-    dposition_dct = state.kin * (1 / state.kin.t.ct)
-    # Unit: [MeV/mm]
-    dmomentum_dct = (state.charge / state.kin.t.ct) * field(state.kin)
-    dkin = Tangent(
-        p=dposition_dct.t,
-        t=dmomentum_dct.t,
-    )
-    return state.build_tangent(dkin)

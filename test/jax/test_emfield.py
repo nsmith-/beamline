@@ -42,7 +42,7 @@ def test_larmor_orbit(artifacts_dir, request, Bz: float, pxc: float, pzc: float)
     ct0, ct1 = 0.0, 10.0 * u.m
     cts = jnp.linspace(ct0, ct1, 30)
 
-    res = diffrax_solve(field, start, cts)
+    res, _ = diffrax_solve(field, start, cts)
     res_cyl = res.kin.p.to_cylindric()
     phi = res_cyl.phi
     rho = res_cyl.rho
@@ -106,7 +106,8 @@ def test_diff_solve(artifacts_dir, request):
             E0=Cartesian3.make(),
             B0=B,
         )
-        return diffrax_solve(field, start, cts, forward_mode=True)
+        ys, _ = diffrax_solve(field, start, cts, forward_mode=True)
+        return ys
 
     Bstart = Cartesian3.make(z=Bz)
     path, dpath_dB = func(Bstart), jax.jacfwd(func)(Bstart)

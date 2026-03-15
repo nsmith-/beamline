@@ -16,7 +16,7 @@ from matplotlib import pyplot as plt
 from matplotlib.animation import FuncAnimation
 
 from beamline.jax.coordinates import Cartesian3, Cartesian4
-from beamline.jax.integrate.propagate import diffrax_solve, propagate
+from beamline.jax.integrate.propagate import diffrax_solve, particle_interaction
 from beamline.jax.kinematics import MuonStateDz
 from beamline.jax.magnet.solenoid import ThickSolenoid
 from beamline.jax.rfcavity.pillbox import PillboxCavity
@@ -46,7 +46,7 @@ def test_benchmark_3p2_solenoid(artifacts_dir):
             momentum=Cartesian3.make(z=200 * u.MeV),
             q=1,
         )
-        sol = diffrax_solve(fieldobj, start, zs, forward_mode=True)
+        sol, _ = diffrax_solve(fieldobj, start, zs, forward_mode=True)
         return sol
 
     track: MuonStateDz = jax.vmap(run, in_axes=(None, 0))(SOLENOID, xpos)
@@ -231,7 +231,7 @@ def reference_benchmark_3p2_solenoid():
             q=1,
         )
         sol = diffrax.diffeqsolve(
-            terms=diffrax.ODETerm(propagate),
+            terms=diffrax.ODETerm(particle_interaction),
             solver=solver,
             t0=zs[0],
             t1=zs[-1],
@@ -299,7 +299,7 @@ def test_benchmark_3p2_solenoid_perf(
             q=1,
         )
         sol = diffrax.diffeqsolve(
-            terms=diffrax.ODETerm(propagate),
+            terms=diffrax.ODETerm(particle_interaction),
             solver=solver,
             t0=zs[0],
             t1=zs[-1],
@@ -402,32 +402,27 @@ def test_benchmark_3p3_rf_cavity(artifacts_dir, benchmark):
         momentum=Cartesian3.make(z=200.0 * u.MeV),
         q=1,
     )
+    saveat = jnp.array([-500.0 * u.mm, 500.0 * u.mm])
 
     @jax.jit
     def run(start: MuonStateDz) -> tuple[MuonStateDz, dict]:
-        sol = diffrax.diffeqsolve(
-            terms=diffrax.ODETerm(propagate),
-            solver=diffrax.Dopri5(),
-            t0=-500.0 * u.mm,
-            t1=500.0 * u.mm,
-            dt0=1 * u.mm,
-            y0=start,
-            args=cavity,
-            # saveat=diffrax.SaveAt(ts=zs),
-            stepsize_controller=diffrax.PIDController(
-                rtol=1e-7, atol=1e-9, dtmax=20 * u.mm
-            ),
+        ys, stats = diffrax_solve(
+            field=cavity,
+            start=start,
+            cts=saveat,
+            rtol=1e-7,
+            atol=1e-9,
         )
-        return jax.tree.map(lambda x: x[-1], sol.ys), sol.stats
+        return jax.tree.map(lambda x: x[-1], ys), stats
 
     # start1 = jax.tree.map(lambda x: x[0], starts)
-    # print(propagate(-500.0 * u.mm, start1, cavity))
+    # print(particle_interaction(-500.0 * u.mm, start1, cavity))
     # end = run(start1)
     # return
 
     # not much performance difference between scan and vmap here
-    # _, ends = jax.lax.scan(lambda _, s: (None, run(s)), None, starts)
-    ends, stats = jax.vmap(run)(starts)
+    _, (ends, stats) = jax.lax.scan(lambda _, s: (None, run(s)), None, starts)
+    # ends, stats = jax.vmap(run)(starts)
     ends = jax.tree.map(lambda x: x.reshape((*X.shape, -1)), ends)
 
     # histogram of number of steps taken
