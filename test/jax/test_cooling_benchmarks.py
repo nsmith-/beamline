@@ -405,7 +405,7 @@ def test_benchmark_3p3_rf_cavity(artifacts_dir, benchmark):
     saveat = jnp.array([-500.0 * u.mm, 500.0 * u.mm])
 
     @jax.jit
-    def run(start: MuonStateDz) -> tuple[MuonStateDz, dict]:
+    def run_one(start: MuonStateDz) -> tuple[MuonStateDz, dict]:
         ys, stats = diffrax_solve(
             field=cavity,
             start=start,
@@ -416,14 +416,17 @@ def test_benchmark_3p3_rf_cavity(artifacts_dir, benchmark):
         return jax.tree.map(lambda x: x[-1], ys), stats
 
     # start1 = jax.tree.map(lambda x: x[0], starts)
-    # print(particle_interaction(-500.0 * u.mm, start1, cavity))
-    # end = run(start1)
+    # end = run_one(start1)
     # return
 
-    # not much performance difference between scan and vmap here
-    _, (ends, stats) = jax.lax.scan(lambda _, s: (None, run(s)), None, starts)
-    # ends, stats = jax.vmap(run)(starts)
-    ends = jax.tree.map(lambda x: x.reshape((*X.shape, -1)), ends)
+    def run_all(starts: MuonStateDz) -> tuple[MuonStateDz, dict]:
+        # vmap seems faster by about 20%, this might be more dramatic when there are many volumes
+        # _, (ends, stats) = jax.lax.scan(lambda _, s: (None, run_one(s)), None, starts)
+        ends, stats = jax.vmap(run_one)(starts)
+        ends = jax.tree.map(lambda x: x.reshape((*X.shape, -1)), ends)
+        return ends, stats
+
+    ends, stats = run_all(starts)
 
     # histogram of number of steps taken
     fig, ax = plt.subplots()
@@ -460,7 +463,7 @@ def test_benchmark_3p3_rf_cavity(artifacts_dir, benchmark):
         ax.clear()
 
     def bench_func():
-        f = jax.jit(jax.vmap(run))
+        f = jax.jit(run_all)
         return jax.block_until_ready(f(starts))
 
     bench_func()

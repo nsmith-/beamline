@@ -5,7 +5,6 @@ from typing import Self
 
 import equinox as eqx
 import hepunits as u
-import jax
 import jax.numpy as jnp
 
 from beamline.jax.coordinates import (
@@ -43,10 +42,18 @@ class ParticleState(eqx.Module):
         """Charge of the particle"""
 
     @abstractmethod
-    def build_tangent(self, dkin: Tangent[Cartesian4]) -> Self:
-        """Return a the particle state structure with specified kinematics
+    def scale(self) -> SFloat:
+        """Scaling factor for the tangent vector, used for integration
 
-        This is also an opportunity to specify any other flows.
+        This effectively determines the independent variable for integration.
+        The default scaling is by lab time, but this allows alternative
+        independent variables (e.g. proper time, path length, etc.)
+        """
+
+    @abstractmethod
+    def build_tangent(self, dkin: Tangent[Cartesian4]) -> Self:
+        """Build particle state structure with specified tangent vector
+
         Any non-kinematic parts of the state (e.g. charge) should be static
         fields and copied over from the current instance.
         """
@@ -105,6 +112,9 @@ class MuonStateDct(MuonState):
     q: SInt = eqx.field(static=True)
     """Sign of the muon charge (+1 or -1)"""
 
+    def scale(self) -> SFloat:
+        return 1.0
+
     def build_tangent(self, dkin: Tangent[Cartesian4]) -> MuonStateDct:
         return MuonStateDct(kin=dkin, q=self.q)
 
@@ -117,7 +127,9 @@ class MuonStateDz(MuonState):
     q: SInt = eqx.field(static=True)
     """Sign of the muon charge (+1 or -1)"""
 
+    def scale(self) -> SFloat:
+        # convert from d/dz to d/dct
+        return self.kin.t.ct / self.kin.t.z
+
     def build_tangent(self, dkin: Tangent[Cartesian4]) -> MuonStateDz:
-        dct_dz = self.kin.t.ct / self.kin.t.z
-        dkin_dz = jax.tree.map(lambda x: x * dct_dz, dkin)
-        return MuonStateDz(kin=dkin_dz, q=self.q)
+        return MuonStateDz(kin=dkin, q=self.q)
