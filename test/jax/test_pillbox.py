@@ -12,7 +12,7 @@ from beamline.jax.coordinates import (
     Cylindric4,
     DivergenceField,
 )
-from beamline.jax.pillbox import PillboxCavity
+from beamline.jax.rfcavity.pillbox import PillboxCavity
 
 
 def test_pillbox_init():

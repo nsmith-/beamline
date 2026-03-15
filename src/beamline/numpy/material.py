@@ -20,6 +20,11 @@ class DensityCorrection:
     """Parameters for Sternheimer density correction
 
     Per Sternheimer:1952jn or PDG 34.7
+
+    Parameters
+    ----------
+    bg: float
+        Relativistic beta * gamma of the incident particle
     """
 
     C: float

@@ -7,13 +7,15 @@ disable the linter error about annotations just for this file.
 """
 
 from jax import Array
-from jaxtyping import Float, Int
+from jaxtyping import Bool, Float, Int
 
 # TODO: | float is a crutch.. need to get it out
 SFloat = Float[Array, ""] | float
 """Scalar (double-precision) floating point"""
 SInt = Int[Array, ""]
 """Scalar integer"""
+SBool = Bool[Array, ""]
+"""Scalar boolean"""
 VecN = Float[Array, "N"]
 """N-dimensional vector of floating point numbers"""
 Vec3 = Float[Array, "3"]

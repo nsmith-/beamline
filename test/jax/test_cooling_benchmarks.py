@@ -19,7 +19,7 @@ from beamline.jax.coordinates import Cartesian3, Cartesian4
 from beamline.jax.integrate.propagate import diffrax_solve, propagate
 from beamline.jax.kinematics import MuonStateDz
 from beamline.jax.magnet.solenoid import ThickSolenoid
-from beamline.jax.pillbox import PillboxCavity
+from beamline.jax.rfcavity.pillbox import PillboxCavity
 from beamline.jax.types import SFloat
 
 SOLENOID = ThickSolenoid(

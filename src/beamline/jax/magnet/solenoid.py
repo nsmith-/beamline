@@ -17,7 +17,7 @@ from beamline.jax.elliptic import (
 )
 from beamline.jax.emfield import EMTensorField
 from beamline.jax.magnet.loop import WireLoop
-from beamline.jax.types import SFloat
+from beamline.jax.types import SBool, SFloat
 from beamline.units import MU0
 
 
@@ -175,6 +175,13 @@ class ThinShellSolenoid(EMTensorField):
         Bz, _ = quadgk(quadfun_z, bounds)
         return self.jphi * Brho, self.jphi * Bz
 
+    def contains(self, point: Cartesian3) -> SBool:
+        return jnp.array(True)
+
+    def signed_distance(self, ray: Tangent[Cartesian3]) -> SFloat:
+        # although there are surfaces, the field is in all space
+        return jnp.inf
+
     def field_strength(
         self, point: Cartesian4
     ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
@@ -219,6 +226,13 @@ class ThickSolenoid(EMTensorField):
         zero = jnp.zeros_like(rho)
         out, _ = jax.lax.scan(shell_contrib_body, (zero, zero), shell_radii)
         return out
+
+    def contains(self, point: Cartesian3) -> SBool:
+        return jnp.array(True)
+
+    def signed_distance(self, ray: Tangent[Cartesian3]) -> SFloat:
+        # although there are surfaces, the field is in all space
+        return jnp.inf
 
     def field_strength(
         self, point: Cartesian4

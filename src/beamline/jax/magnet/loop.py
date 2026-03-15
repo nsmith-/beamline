@@ -10,7 +10,7 @@ from beamline.jax.coordinates import (
 )
 from beamline.jax.elliptic import elliptic_kepi
 from beamline.jax.emfield import EMTensorField
-from beamline.jax.types import SFloat
+from beamline.jax.types import SBool, SFloat
 from beamline.units import MU0
 
 
@@ -47,6 +47,12 @@ class WireLoop(EMTensorField):
         Brho = C * z / (2 * alpha2 * beta * rho) * (squares * E - alpha2 * K)
         Bz = C / (2 * alpha2 * beta) * ((self.R**2 - rho**2 - z**2) * E + alpha2 * K)
         return Brho, Bz
+
+    def contains(self, point: Cartesian3) -> SBool:
+        return jnp.array(True)
+
+    def signed_distance(self, ray: Tangent[Cartesian3]) -> SFloat:
+        return jnp.inf
 
     def field_strength(
         self, point: Cartesian4

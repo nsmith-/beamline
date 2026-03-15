@@ -32,5 +32,9 @@ MUON_CHARGE: float = to_clhep(ureg.elementary_charge)
 """Muon charge in CLHEP units [e]"""
 MUON_MASS: float = to_clhep(ureg.muon_mass)
 """Muon mass in CLHEP units [MeV * ns^2 / mm^2]"""
+ELECTRON_CHARGE: float = to_clhep(ureg.elementary_charge)
+"""Electron charge in CLHEP units [e]"""
+ELECTRON_MASS: float = to_clhep(ureg.electron_mass)
+"""Electron mass in CLHEP units [MeV * ns^2 / mm^2]"""
 
 __all__ = ["MU0", "check_dimensionality", "from_clhep", "to_clhep", "ureg"]

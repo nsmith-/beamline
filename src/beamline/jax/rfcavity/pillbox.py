@@ -10,7 +10,8 @@ from scipy.special import jn_zeros, jnp_zeros
 from beamline.jax import bessel
 from beamline.jax.coordinates import Cartesian3, Cartesian4, Cylindric3, Tangent
 from beamline.jax.emfield import EMTensorField
-from beamline.jax.types import SFloat
+from beamline.jax.geometry import line_cylinder_intersection, line_plane_intersection
+from beamline.jax.types import SBool, SFloat
 
 
 class PillboxCavity(EMTensorField):
@@ -71,27 +72,53 @@ class PillboxCavity(EMTensorField):
     def wavelength(self) -> SFloat:
         return u.c_light / self.frequency
 
-    def field_strength(
-        self, point: Cartesian4
-    ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
-        """Field strength at a given position"""
-        pcyl = point.to_cylindric3()
+    def contains(self, point: Cartesian3) -> SBool:
+        pcyl = point.to_cylindric()
         boundary = (
             (pcyl.z >= -self.length / 2)
             & (pcyl.z <= self.length / 2)
             & (pcyl.rho <= self.radius)
         )
+        return boundary
+
+    def signed_distance(self, ray: Tangent[Cartesian3]) -> SFloat:
+        # cylinder surface
+        tcyl, h = line_cylinder_intersection(
+            ray, Cartesian3.make(), Cartesian3.make(z=self.radius)
+        )
+        tcyl = jnp.where(abs(h) <= self.length / 2, tcyl, jnp.inf)
+        # disk surfaces
+        t1, u, v = line_plane_intersection(
+            ray,
+            plane_point=Cartesian3.make(z=-self.length / 2),
+            plane_u=Cartesian3.make(x=self.radius, z=-self.length / 2),
+            plane_v=Cartesian3.make(y=self.radius, z=-self.length / 2),
+        )
+        t1 = jnp.where(u**2 + v**2 <= self.radius**2, t1, jnp.inf)
+        t2, u, v = line_plane_intersection(
+            ray,
+            plane_point=Cartesian3.make(z=self.length / 2),
+            plane_u=Cartesian3.make(x=self.radius, z=self.length / 2),
+            plane_v=Cartesian3.make(y=self.radius, z=self.length / 2),
+        )
+        t2 = jnp.where(u**2 + v**2 <= self.radius**2, t2, jnp.inf)
+        ts = jnp.array([tcyl, t1, t2])
+        return ts[jnp.argmin(jnp.abs(ts))]
+
+    def field_strength(
+        self, point: Cartesian4
+    ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
+        """Field strength at a given position"""
         E, B = jax.lax.cond(
-            boundary,
-            lambda p, ct: self._cylindric_field(pcyl, point.ct),
+            self.contains(point.to_cartesian3()),
+            lambda p, ct: self._cylindric_field(p, ct),
             lambda p, ct: (
                 Tangent(p=p, t=Cylindric3.make()),
                 Tangent(p=p, t=Cylindric3.make()),
             ),
-            pcyl,
+            point.to_cylindric3(),
             point.ct,
         )
-        # E, B = self._cylindric_field(pcyl, point.ct)
         return E.to_cartesian(), B.to_cartesian()
 
     def _cylindric_field(

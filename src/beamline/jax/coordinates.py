@@ -521,37 +521,3 @@ class TransformOneForm[T: Cartesian3 | Cartesian4](eqx.Module):
         in_local = self.transform.to_local(point)
         out_local = self.field(in_local)
         return self.transform.tangent_to_global(out_local)
-
-
-def line_plane_intersection(
-    vec: Tangent[Cartesian3],
-    plane_point: Cartesian3,
-    plane_u: Cartesian3,
-    plane_v: Cartesian3,
-) -> tuple[SFloat, SFloat, SFloat]:
-    """Line-plane intersection
-
-    Computes the time and u, v coordinates of the intersection of a vector
-    with a plane defined by a point and two basis vectors. Uses parametric
-    form to capture plane coordinates of the intersection, useful for checking
-    if inside some boundary in the plane.
-    https://en.wikipedia.org/wiki/Line%E2%80%93plane_intersection#Parametric_form
-
-    Args:
-        vec: Tangent vector representing the line (e.g. a particle trajectory)
-        plane_point: A point on the plane
-        plane_u: A point one unit away from plane_point in the u direction of the plane
-        plane_v: A point one unit away from plane_point in the v direction of the plane
-
-    Returns:
-        (t, u, v): Time of intersection and plane coordinates of the intersection point
-    """
-    p01 = plane_u - plane_point
-    p02 = plane_v - plane_point
-    lmp = vec.p - plane_point
-    # lmp = -vec.t * t + p01 * u + p02 * v
-    mat = jnp.stack([-vec.t.coords, p01.coords, p02.coords], axis=-1)
-    rhs = lmp.coords
-    sol = jnp.linalg.solve(mat, rhs)
-    t, u, v = sol[..., 0], sol[..., 1], sol[..., 2]
-    return t, u, v
