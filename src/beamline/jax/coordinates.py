@@ -465,6 +465,16 @@ class Transform(eqx.Module):
         rot4_matrix = jnp.eye(4).at[:3, :3].set(rot_matrix)
         return cls(translation=translation, rotation=rot4_matrix)
 
+    @classmethod
+    def make_translation(
+        cls, *, x: SFloat = 0.0, y: SFloat = 0.0, z: SFloat = 0.0, ct: SFloat = 0.0
+    ) -> Self:
+        """Create a Transform from a pure translation"""
+        return cls(
+            translation=Cartesian4.make(x=x, y=y, z=z, ct=ct),
+            rotation=jnp.eye(4),
+        )
+
     # TODO maybe someday we can make this more generic
     @overload
     def to_local(self, point: Cartesian4) -> Cartesian4: ...

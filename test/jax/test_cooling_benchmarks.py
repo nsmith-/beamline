@@ -15,7 +15,8 @@ import pytest
 from matplotlib import pyplot as plt
 from matplotlib.animation import FuncAnimation
 
-from beamline.jax.coordinates import Cartesian3, Cartesian4
+from beamline.jax.coordinates import Cartesian3, Cartesian4, Transform
+from beamline.jax.emfield import EMTensorField, TransformEMField
 from beamline.jax.integrate.propagate import diffrax_solve, particle_interaction
 from beamline.jax.kinematics import MuonStateDz
 from beamline.jax.magnet.solenoid import ThickSolenoid
@@ -468,3 +469,125 @@ def test_benchmark_3p3_rf_cavity(artifacts_dir, benchmark):
 
     bench_func()
     benchmark(bench_func)
+
+
+@pytest.mark.parametrize("forward", [True, False])
+def test_benchmark_3p3_rf_tune(artifacts_dir, forward: bool):
+    """Derivative with respect to cavity phase and z position
+
+    Both should be able to accomplish the same thing if gradients are working
+
+    Test that forward and reverse mode autodiff work (TODO: and give the same result)
+    """
+    frequency = 704.0 * u.MHz
+    # time to get to 0 position is 500mm / beta*c
+    ref_muon = MuonStateDz.make(
+        position=Cartesian4.make(),
+        momentum=Cartesian3.make(z=200.0 * u.MeV),
+        q=1,
+    )
+    t0 = 500 * u.mm / (ref_muon.beta() * u.c_light)
+    # advance by pi/2 so we are in bunching mode
+    # i.e. refence particle momentum is unchanged
+    phase = -2 * u.pi * ((t0 * frequency - 0.25) % 1.0)
+
+    def build_cavity(phase_shift: SFloat, z_shift: SFloat) -> EMTensorField:
+        cavity = PillboxCavity(
+            length=183.6 * u.mm,
+            frequency=frequency,
+            E0=30.0 * u.MV / u.m,
+            mode="TM",
+            m=0,
+            n=1,
+            p=0,
+            phase=phase + phase_shift,
+        )
+        return TransformEMField(
+            transform=Transform.make_translation(z=z_shift),
+            field=cavity,
+        )
+
+    def track_ref(field: EMTensorField) -> MuonStateDz:
+        start = MuonStateDz.make(
+            position=Cartesian4.make(x=1e-8 * u.mm, z=-500.0 * u.mm),
+            momentum=Cartesian3.make(z=200.0 * u.MeV),
+            q=1,
+        )
+        saveat = jnp.array([-500.0 * u.mm, 500.0 * u.mm])
+        ys, _ = diffrax_solve(
+            field=field,
+            start=start,
+            cts=saveat,
+            rtol=1e-7,
+            atol=1e-9,
+            forward_mode=forward,
+        )
+        return jax.tree.map(lambda x: x[-1], ys)
+
+    @jax.jit
+    def objective(phase_shift: SFloat, z_shift: SFloat) -> SFloat:
+        field = build_cavity(phase_shift, z_shift)
+        end = track_ref(field)
+        return end.kin.t.ct
+
+    jacobian = jax.jacfwd if forward else jax.jacrev
+
+    phase_vals = jnp.linspace(-1.5, 1.5, 9)
+    E_vals = []
+    dEdphase_vals = []
+    for phase_shift in phase_vals:
+        Efinal = objective(phase_shift, 0.0)
+        dEdphase = jacobian(objective, argnums=0)(phase_shift, 0.0)
+        E_vals.append(Efinal)
+        dEdphase_vals.append(dEdphase)
+
+    fig, ax = plt.subplots()
+
+    ax.plot(
+        phase_vals,
+        E_vals,
+        marker="o",
+        color="green",
+        lw=1,
+    )
+    for phase_shift, Efinal, dEdphase in zip(
+        phase_vals, E_vals, dEdphase_vals, strict=True
+    ):
+        p = jnp.linspace(phase_shift - 0.05, phase_shift + 0.05, 3)
+        ax.plot(p, Efinal + dEdphase * (p - phase_shift), color="black")
+
+    ax.set_xlabel("Phase shift [rad]")
+    ax.set_ylabel("Final energy [MeV]")
+    fig.savefig(artifacts_dir / "benchmark_3p3_rf_phase_tune.png")
+
+    if not forward:
+        return pytest.xfail(reason="Reverse mode for z not working due to nans")
+
+    z_vals = jnp.linspace(-150, 150, 9)
+    E_vals = []
+    dEdz_vals = []
+    for z_shift in z_vals:
+        Efinal = objective(0.0, z_shift)
+        dEdz = jacobian(objective, argnums=1)(0.0, z_shift)
+        E_vals.append(Efinal)
+        dEdz_vals.append(dEdz)
+
+    fig, ax = plt.subplots()
+
+    ax.plot(
+        z_vals,
+        E_vals,
+        marker="o",
+        color="green",
+        lw=1,
+    )
+    for z_shift, Efinal, dEdz in zip(z_vals, E_vals, dEdz_vals, strict=True):
+        p = jnp.linspace(z_shift - 5, z_shift + 5, 3)
+        ax.plot(p, Efinal + dEdz * (p - z_shift), color="black")
+
+    ax.set_xlabel("z shift [mm]")
+    ax.set_ylabel("Final energy [MeV]")
+    fig.savefig(artifacts_dir / "benchmark_3p3_rf_z_tune.png")
+
+    # Efinal, (dE_dphase, dE_dz) = objective(0.0, 0.0)
+    # raise RuntimeError(f"Efinal={Efinal}, dE/dphase={dE_dphase}, dE/dz={dE_dz}")

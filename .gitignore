@@ -4,3 +4,4 @@ src/beamline/_version.py
 .vscode
 .benchmarks
 test_artifacts
+__pycache__

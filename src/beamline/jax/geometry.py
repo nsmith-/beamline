@@ -62,28 +62,34 @@ def line_cylinder_intersection(
         (t, h): Time of intersection and z coordinate of the intersection point
 
     Following the formulas of https://en.wikipedia.org/wiki/Line-cylinder_intersection
+    (with the cylinder radius absorbed into the axis vector for convenience)
     """
     a = cyl_axis
     b = cyl_point - ray.p
     n = ray.t
-    nxa = n.cross(a)
-    a2 = a.dot(a)
-    discriminant = nxa.dot(nxa) - a2 * (b.dot(nxa)) ** 2
+    # assuming a.a = r^2,
+    # ax(n*d - b) . ax(n*d - b) = (a.a)^2
+    # d^2 axn . axn - 2d axb . axn + (axb . axb - (a.a)^2) = 0
+    # d = (axb . axn  +- sqrt( (axb . axn)^2 - axn.axn * (axb . axb - (a.a)^2) )) / axn . axn
+    axn = a.cross(n)
+    axb = a.cross(b)
+    r2 = a.dot(a)
+    discriminant = axb.dot(axn) ** 2 - axn.dot(axn) * (axb.dot(axb) - r2 * r2)
     sd = jnp.where(discriminant >= 0, jnp.sqrt(jnp.abs(discriminant)), jnp.inf)
-    t1num = nxa.dot(b.cross(a)) + sd
-    t2num = nxa.dot(b.cross(a)) - sd
-    tden = nxa.dot(nxa)
+    t1num = axb.dot(axn) + sd
+    t2num = axb.dot(axn) - sd
+    tden = axn.dot(axn)
     t = jnp.where(
         tden == 0.0,
         jnp.inf,
         jnp.where(abs(t1num) <= abs(t2num), t1num, t2num)
         / jnp.where(tden == 0.0, 1.0, tden),
     )
-    # if vec.t has zeros, then inf * 0 causes trouble, so work around it
+    # if n has zeros, then inf * 0 causes trouble, so work around it
     h = jnp.where(
         t == jnp.inf,
         jnp.inf,
-        a.dot(jnp.where(t == jnp.inf, 0.0, t) * ray.t - cyl_point) / a2,
+        a.dot(jnp.where(t == jnp.inf, 0.0, t) * n - b) / jnp.sqrt(r2),
     )
     return t, h
 

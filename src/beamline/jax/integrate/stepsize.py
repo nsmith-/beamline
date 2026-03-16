@@ -100,7 +100,6 @@ class BoundaryAwareStepSizeController[ControllerState, DT0: SFloat, Y](
             jnp.inf,
             self._softclip_sdf(sdf),
         )
-        jax.debug.print("initial sdf: {sdf}", sdf=sdf)
         t1 = jnp.minimum(t1, t0 + max_next_step)
         return t1, (sdf, dt0, inner_state)
 
