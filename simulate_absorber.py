@@ -1,14 +1,13 @@
 """
-Simulate a muon beam passing through the SiO2 (fused quartz) cylinder.
+Simulate a muon beam passing through the SiO2 cylinder.
 
-Each muon arrives at the absorber face and receives a stochastic energy-loss
-kick sampled from the Landau distribution (sample_energy_loss -> RANLAN), which
-is applied as a direction-preserving reduction of its momentum. We run a whole
-beam at once with jax.vmap, then look at the energy-loss spectrum.
+Each muon arrives at the absorber face and receives an energy-loss
+sampled from the Landau distribution, which
+is applied as a direction-preserving reduction of its momentum. It runs a whole
+beam at once with jax.vmap and looks at the energy-loss spectrum.
 
 Run from the repo root:
     python simulate_absorber.py
-(The script adds ./src to the path if `beamline` isn't already importable.)
 """
 from __future__ import annotations
 
