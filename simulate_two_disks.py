@@ -4,8 +4,8 @@ Simulate a muon beam passing through TWO solid SiO2 disks spaced along z.
 Each disk is just a short CylindricalAbsorber. The beam runs along +z, normal
 to both faces, so each disk's `length` IS the true path length. A particle
 crosses disk 1 (Landau sampling #1), drifts the field-free gap (no loss), then
-crosses disk 2 (Landau sampling #2) -- applied to the already-degraded state,
-so the second disk correctly sees the slightly lower momentum.
+crosses disk 2 (Landau sampling #2), applied to the already-degraded state,
+so the second disk correctly sees slightly lower momentum.
 
 Run from the repo root:
     python simulate_two_disks.py
@@ -85,7 +85,7 @@ def main():
     print(f"momentum {BEAM_PC:.0f} -> {float(jnp.mean(jnp.sqrt(jnp.sum(out.kin.t.coords[:, :3] ** 2, axis=1)))):.2f} MeV/c")
 
     # ----------------------------------------------------------------- plotting
-    fig, (axA, axB) = plt.subplots(1, 2, figsize=(13, 5))
+    fig, axA = plt.subplots(figsize=(7, 5))
     fig.suptitle(f"{BEAM_PC:.0f} MeV/c muons through two {DISK1_LEN:.0f} mm {mat.name} disks",
                  fontsize=13, fontweight="bold")
 
@@ -97,16 +97,6 @@ def main():
     axA.set(xlabel="energy loss $\\Delta E$ [MeV]", ylabel="probability density",
             title="One disk vs the sum of two")
     axA.legend(); axA.grid(alpha=0.3)
-
-    hiB = np.percentile(dE_total, 99.5)
-    axB.hist(dE_total, bins=300, range=(0, hiB), density=True,
-             color="#4c72b0", alpha=0.55, label="two 5 mm disks (convolution)")
-    axB.hist(dE_solid, bins=300, range=(0, hiB), density=True,
-             histtype="step", lw=2, color="#c44e52",
-             label=f"one solid {DISK1_LEN+DISK2_LEN:.0f} mm disk")
-    axB.set(xlabel="energy loss $\\Delta E$ [MeV]", ylabel="probability density",
-            title="Two thin disks vs one thick disk")
-    axB.legend(); axB.grid(alpha=0.3)
 
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     out_png = Path("two_disks_simulation.png")
