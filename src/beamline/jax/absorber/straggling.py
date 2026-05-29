@@ -187,7 +187,7 @@ def _landau_quantile(z: SFloat) -> SFloat:
             i > 980,
             f_right,
             jnp.where(
-                (i >= 70) & (i <= 800),
+                (i >= 70) & (i < 800),
                 f_linear,
                 f_quad,
             ),
