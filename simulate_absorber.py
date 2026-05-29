@@ -30,11 +30,11 @@ from beamline.jax.absorber.material import MATERIALS
 from beamline.jax.kinematics import MuonStateDz
 from beamline.jax.coordinates import Cartesian3, Cartesian4
 
-# ---------------------------------------------------------------- configuration
+# config
 MATERIAL    = "silicon_dioxide_SiO2"
-BEAM_PC     = 200.0      # beam momentum [MeV/c]
-RADIUS      = 100.0      # cylinder radius [mm]
-LENGTH      = 10.0       # cylinder thickness [mm]  (= dE/dx path length)
+BEAM_PC     = 200.0      # MeV/c
+RADIUS      = 100.0      # mm
+LENGTH      = 10.0       # mm
 N_PARTICLES = 200_000
 SEED        = 42
 
@@ -59,7 +59,7 @@ def main():
     E_in = float(probe.kin.t.ct)
     pc_in = float(jnp.sqrt(jnp.sum(probe.kin.t.coords[:3] ** 2)))
 
-    # ----- run the beam: one PRNG key per particle, applied with vmap+jit -----
+    # run the beam: one PRNG key per particle
     keys = jax.random.split(jax.random.key(SEED), N_PARTICLES)
     beam = jax.vmap(make_muon)(jnp.full(N_PARTICLES, BEAM_PC))
     run = jax.jit(jax.vmap(absorber.apply))
@@ -72,28 +72,28 @@ def main():
     h, edges = np.histogram(dE, bins=600)
     mode_emp = 0.5 * (edges[h.argmax()] + edges[h.argmax() + 1])
 
-    print(f"Material              : {absorber.material.name}")
-    print(f"Beam                  : {BEAM_PC:.0f} MeV/c muons, N = {N_PARTICLES:,}")
-    print(f"Absorber              : {LENGTH:.0f} mm thick, R = {RADIUS:.0f} mm")
-    print(f"E_in                  : {E_in:.3f} MeV   (KE = {E_in - float(probe.mass):.3f} MeV)")
+    print(f"Material                  : {absorber.material.name}")
+    print(f"Beam                      : {BEAM_PC:.0f} MeV/c muons, N = {N_PARTICLES:,}")
+    print(f"Absorber                  : {LENGTH:.0f} mm thick, R = {RADIUS:.0f} mm")
+    print(f"E_in                      : {E_in:.3f} MeV   (KE = {E_in - float(probe.mass):.3f} MeV)")
     print("-" * 56)
-    print(f"predicted xi          : {float(pp.xi):.4f} MeV")
-    print(f"predicted mode (Landau): {float(pp.mode_energy_loss):.4f} MeV")
-    print(f"empirical  mode        : {mode_emp:.4f} MeV   <-- should match the line above")
-    print(f"predicted mean (Bethe) : {float(pp.mean_energy_loss):.4f} MeV")
-    print(f"empirical  median      : {np.median(dE):.4f} MeV")
-    print(f"empirical  mean        : {dE.mean():.4f} MeV   (> mode: Landau's heavy tail)")
-    print(f"kappa                 : {float(pp.kappa):.4f}  (Landau valid for kappa << 1)")
-    print(f"momentum  {pc_in:.1f} -> {pc_out.mean():.2f} MeV/c (mean)")
+    print(f"predicted xi              : {float(pp.xi):.4f} MeV")
+    print(f"predicted mode (Landau)   : {float(pp.mode_energy_loss):.4f} MeV")
+    print(f"empirical  mode           : {mode_emp:.4f} MeV")
+    print(f"predicted mean (Bethe)    : {float(pp.mean_energy_loss):.4f} MeV")
+    print(f"empirical  median         : {np.median(dE):.4f} MeV")
+    print(f"empirical  mean           : {dE.mean():.4f} MeV")
+    print(f"kappa                     : {float(pp.kappa):.4f}")
+    print(f"momentum  {pc_in:.1f} -> {pc_out.mean():.2f} MeV/c")
 
-    # ----------------------------------------------------------------- plotting
+    # plotting
     fig, (axL, axR) = plt.subplots(1, 2, figsize=(13, 5))
     fig.suptitle(
         f"{BEAM_PC:.0f} MeV/c muon beam through {LENGTH:.0f} mm {absorber.material.name}",
         fontsize=13, fontweight="bold",
     )
 
-    hi = np.percentile(dE, 99.5)                 # clip the long tail for display
+    hi = np.percentile(dE, 99.5)
     axL.hist(dE, bins=400, range=(0, hi), color="#4c72b0", alpha=0.85, density=True)
     axL.axvline(float(pp.mode_energy_loss), color="#c44e52", lw=2,
                 label=f"predicted mode = {float(pp.mode_energy_loss):.2f} MeV")
