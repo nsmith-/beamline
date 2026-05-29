@@ -30,12 +30,12 @@ from beamline.jax.absorber.material import MATERIALS
 from beamline.jax.kinematics import MuonStateDz
 from beamline.jax.coordinates import Cartesian3, Cartesian4
  
-# ---------------------------------------------------------------- configuration
+# configuration
 MATERIAL    = "silicon_dioxide_SiO2"
-BEAM_PC     = 200.0      # beam momentum [MeV/c]
-RADIUS      = 100.0      # disk radius [mm]
-DISK1_LEN   = 5.0        # disk 1 thickness [mm]
-DISK2_LEN   = 5.0        # disk 2 thickness [mm]
+BEAM_PC     = 200.0      # MeV/c
+RADIUS      = 100.0      # mm
+DISK1_LEN   = 5.0        # mm
+DISK2_LEN   = 5.0        # mm
 N_PARTICLES = 200_000
 SEED        = 7
  
@@ -54,8 +54,8 @@ def main():
     disk2 = CylindricalAbsorber(material=mat, radius=RADIUS * u.mm, length=DISK2_LEN * u.mm)
  
     def through_two_disks(state, key):
-        state, key = disk1.apply(state, key)   # sampling #1
-        state, key = disk2.apply(state, key)   # sampling #2 (sees degraded state)
+        state, key = disk1.apply(state, key)   # sampling 1
+        state, key = disk2.apply(state, key)   # sampling 2
         return state
  
     keys = jax.random.split(jax.random.key(SEED), N_PARTICLES)
@@ -64,7 +64,7 @@ def main():
  
     dE_total = np.asarray(beam.kin.t.ct - out.kin.t.ct)
  
-    # For context: the loss from a single disk on its own.
+    # loss from a single disk on its own.
     out1, _ = jax.jit(jax.vmap(disk1.apply))(beam, keys)
     dE_one_disk = np.asarray(beam.kin.t.ct - out1.kin.t.ct)
  
@@ -79,7 +79,7 @@ def main():
     print(f"TWO disks (sum)  : mode {mode(dE_total):.3f}  median {np.median(dE_total):.3f} MeV")
     print(f"momentum {BEAM_PC:.0f} -> {float(jnp.mean(jnp.sqrt(jnp.sum(out.kin.t.coords[:, :3] ** 2, axis=1)))):.2f} MeV/c")
  
-    # ----------------------------------------------------------------- plotting
+    # plotting
     fig, axA = plt.subplots(figsize=(7, 5))
     fig.suptitle(f"{BEAM_PC:.0f} MeV/c muons through two {DISK1_LEN:.0f} mm {mat.name} disks",
                  fontsize=13, fontweight="bold")
