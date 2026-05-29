@@ -11,7 +11,6 @@ same algorithm used by ROOT's landau_quantile.
 
 References:
 - K.S. Kölbig and B. Schorr, Comp. Phys. Comm. 31 (1984) 97-111
-- ROOT: TRandom::Landau, converted from CERNLIB RANLAN by R. Brun
 - https://github.com/GooFit/GooFit/blob/master/include/goofit/cpp/landau.h
 """
 
@@ -29,8 +28,7 @@ from beamline.jax.types import SFloat
 LANDAU_MODE = -0.22278298341600427
 
 # RANLAN lookup table: f[i] = quantile at z = i/1000
-# Ported from CERNLIB G110 via ROOT/GooFit (LGPL 2.1).
-# f[0..4] are unused padding; the table covers z = 0.005 to z = 0.980.
+# Bootlegged from Goofit github source
 _F = jnp.array([
     0, 0, 0, 0, 0, -2.244733, -2.204365, -2.168163, -2.135219, -2.104898,
     -2.076740, -2.050397, -2.025605, -2.002150, -1.979866, -1.958612, -1.938275, -1.918760, -1.899984, -1.881879,
@@ -136,10 +134,9 @@ _F = jnp.array([
 
 def _landau_quantile(z: SFloat) -> SFloat:
     """
-    Inverse CDF of the standard Landau distribution (CERNLIB RANLAN G110).
+    Inverse CDF of the standard Landau distribution.
     Uses table lookup with quadratic interpolation for the central region
     (z = 0.007 to 0.980) and rational approximations for the tails.
-    Accuracy: ~5 significant digits (per Kölbig & Schorr 1984).
     Args:
         z: Uniform random value in (0, 1)
     Returns:
@@ -149,7 +146,7 @@ def _landau_quantile(z: SFloat) -> SFloat:
     i = jnp.floor(u).astype(jnp.int32)
     u = u - i
 
-    # Clamp index to valid table range for safe indexing
+    # Clamp index to valid table range
     i_safe = jnp.clip(i, 0, 980)
 
     # Central region (70 ≤ i < 800): linear interpolation
