@@ -64,13 +64,14 @@ del _jvp
 ################################################################################
 
 
-class Bernoulli(_DistributionBase[LogWeight, None, [DistParam]]):
+class Bernoulli(_DistributionBase[LogWeight, None, [DistParam], None]):
     p: DistParam = 0.5
 
     def _generate_one_sample(
         self,
         key: PRNGKeyArray,
         dtype: DTypeLike | None = None,
+        extra_arg: None = None,
     ) -> tuple[Sample, LogWeight, None]:
         p = self.p
         p_no_grad = jax.lax.stop_gradient(p)

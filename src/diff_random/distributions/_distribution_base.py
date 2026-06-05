@@ -26,9 +26,12 @@ type PRNGKeyArray = jax.Array
     frozen_default=True,
     field_specifiers=(dataclasses.field,),
 )
-class _DistributionBase[LogWeightT: (LogWeight, None), AuxT: Any, **DistParamSpec](
-    metaclass=ABCMeta
-):
+class _DistributionBase[
+    LogWeightT: (LogWeight, None),
+    AuxT: Any,
+    **DistParamSpec,
+    GeneratorExtraArgsT,
+](metaclass=ABCMeta):
     def __init_subclass__(cls, /, **kwargs) -> None:
         super().__init_subclass__(**kwargs)
         dataclasses.dataclass(
@@ -49,6 +52,7 @@ class _DistributionBase[LogWeightT: (LogWeight, None), AuxT: Any, **DistParamSpe
         self,
         key: PRNGKeyArray,  # traced, not diffnble wrt
         dtype: DTypeLike | None = None,  # not traced
+        extra_arg: GeneratorExtraArgsT | None = None,
     ) -> tuple[Sample, LogWeightT, AuxT]:
         raise NotImplementedError
 
@@ -65,6 +69,7 @@ class _DistributionBase[LogWeightT: (LogWeight, None), AuxT: Any, **DistParamSpe
         key: PRNGKeyArray,  # traced, not diffnble wrt
         batch_shape: ShapeLike | None = None,  # not traced
         dtype: DTypeLike | None = None,  # not traced
+        extra_arg: GeneratorExtraArgsT | None = None,
     ) -> tuple[Sample, LogWeightT, AuxT]:
         if batch_shape is None:
             return self._generate_one_sample(key, dtype)
@@ -74,8 +79,8 @@ class _DistributionBase[LogWeightT: (LogWeight, None), AuxT: Any, **DistParamSpe
         batched_key = jax.random.split(key, batch_size)
 
         samples, log_weights, aux_info = jax.vmap(
-            self._generate_one_sample, in_axes=[0, None], out_axes=0
-        )(batched_key, dtype)
+            self._generate_one_sample, in_axes=[0, None, None], out_axes=0
+        )(batched_key, dtype, extra_arg)
 
         samples = samples.reshape(batch_shape + samples.shape[1:])
 
@@ -85,4 +90,4 @@ class _DistributionBase[LogWeightT: (LogWeight, None), AuxT: Any, **DistParamSpe
         if aux_info is not None:
             aux_info = aux_info.reshape(batch_shape + aux_info.shape[1:])
 
-        return samples, log_weights, aux_info
+        return samples, log_weights, aux_info  # pyright: ignore[reportReturnType]

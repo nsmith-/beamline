@@ -10,34 +10,63 @@ from ._distribution_base import (
     LogWeightRatio,
     PRNGKeyArray,
     Sample,
+    ShapeLike,
     _DistributionBase,
 )
 
 type LandauAuxInfo = jax.Array
 
 
-class _LandauBase[LogWeightT: (LogWeight, None)](
-    _DistributionBase[LogWeightT, LandauAuxInfo, [DistParam, DistParam], None]
+class _MultichannelLandauBase[LogWeightT: (LogWeight, None)](
+    _DistributionBase[LogWeightT, LandauAuxInfo, [DistParam, DistParam], int]
 ):
     loc: DistParam  # traced, diffnble wrt
     scale: DistParam  # traced, diffnble wrt
+
+    def generate(  # type: ignore[override]
+        self,
+        key: PRNGKeyArray,  # traced, not diffnble wrt
+        batch_shape: ShapeLike | None = None,  # not traced
+        dtype: DTypeLike | None = None,  # not traced
+        num_channels: int = 1,
+    ) -> tuple[
+        Sample, LogWeightT, LandauAuxInfo
+    ]:  # ty: ignore[invalid-method-override]
+        return super().generate(  # type: ignore[return-value]
+            key=key,
+            batch_shape=batch_shape,
+            dtype=dtype,
+            extra_arg=num_channels,
+        )
 
     @staticmethod
     def _generate_standard_landau(
         key: PRNGKeyArray,
         shape: tuple[int, ...],
         dtype: DTypeLike | None = None,
+        num_channels: int = 1,
     ) -> tuple[Sample, LandauAuxInfo]:
-        unif_key, exp_key = jax.random.split(key)
+        unif_key, exp_key, choice_key = jax.random.split(key, num=3)
         pi_by_2 = jnp.pi / 2
 
-        unif_rv = jax.random.uniform(
+        unif_rv_cand = jax.random.uniform(
             key=unif_key,
-            shape=shape,
+            shape=(*shape, num_channels),
             dtype=dtype,
             minval=-pi_by_2,
             maxval=pi_by_2,
         )
+
+        # width = jnp.pi / num_channels
+        # start = jnp.linspace(-pi_by_2, pi_by_2, num_channels, endpoint=False)
+        # unif_rv_cand = start + width * jax.random.uniform(
+        #     key=unif_key,
+        #     shape=tuple([*shape, 1]),
+        #     dtype=dtype,
+        #     minval=0,
+        #     maxval=1,
+        # )
+        # del width, start
 
         exp_rv = jax.random.exponential(
             key=exp_key,
@@ -48,11 +77,13 @@ class _LandauBase[LogWeightT: (LogWeight, None)](
         del unif_key, exp_key
 
         aux_info = (1 / pi_by_2) * (
-            (pi_by_2 + unif_rv) * jnp.tan(unif_rv)
-            - jnp.log((pi_by_2 * jnp.cos(unif_rv)) / (pi_by_2 + unif_rv))
+            (pi_by_2 + unif_rv_cand) * jnp.tan(unif_rv_cand)
+            - jnp.log((pi_by_2 * jnp.cos(unif_rv_cand)) / (pi_by_2 + unif_rv_cand))
         )
 
-        std_landau_rv = aux_info - jnp.log(exp_rv) / pi_by_2
+        aux_info_chosen = jax.random.choice(key=choice_key, a=aux_info, axis=-1)
+
+        std_landau_rv = aux_info_chosen - jnp.log(exp_rv) / pi_by_2
 
         # landau_rv = (std_landau_rv * scale) + loc
         # Gradients wrt loc and scale are handled in different ways
@@ -67,13 +98,14 @@ class _LandauBase[LogWeightT: (LogWeight, None)](
         new_scale: DistParam,
     ) -> LogWeightRatio:
         # p(landau_rv, aux_info ; loc, scale)
-        #         = p(aux_info) * pi_by_2 * exp_rv * p(exp_rv) / scale
+        #         = (p(aux_info) * pi_by_2 / scale) * sum_k exp_rv_cand[k] * p(exp_rv_cand[k])
         # w_ratio = new_p / orig_p
-        #         = (new_exp_rv / orig_exp_rv)
-        #           * p(new_exp_rv) / p(orig_exp_rv)
+        #         = (sum_k new_exp_rv_cand[k] exp(-new_exp_rv_cand[k]))
+        #           / (sum_k orig_exp_rv_cand[k] exp(-orig_exp_rv_cand[k]))
         #           * (orig_scale / new_scale)
-        # log_w_ratio = log(new_exp_rv) - log(orig_exp_rv)
-        #               + (orig_exp_rv - new_exp_rv)
+        # log_w_ratio = (orig_std_landau_rv - new_std_landau_rv) * pi_by_2
+        #               + log(sum_k exp(aux_info[k] * pi_by_2 - new_exp_rv_cand[k]))
+        #               - log(sum_k exp(aux_info[k] * pi_by_2 - orig_exp_rv_cand[k]))
         #               + log(orig_scale) - log(new_scale)
 
         landau_rv, _, aux_info = gen_result
@@ -88,24 +120,33 @@ class _LandauBase[LogWeightT: (LogWeight, None)](
 
         pi_by_2 = jnp.pi / 2
 
-        orig_exp_rv = jnp.exp((aux_info - orig_std_landau_rv) * pi_by_2)
-        new_exp_rv = jnp.exp((aux_info - new_std_landau_rv) * pi_by_2)
+        orig_exp_rv_candidates = jnp.exp(
+            (aux_info - orig_std_landau_rv[..., None]) * pi_by_2
+        )
+        new_exp_rv_candidates = jnp.exp(
+            (aux_info - new_std_landau_rv[..., None]) * pi_by_2
+        )
 
         log_w_ratio = (
             (orig_std_landau_rv - new_std_landau_rv) * pi_by_2
-            + (orig_exp_rv - new_exp_rv)
+            + jax.scipy.special.logsumexp(
+                aux_info * pi_by_2 - new_exp_rv_candidates, axis=-1
+            )
+            - jax.scipy.special.logsumexp(
+                aux_info * pi_by_2 - orig_exp_rv_candidates, axis=-1
+            )
             + (jnp.log(orig_scale) - jnp.log(new_scale))
         )
 
         return log_w_ratio
 
 
-class Landau_SG(_LandauBase[None]):
-    def _generate_one_sample(
+class MultichannelLandau_SG(_MultichannelLandauBase[None]):
+    def _generate_one_sample(  # ty: ignore[invalid-method-override] # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         key: PRNGKeyArray,
         dtype: DTypeLike | None = None,
-        extra_arg: None = None,
+        num_channels: int = 1,  # type: ignore[override]
     ) -> tuple[Sample, None, LandauAuxInfo]:
         single_sample_shape = jnp.broadcast_shapes(
             jnp.shape(self.loc),
@@ -116,6 +157,7 @@ class Landau_SG(_LandauBase[None]):
             key=key,
             shape=single_sample_shape,
             dtype=dtype,
+            num_channels=num_channels,
         )
 
         landau_rv = (std_landau_rv * self.scale) + self.loc
@@ -123,12 +165,12 @@ class Landau_SG(_LandauBase[None]):
         return landau_rv, None, aux_info
 
 
-class Landau_WG(_LandauBase[LogWeight]):
-    def _generate_one_sample(
+class MultichannelLandau_WG(_MultichannelLandauBase[LogWeight]):
+    def _generate_one_sample(  # ty: ignore[invalid-method-override] # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         key: PRNGKeyArray,
         dtype: DTypeLike | None = None,
-        extra_arg: None = None,
+        num_channels: int = 1,  # type: ignore[override]
     ) -> tuple[Sample, LogWeight, LandauAuxInfo]:
         single_sample_shape = jnp.broadcast_shapes(
             jnp.shape(self.loc),
@@ -139,6 +181,7 @@ class Landau_WG(_LandauBase[LogWeight]):
             key=key,
             shape=single_sample_shape,
             dtype=dtype,
+            num_channels=num_channels,
         )
 
         loc_no_grad = jax.lax.stop_gradient(self.loc)
