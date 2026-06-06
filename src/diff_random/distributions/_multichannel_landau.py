@@ -49,24 +49,57 @@ class _MultichannelLandauBase[LogWeightT: (LogWeight, None)](
         unif_key, exp_key, choice_key = jax.random.split(key, num=3)
         pi_by_2 = jnp.pi / 2
 
-        unif_rv_cand = jax.random.uniform(
+        # Initial experiments suggest that option 1 is better than option 2, and so on.
+        ## Option 1: Low discrepancy sequence w/ random first value #######
+        alpha = (jnp.sqrt(5) - 1) / 2
+        start = jax.random.uniform(
             key=unif_key,
-            shape=(*shape, num_channels),
+            shape=(*shape, 1),
             dtype=dtype,
-            minval=-pi_by_2,
-            maxval=pi_by_2,
+            minval=0,
+            maxval=1,
         )
+        unif_rv_cand = -pi_by_2 + jnp.pi * (
+            (start + alpha * jnp.arange(num_channels)) % 1
+        )
+        del alpha, start
+        ###################################################################
 
+        ## Option 2: IID sampling #########################################
+        # unif_rv_cand = jax.random.uniform(
+        #     key=unif_key,
+        #     shape=(*shape, num_channels),
+        #     dtype=dtype,
+        #     minval=-pi_by_2,
+        #     maxval=pi_by_2,
+        # )
+        ###################################################################
+
+        ## Option 3: Equidistant points with random offset ################
         # width = jnp.pi / num_channels
         # start = jnp.linspace(-pi_by_2, pi_by_2, num_channels, endpoint=False)
         # unif_rv_cand = start + width * jax.random.uniform(
         #     key=unif_key,
-        #     shape=tuple([*shape, 1]),
+        #     shape=(*shape, 1),
         #     dtype=dtype,
         #     minval=0,
         #     maxval=1,
         # )
         # del width, start
+        ###################################################################
+
+        ## Option 4: Independent samples from each quantile ###############
+        # width = jnp.pi / num_channels
+        # start = jnp.linspace(-pi_by_2, pi_by_2, num_channels, endpoint=False)
+        # unif_rv_cand = start + width * jax.random.uniform(
+        #     key=unif_key,
+        #     shape=(*shape, num_channels),
+        #     dtype=dtype,
+        #     minval=0,
+        #     maxval=1,
+        # )
+        # del width, start
+        ###################################################################
 
         exp_rv = jax.random.exponential(
             key=exp_key,
@@ -98,7 +131,7 @@ class _MultichannelLandauBase[LogWeightT: (LogWeight, None)](
         new_scale: DistParam,
     ) -> LogWeightRatio:
         # p(landau_rv, aux_info ; loc, scale)
-        #         = (p(aux_info) * pi_by_2 / scale) * sum_k exp_rv_cand[k] * p(exp_rv_cand[k])
+        #         = (p(aux_info) * pi_by_2 / scale) * (1/K) * sum_k exp_rv_cand[k] * p(exp_rv_cand[k])
         # w_ratio = new_p / orig_p
         #         = (sum_k new_exp_rv_cand[k] exp(-new_exp_rv_cand[k]))
         #           / (sum_k orig_exp_rv_cand[k] exp(-orig_exp_rv_cand[k]))
