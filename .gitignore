@@ -5,3 +5,6 @@ src/beamline/_version.py
 .benchmarks
 test_artifacts
 __pycache__
+uv.lock
+references/
+notebook/

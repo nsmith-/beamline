@@ -54,3 +54,4 @@ The data-flow loop is: a `Volume`/`EMTensorField` defines where fields/material 
 - jaxtyping aliases (`SFloat`, `Vec3`, `Tangent`, etc.) are **quarantined in `jax/types.py`** so the linter rule for runtime-checked annotations is disabled only there — put new jaxtyping declarations in that file.
 - Abstract base classes use `eqx.AbstractVar` for fields and `@abstractmethod`; concrete subclasses declare the real `eqx.field(...)`.
 - `references/` holds the physics papers (PDFs) behind the implementations; `notebook/` holds exploratory Jupyter notebooks (lint rules relax `print`/`isort` there). Neither is part of the package.
+- Commit messages: you MUST use `Assisted-by:` and not `Co-authored-by:` in the signature of any commit messages
