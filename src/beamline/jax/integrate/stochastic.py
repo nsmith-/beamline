@@ -23,29 +23,31 @@ by the material's characteristic length where there is. The
 the EM field and the material volume, so steps also stop cleanly at material
 boundaries.
 
-The driver is a nested ``lax.scan``: an outer scan over the requested save
+The driver is a nested loop: an outer ``lax.scan`` over the requested save
 intervals (each lands exactly on the next grid point, so saving needs no
-interpolation), and an inner bounded scan of ``max_substeps`` solver steps that
-integrates the interval and applies kicks. A fixed step bound makes the whole
-thing a ``scan`` (rather than a ``while_loop``), which matters for
-differentiability below.
+interpolation), and an inner ``eqx.internal.while_loop`` of at most
+``max_substeps`` solver steps that integrates the interval and applies kicks.
+The while loop terminates naturally when the interval endpoint is reached, so
+surplus iterations are never run.
 
 PRNG convention: the ``key`` is an explicit argument and is ``jr.split`` once per
 step inside the loop. Ensemble runs ``vmap`` over a batch of keys.
 
-Differentiability: the driver's ``lax.scan``s are differentiable both ways, so
-the AD mode is fixed by the Runge-Kutta solver's stage-loop implementation
-(``scan_kind``). The default (checkpointed) loop carries a ``custom_vjp``: it is
-*reverse*-mode differentiable (``jax.grad`` / ``jax.jacrev``) but not forward.
-Passing ``forward_mode=True`` switches it to ``scan_kind="lax"`` (a plain
-``lax.scan``), which is *forward*-mode differentiable (``jax.jvp`` /
-``jax.jacfwd``) but not reverse -- this is the same patch diffrax's
-``ForwardMode`` adjoint applies in ``diffeqsolve``. Reverse is the default since
-scalar-loss optimization has many parameters and one output. Either way the
-reparameterized sampler makes the kicks differentiable in their distribution
-parameters (mean energy loss, etc.), so gradients flow through the physics, while
-the numerical step-size control is wrapped in ``stop_gradient`` (a discretization
-choice the converged solution is, to tolerance, independent of).
+Differentiability: there are two nested loops, each requiring its own AD
+treatment.  The inner substep loop uses ``eqx.internal.while_loop``: the default
+``kind="checkpointed"`` gives O(log n) memory for reverse-mode AD (``jax.grad``
+/ ``jax.jacrev``) via recursive checkpointing; ``kind="lax"`` supports
+forward-mode AD (``jax.jvp`` / ``jax.jacfwd``) efficiently but cannot be
+reverse-differentiated.  The RK stage loop *inside* each ``solver.step`` call is
+a separate level controlled by ``scan_kind`` on ``Dopri5``: ``None`` (the default
+checkpointed ``custom_vjp``) pairs with ``kind="checkpointed"``, and ``"lax"``
+pairs with ``kind="lax"``.  The ``forward_mode`` flag wires both together.
+Reverse is the default since scalar-loss optimization has many parameters and one
+output. Either way the reparameterized sampler makes the kicks differentiable in
+their distribution parameters (mean energy loss, etc.), so gradients flow through
+the physics, while the numerical step-size control is wrapped in
+``stop_gradient`` (a discretization choice the converged solution is, to
+tolerance, independent of).
 
 TODO: a lot of the body of stochastic_solve is diffrax boilerplate, try to factorize
 TODO: refactor apply_energy_loss to a general kick (scattering)
@@ -56,6 +58,7 @@ from functools import partial
 from typing import Any
 
 import equinox as eqx
+import equinox.internal as eqxi
 import hepunits as u
 import jax
 import jax.numpy as jnp
@@ -152,18 +155,17 @@ def stochastic_solve[T: ParticleState](
             (``jax.jvp`` / ``jax.jacfwd``); otherwise (default) reverse-mode
             (``jax.grad`` / ``jax.jacrev``). See the module docstring.
         rtol, atol: Tolerances for the inner PID controller.
-        max_substeps: Fixed number of solver steps allotted per sub-interval.
-            Must be large enough for the controller (plus material segmenting) to
-            cross each interval; surplus steps are no-ops.
+        max_substeps: Maximum number of solver steps per sub-interval (safety
+            bound on the inner while loop). Must be large enough for the
+            controller (plus material segmenting) to cross each interval.
 
     Returns:
         The saved states (batched along ``cts``) and a dict of solver stats.
     """
     term = ODETerm(particle_interaction)
-    # The Runge-Kutta stage loop's implementation is what fixes the AD mode (see
-    # module docstring): the default (checkpointed) loop has a custom_vjp so it is
-    # reverse- but not forward-differentiable, while scan_kind="lax" is the
-    # opposite (this is the same patch diffrax's ForwardMode adjoint applies).
+    # Both loops (inner substep while_loop and inner RK stage loop) need to be
+    # configured for the same AD direction; forward_mode wires them together.
+    kind = "lax" if forward_mode else "checkpointed"
     solver = Dopri5(scan_kind="lax" if forward_mode else None)
     error_order = solver.error_order(term)
     initial_step, max_step = 1.0 * u.mm, 1.0 * u.m
@@ -201,15 +203,13 @@ def stochastic_solve[T: ParticleState](
             num_steps,
             num_accepted,
         ) = carry
-        done = tprev >= bound
 
         # Clamp the step to the interval end and (inside material) the
-        # characteristic segment length; make it a no-op once we are done.
+        # characteristic segment length.
         tnext_eff = jnp.minimum(tnext, bound)
         tnext_eff = jnp.where(
             in_material(y), jnp.minimum(tnext_eff, tprev + char_len), tnext_eff
         )
-        tnext_eff = jnp.where(done, tprev, tnext_eff)
 
         y_cand, y_error, _dense, solver_state_cand, _ = solver.step(
             term, tprev, tnext_eff, y, field, solver_state, made_jump
@@ -233,7 +233,6 @@ def stochastic_solve[T: ParticleState](
         tprev_next = lax.stop_gradient(jnp.minimum(tprev_next, bound))
         tnext_next = lax.stop_gradient(tnext_next)
         controller_state = lax.stop_gradient(controller_state)
-        keep_step = keep_step & jnp.logical_not(done)
 
         def keep(a, b):
             return jnp.where(keep_step, a, b)
@@ -244,7 +243,7 @@ def stochastic_solve[T: ParticleState](
         # Stochastic kick over the segment just traversed (accepted, in material).
         pos0 = y.kin.p.to_cartesian3().coords
         pos1 = y_cand.kin.p.to_cartesian3().coords
-        # safe sqrt: zero-length (no-op/rejected) steps would give an infinite
+        # safe sqrt: zero-length (rejected) steps would give an infinite
         # derivative, so differentiate a floored value and zero it back out.
         sumsq = jnp.sum((pos1 - pos0) ** 2, axis=-1)
         thickness = jnp.where(
@@ -268,7 +267,7 @@ def stochastic_solve[T: ParticleState](
 
         tprev_out = jnp.where(keep_step, tprev_next, tprev)
         tnext_out = jnp.where(keep_step, tnext_next, tnext)
-        carry = (
+        return (
             tprev_out,
             tnext_out,
             y_new,
@@ -277,15 +276,19 @@ def stochastic_solve[T: ParticleState](
             made_jump,
             key,
             log_weight,
-            num_steps + jnp.where(done, 0, 1),
+            num_steps + 1,
             num_accepted + jnp.where(keep_step, 1, 0),
         )
-        return carry, None
 
     def integrate_interval(carry, bound):
         """Integrate one sub-interval up to ``bound`` and emit the state there"""
-        bounds = jnp.broadcast_to(bound, (max_substeps,))
-        carry, _ = lax.scan(substep, carry, bounds)
+        carry = eqxi.while_loop(
+            lambda c: c[0] < bound,
+            lambda c: substep(c, bound),
+            carry,
+            max_steps=max_substeps,
+            kind=kind,
+        )
         y = carry[2]
         return carry, (y.kin.p.coords, y.kin.t.coords)
 
