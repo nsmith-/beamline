@@ -159,6 +159,92 @@ def test_landau_sampler_gradients():
     assert jnp.isfinite(g_thickness_wg)
 
 
+def test_landau_gradient_diagnostics(artifacts_dir):
+    """Diagnostic histograms: aux variate, per-sample SG and WG gradients.
+
+    For the SG estimator the per-sample gradient ``d(dE)/d(param)`` varies
+    because each draw scales a different ``std_landau`` variate. For the WG
+    estimator the per-sample gradient of ``log_w`` is the score function
+    ``d log p / d param``, which is heavy-tailed for the Landau.
+    """
+
+    def mk(thickness, pz):
+        return MATERIALS["lithium_hydride_LiH"].straggling_params(
+            MuonStateDz.make(
+                position=Cartesian4.make(),
+                momentum=Cartesian3.make(z=pz),
+                q=1,
+            ),
+            thickness=thickness,
+        )
+
+    t0 = 1.0 * u.cm
+    pz0 = 200.0 * u.MeV
+    keys = jr.split(jr.key(7), 20_000)
+
+    # --- aux variate ---
+    _, aux = jax.vmap(_standard_landau)(keys)
+    aux = np.asarray(aux)
+
+    fig, ax = plt.subplots()
+    lo, hi = np.percentile(aux, [1, 99])
+    ax.hist(aux, bins=60, range=(lo, hi), density=True)
+    ax.set_xlabel("aux")
+    ax.set_ylabel("density")
+    ax.set_title("Standard Landau aux variate (ITS intermediate)")
+    fig.savefig(artifacts_dir / "landau_aux_hist.png", dpi=150)
+    plt.close(fig)
+
+    # --- per-sample SG gradients ---
+    def sg_grads(key):
+        def dE_fn(t, pz):
+            dE, _ = landau_energy_loss_sampler(mk(t, pz), key)
+            return dE
+
+        return jax.grad(dE_fn, argnums=(0, 1))(t0, pz0)
+
+    sg_g_t, sg_g_pz = jax.vmap(sg_grads)(keys)
+    sg_g_t = np.asarray(sg_g_t)
+    sg_g_pz = np.asarray(sg_g_pz)
+
+    # --- per-sample WG gradients (of log_w = score contribution) ---
+    def wg_grads(key):
+        def log_w_fn(t, pz):
+            _, log_w = landau_energy_loss_sampler_wg(mk(t, pz), key)
+            return log_w
+
+        return jax.grad(log_w_fn, argnums=(0, 1))(t0, pz0)
+
+    wg_g_t, wg_g_pz = jax.vmap(wg_grads)(keys)
+    wg_g_t = np.asarray(wg_g_t)
+    wg_g_pz = np.asarray(wg_g_pz)
+
+    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+    entries = [
+        (axes[0, 0], sg_g_t, "SG  ∂(dE)/∂(thickness)", [1, 99]),
+        (axes[0, 1], sg_g_pz, "SG  ∂(dE)/∂(pz)", [1, 99]),
+        (axes[1, 0], wg_g_t, "WG  ∂(log w)/∂(thickness)", [5, 95]),
+        (axes[1, 1], wg_g_pz, "WG  ∂(log w)/∂(pz)", [5, 95]),
+    ]
+    for ax, data, title, pctiles in entries:
+        lo, hi = np.percentile(data, pctiles)
+        ax.hist(data, bins=60, range=(lo, hi), density=True)
+        ax.axvline(
+            np.mean(data),
+            color="k",
+            ls="--",
+            label=f"mean={np.mean(data):.3g}",
+        )
+        ax.set_title(title)
+        ax.set_ylabel("density")
+        ax.legend(fontsize=8)
+
+    fig.suptitle("Per-sample gradients: SG (pathwise) and WG (score function)")
+    fig.tight_layout()
+    fig.savefig(artifacts_dir / "landau_gradient_distributions.png", dpi=150)
+    plt.close(fig)
+
+
 def test_landau_reweight(artifacts_dir):
     """Importance-reweighting one Landau parametrization onto another matches.
 
