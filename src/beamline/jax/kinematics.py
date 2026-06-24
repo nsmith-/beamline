@@ -70,6 +70,18 @@ class ParticleState(eqx.Module):
         # return E / abs(self.kin.dx)
         return E / self.mass
 
+    def ray(self) -> Tangent[Cartesian3]:
+        """Return the 3D ray (position, scaled tangent) used for signed distances
+
+        The tangent will always be scaled by the independent variable of integration's
+        rate of change (per ``self.scale()``)
+        """
+        return (
+            Tangent(p=self.kin.p.to_cartesian3(), t=self.kin.t.to_cartesian3())
+            * self.scale()
+            / self.kin.t.ct
+        )
+
 
 class MuonState(ParticleState):
     """Abstract state"""

@@ -47,16 +47,11 @@ def particle_interaction[T: ParticleState](
 
 
 def sdf(field: EMTensorField, state: ParticleState) -> SFloat:
-    """A signed distance function for the electromagnetic field, used for boundary-aware step size control"""
-    kin3 = (
-        Tangent(
-            p=state.kin.p.to_cartesian3(),
-            t=state.kin.t.to_cartesian3(),
-        )
-        * state.scale()
-        / state.kin.t.ct
-    )
-    return field.signed_distance(kin3)
+    """A signed distance function for the electromagnetic field, used for boundary-aware step size control
+
+    Free function instead of lambda so BoundaryAwareStepSizeController can do its type inference.
+    """
+    return field.signed_distance(state.ray())
 
 
 def diffrax_solve[T: ParticleState](

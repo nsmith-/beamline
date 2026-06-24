@@ -46,6 +46,9 @@ reparameterized sampler makes the kicks differentiable in their distribution
 parameters (mean energy loss, etc.), so gradients flow through the physics, while
 the numerical step-size control is wrapped in ``stop_gradient`` (a discretization
 choice the converged solution is, to tolerance, independent of).
+
+TODO: a lot of the body of stochastic_solve is diffrax boilerplate, try to factorize
+TODO: refactor apply_energy_loss to a general kick (scattering)
 """
 
 from collections.abc import Callable
@@ -65,7 +68,7 @@ from beamline.jax.absorber.straggling import dummy_energy_loss_sampler
 from beamline.jax.absorber.volume import MaterialVolume
 from beamline.jax.coordinates import Cartesian3, Cartesian4, Tangent
 from beamline.jax.emfield import EMTensorField
-from beamline.jax.integrate.propagate import particle_interaction, sdf
+from beamline.jax.integrate.propagate import particle_interaction
 from beamline.jax.integrate.stepsize import BoundaryAwareStepSizeController
 from beamline.jax.kinematics import ParticleState
 from beamline.jax.types import SFloat
@@ -96,15 +99,6 @@ def apply_energy_loss[T: ParticleState](state: T, dE: SFloat) -> T:
     return eqx.tree_at(lambda s: s.kin.t, state, Cartesian4(coords=new_coords))
 
 
-def _state_ray(state: ParticleState) -> Tangent[Cartesian3]:
-    """The 3D ray (position, velocity-scaled tangent) used for signed distances"""
-    return (
-        Tangent(p=state.kin.p.to_cartesian3(), t=state.kin.t.to_cartesian3())
-        * state.scale()
-        / state.kin.t.ct
-    )
-
-
 def _combined_sdf(
     field: EMTensorField, material: MaterialVolume, state: ParticleState
 ) -> SFloat:
@@ -115,9 +109,11 @@ def _combined_sdf(
     forward-mode autodiff (which evaluates tangents eagerly, before the
     ``stop_gradient`` on the controller's outputs would discard them).
     """
-    state = lax.stop_gradient(state)
-    ds = jnp.array([sdf(field, state), material.signed_distance(_state_ray(state))])
-    return ds[jnp.argmin(jnp.abs(ds))]
+    ray = lax.stop_gradient(state).ray()
+    return jax.lax.min(
+        field.signed_distance(ray),
+        material.signed_distance(ray),
+    )
 
 
 def stochastic_solve[T: ParticleState](
