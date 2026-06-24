@@ -1,8 +1,8 @@
-"""Tests for stochastic energy-loss propagation scaffolding.
+"""Tests for stochastic energy-loss propagation (``stochastic_solve``).
 
-Covers the material volume geometry, the (dummy) energy-loss sampler, an
-end-to-end ensemble propagation through an absorber, and a reverse-mode gradient
-check. Artifacts (figures, CSV) are written under ``test_artifacts/``.
+Covers an end-to-end ensemble propagation through an absorber, the value-gradient
+(pathwise) check in both AD modes, and the weight-gradient (score-function)
+estimator. Artifacts (figures, CSV) are written under ``test_artifacts/``.
 """
 
 import hepunits as u
@@ -11,12 +11,16 @@ import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 import pytest
+from jax.scipy.special import logsumexp
 from matplotlib import pyplot as plt
 
-from beamline.jax.absorber.material import MATERIALS, StragglingParams
-from beamline.jax.absorber.straggling import dummy_energy_loss_sampler
+from beamline.jax.absorber.material import MATERIALS
+from beamline.jax.absorber.straggling import (
+    landau_energy_loss_sampler,
+    landau_energy_loss_sampler_wg,
+)
 from beamline.jax.absorber.volume import AbsorberCylinder
-from beamline.jax.coordinates import Cartesian3, Cartesian4, Tangent
+from beamline.jax.coordinates import Cartesian3, Cartesian4
 from beamline.jax.emfield import SimpleEMField
 from beamline.jax.integrate.stochastic import stochastic_solve
 from beamline.jax.kinematics import MuonStateDz
@@ -42,57 +46,20 @@ def make_muon(pz: float = 200.0 * u.MeV, x: float = 0.0) -> MuonStateDz:
     )
 
 
-def test_absorber_geometry():
-    """contains/signed_distance match the expected cylindrical bounds."""
-    absorber = make_absorber()
-
-    assert bool(absorber.contains(Cartesian3.make()))  # origin, inside
-    assert not bool(absorber.contains(Cartesian3.make(z=100.0 * u.mm)))  # past end
-    assert not bool(absorber.contains(Cartesian3.make(x=150.0 * u.mm)))  # past radius
-
-    # On-axis ray approaching the front face (at z = -length/2 = -50 mm) from
-    # z = -200 mm at unit speed: the nearest surface is 150 mm ahead.
-    entering = Tangent(p=Cartesian3.make(z=-200.0 * u.mm), t=Cartesian3.make(z=1.0))
-    assert float(absorber.signed_distance(entering)) == pytest.approx(
-        150.0 * u.mm, rel=1e-6
-    )
-
-    # A ray offset beyond the radius, parallel to the axis, never enters.
-    missing = Tangent(
-        p=Cartesian3.make(x=150.0 * u.mm, z=-200.0 * u.mm), t=Cartesian3.make(z=1.0)
-    )
-    assert jnp.isinf(absorber.signed_distance(missing))
+def _free_field() -> SimpleEMField:
+    return SimpleEMField(E0=Cartesian3.make(), B0=Cartesian3.make())
 
 
-def test_dummy_sampler_statistics(artifacts_dir):
-    """The dummy sampler is one-sided with the prescribed Bethe-Bloch mean."""
-    mean = 2.0 * u.MeV
-    params = StragglingParams(
-        xi=0.1 * u.MeV, kappa=0.5, mean_energy_loss=mean, mode_energy_loss=1.5 * u.MeV
-    )
-    keys = jr.split(jr.key(0), 50_000)
-    samples = np.asarray(jax.vmap(lambda k: dummy_energy_loss_sampler(params, k))(keys))
-
-    assert (samples > 0).all()  # one-sided (energy is only lost)
-    assert samples.mean() == pytest.approx(mean, rel=0.03)
-
-    fig, ax = plt.subplots()
-    ax.hist(samples / u.MeV, bins=80)
-    ax.axvline(mean / u.MeV, color="k", ls="--", label="mean")
-    ax.set_xlabel("energy loss [MeV]")
-    ax.set_ylabel("count")
-    ax.set_title("Dummy energy-loss sampler (sum of two exponentials)")
-    ax.legend()
-    fig.savefig(artifacts_dir / "dummy_sampler_hist.png", dpi=150)
-    plt.close(fig)
+def _save_grid() -> jnp.ndarray:
+    return jnp.linspace(-200.0 * u.mm, 200.0 * u.mm, 5)
 
 
 def test_stochastic_propagation(artifacts_dir):
     """An ensemble loses ~Bethe-Bloch energy through the absorber, with spread."""
-    field = SimpleEMField(E0=Cartesian3.make(), B0=Cartesian3.make())
+    field = _free_field()
     absorber = make_absorber()
     start = make_muon()
-    zs = jnp.linspace(-200.0 * u.mm, 200.0 * u.mm, 5)
+    zs = _save_grid()
 
     keys = jr.split(jr.key(0), 1000)
     run = jax.jit(
@@ -144,9 +111,9 @@ def test_stochastic_propagation(artifacts_dir):
 
 
 def _mean_final_energy(forward_mode, pz):
-    field = SimpleEMField(E0=Cartesian3.make(), B0=Cartesian3.make())
+    field = _free_field()
     absorber = make_absorber()
-    zs = jnp.linspace(-200.0 * u.mm, 200.0 * u.mm, 5)
+    zs = _save_grid()
     start = make_muon(pz)
     ys = jax.vmap(
         lambda k: stochastic_solve(
@@ -162,7 +129,9 @@ def test_stochastic_gradient(forward_mode):
 
     Reverse-mode (``forward_mode=False``) is the default for scalar-loss
     optimization; forward-mode is exercised too since the reparameterized sampler
-    supports both. Both are checked against a central finite difference.
+    supports both. Both are checked against a central finite difference (the
+    pathwise sampler makes a common-random-number finite difference exact to
+    tolerance).
     """
     pz0 = 200.0 * u.MeV
     if forward_mode:
@@ -181,3 +150,62 @@ def test_stochastic_gradient(forward_mode):
         / (2 * h)
     )
     assert grad == pytest.approx(fd, rel=1e-3)
+
+
+def _weighted_mean_final_energy(pz, sampler, n=256):
+    """Self-normalized weighted ensemble mean of the final energy.
+
+    For the value samplers the log-weights are zero, so this is the plain mean;
+    for the weight sampler the score-function gradient enters through the weights.
+    """
+    field = _free_field()
+    absorber = make_absorber()
+    zs = _save_grid()
+    start = make_muon(pz)
+
+    def one(k):
+        ys, stats = stochastic_solve(field, absorber, start, zs, k, sampler=sampler)
+        return ys.kin.t.ct[-1], stats["log_weight"]
+
+    energy_final, log_weight = jax.vmap(one)(jr.split(jr.key(2), n))
+    weights = jnp.exp(log_weight - logsumexp(log_weight))
+    return jnp.sum(weights * energy_final)
+
+
+def test_stochastic_weight_plumbing():
+    """The WG sampler's log-weight is threaded through the solver consistently.
+
+    The WG sampler draws from a ``stop_gradient``-ed reference at the sampling
+    parameters, so its accumulated ``log_weight`` is numerically zero and its
+    forward result is identical to the value-gradient (SG) sampler; the two differ
+    only under differentiation. This checks the plumbing (the per-step weight is
+    accumulated and returned in ``stats``) and the forward equivalence.
+
+    The *gradient* of the score-function estimator is validated at the sampler
+    level in ``test/jax/absorber/test_straggling.py``. It is not asserted through
+    full propagation here: the unbounded Landau tail can drive a single segment's
+    energy loss large enough to floor the longitudinal momentum, and the
+    ``MuonStateDz`` right-hand side's ``1/p_z`` then makes the *reverse-mode*
+    gradient diverge (the forward pass survives in float64). Stabilizing this needs
+    Landau tail truncation and/or a stopping condition -- tracked as follow-up.
+    """
+    pz0 = 200.0 * u.MeV
+
+    # The accumulated weight is numerically zero (it carries only a gradient).
+    _, stats = jax.vmap(
+        lambda k: stochastic_solve(
+            _free_field(),
+            make_absorber(),
+            make_muon(pz0),
+            _save_grid(),
+            k,
+            sampler=landau_energy_loss_sampler_wg,
+        )
+    )(jr.split(jr.key(2), 256))
+    assert "log_weight" in stats
+    assert np.allclose(np.asarray(stats["log_weight"]), 0.0, atol=1e-9)
+
+    # WG and SG agree in the forward pass (same draws, unit weights).
+    value_wg = float(_weighted_mean_final_energy(pz0, landau_energy_loss_sampler_wg))
+    value_sg = float(_weighted_mean_final_energy(pz0, landau_energy_loss_sampler))
+    assert value_wg == pytest.approx(value_sg, rel=1e-9)

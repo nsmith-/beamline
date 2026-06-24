@@ -127,7 +127,9 @@ def stochastic_solve[T: ParticleState](
     cts: Array,
     key: Array,
     *,
-    sampler: Callable[[StragglingParams, Array], SFloat] = dummy_energy_loss_sampler,
+    sampler: Callable[
+        [StragglingParams, Array], tuple[SFloat, SFloat]
+    ] = dummy_energy_loss_sampler,
     forward_mode: bool = False,
     rtol: float = 1e-5,
     atol: float = 1e-7,
@@ -143,8 +145,13 @@ def stochastic_solve[T: ParticleState](
             is the start and ``cts[-1]`` the end of integration. Consecutive
             points define the integration sub-intervals.
         key: A JAX PRNG key (``vmap`` a batch of keys for an ensemble).
-        sampler: Energy-loss sampler ``(StragglingParams, key) -> dE``; swap in
-            the real Landau sampler here.
+        sampler: Energy-loss sampler ``(StragglingParams, key) -> (dE, log_w)``;
+            pass ``landau_energy_loss_sampler`` (value/pathwise gradients) or
+            ``landau_energy_loss_sampler_wg`` (weight/score-function gradients).
+            The per-step ``log_w`` is accumulated and returned as
+            ``stats["log_weight"]`` (0 for the value-gradient samplers); under an
+            ensemble ``vmap`` the weighted estimator is ``sum(w f) / sum(w)`` with
+            ``w = exp(log_weight)``.
         forward_mode: If True, configure the solver for forward-mode autodiff
             (``jax.jvp`` / ``jax.jacfwd``); otherwise (default) reverse-mode
             (``jax.grad`` / ``jax.jacrev``). See the module docstring.
@@ -194,6 +201,7 @@ def stochastic_solve[T: ParticleState](
             controller_state,
             made_jump,
             key,
+            log_weight,
             num_steps,
             num_accepted,
         ) = carry
@@ -251,7 +259,11 @@ def stochastic_solve[T: ParticleState](
 
         params = material.interaction_params(y_kept, thickness)
         key, subkey = jr.split(key)
-        dE = jnp.where(kick_applied, sampler(params, subkey), 0.0)
+        dE_raw, logw_raw = sampler(params, subkey)
+        dE = jnp.where(kick_applied, dE_raw, 0.0)
+        # Accumulate the importance log-weight (outside any stop_gradient: the
+        # weight-gradient estimator's gradient must flow through it).
+        log_weight = log_weight + jnp.where(kick_applied, logw_raw, 0.0)
         y_new = apply_energy_loss(y_kept, dE)
 
         # A kick perturbs y, so the solver's cached (FSAL) derivative is stale:
@@ -268,6 +280,7 @@ def stochastic_solve[T: ParticleState](
             controller_state,
             made_jump,
             key,
+            log_weight,
             num_steps + jnp.where(done, 0, 1),
             num_accepted + jnp.where(keep_step, 1, 0),
         )
@@ -288,6 +301,7 @@ def stochastic_solve[T: ParticleState](
         controller_state,
         jnp.array(False),
         key,
+        jnp.array(0.0),
         jnp.array(0),
         jnp.array(0),
     )
@@ -301,8 +315,9 @@ def stochastic_solve[T: ParticleState](
         q=start.q,
     )
     stats = {
-        "num_steps": final_carry[7],
-        "num_accepted_steps": final_carry[8],
-        "num_rejected_steps": final_carry[7] - final_carry[8],
+        "log_weight": final_carry[7],
+        "num_steps": final_carry[8],
+        "num_accepted_steps": final_carry[9],
+        "num_rejected_steps": final_carry[8] - final_carry[9],
     }
     return ys, stats
