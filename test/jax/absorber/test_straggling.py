@@ -16,7 +16,7 @@ from jax.scipy.special import logsumexp
 from matplotlib import pyplot as plt
 from scipy import stats
 
-from beamline.jax.absorber.material import StragglingParams
+from beamline.jax.absorber.material import MATERIALS
 from beamline.jax.absorber.straggling import (
     _landau_log_weight_ratio,
     _standard_landau,
@@ -25,6 +25,8 @@ from beamline.jax.absorber.straggling import (
     landau_energy_loss_sampler,
     landau_energy_loss_sampler_wg,
 )
+from beamline.jax.coordinates import Cartesian3, Cartesian4
+from beamline.jax.kinematics import MuonStateDz
 
 
 def landau_energy_loss(E, E_mpv, xi):
@@ -45,12 +47,18 @@ def landau_energy_loss(E, E_mpv, xi):
     )
 
 
+TEST_STRAGGLING_PARAMS = MATERIALS["lithium_hydride_LiH"].straggling_params(
+    MuonStateDz.make(
+        position=Cartesian4.make(), momentum=Cartesian3.make(z=200.0 * u.MeV), q=1
+    ),
+    thickness=1.0 * u.cm,
+)
+
+
 def test_dummy_sampler_statistics(artifacts_dir):
     """The dummy sampler is one-sided with the prescribed Bethe-Bloch mean."""
-    mean = 2.0 * u.MeV
-    params = StragglingParams(
-        xi=0.1 * u.MeV, kappa=0.5, mean_energy_loss=mean, mode_energy_loss=1.5 * u.MeV
-    )
+    params = TEST_STRAGGLING_PARAMS
+    mean = params.mean_energy_loss
     keys = jr.split(jr.key(0), 50_000)
     dE, log_w = jax.vmap(lambda k: dummy_energy_loss_sampler(params, k))(keys)
     samples = np.asarray(dE)
@@ -72,23 +80,18 @@ def test_dummy_sampler_statistics(artifacts_dir):
 
 def test_landau_matches_scipy(artifacts_dir):
     """The Landau sampler reproduces scipy.stats.landau (histogram + KS test)."""
-    E_mpv, xi = 1.5 * u.MeV, 0.1 * u.MeV
-    params = StragglingParams(
-        xi=xi, kappa=0.05, mean_energy_loss=2.0 * u.MeV, mode_energy_loss=E_mpv
-    )
+    params = TEST_STRAGGLING_PARAMS
 
-    keys = jr.split(jr.key(0), 1000)
+    keys = jr.split(jr.key(0), 50_000)
     dE, log_w = jax.vmap(lambda k: landau_energy_loss_sampler(params, k))(keys)
     samples = np.asarray(dE)
     assert np.all(np.asarray(log_w) == 0.0)
 
     # The mapped (loc, scale) is the scipy.stats.landau parametrization; compare
-    # the empirical distribution to it with a Kolmogorov-Smirnov test. With ~1000
-    # samples KS has limited power, so we require only that the match is not
-    # rejected at the 1% level.
+    # the empirical distribution to it with a Kolmogorov-Smirnov test.
     loc, scale = (float(v) for v in _straggling_to_landau(params))
     ks = stats.kstest(samples, lambda x: stats.landau.cdf(x, loc=loc, scale=scale))
-    assert ks.pvalue > 0.01, f"KS test rejected match: {ks}"
+    assert ks.pvalue > 0.05, f"KS test rejected match: {ks}"
 
     # Plot the histogram against the oracle PDF over the bulk (the Landau tail is
     # unbounded, so clip the view to a sensible percentile range).
@@ -98,11 +101,11 @@ def test_landau_matches_scipy(artifacts_dir):
     ax.hist(samples / u.MeV, bins=60, range=(lo / u.MeV, hi / u.MeV), density=True)
     ax.plot(
         grid / u.MeV,
-        landau_energy_loss(grid, E_mpv, xi) * u.MeV,
+        landau_energy_loss(grid, params.mode_energy_loss, params.xi) * u.MeV,
         "C1",
         label="scipy.stats.landau",
     )
-    ax.axvline(E_mpv / u.MeV, color="k", ls="--", label="MPV")
+    ax.axvline(params.mode_energy_loss / u.MeV, color="k", ls="--", label="MPV")
     ax.set_xlabel("energy loss [MeV]")
     ax.set_ylabel("density [1/MeV]")
     ax.set_title(f"Landau sampler vs scipy (KS p={ks.pvalue:.2f})")
@@ -120,33 +123,40 @@ def test_landau_sampler_gradients():
     weighted mean flows through the log-weight and is finite. (End-to-end gradients
     through full propagation are exercised elsewhere; here we isolate the sampler.)
     """
-    xi0, mode0 = 0.08 * u.MeV, 1.45 * u.MeV
 
-    def mk(xi, mode):
-        return StragglingParams(
-            xi=xi, kappa=0.05, mean_energy_loss=1.7 * u.MeV, mode_energy_loss=mode
+    def mk(thickness, pz):
+        return MATERIALS["lithium_hydride_LiH"].straggling_params(
+            MuonStateDz.make(
+                position=Cartesian4.make(),
+                momentum=Cartesian3.make(z=pz),
+                q=1,
+            ),
+            thickness=thickness,
         )
+
+    t0 = 1.0 * u.cm
+    pz0 = 200.0 * u.MeV
 
     def mean_dE(params):
         keys = jr.split(jr.key(0), 20_000)
         dE, _ = jax.vmap(lambda k: landau_energy_loss_sampler(params, k))(keys)
         return jnp.mean(dE)
 
-    g_mode = jax.grad(lambda m: mean_dE(mk(xi0, m)))(mode0)
-    g_xi = jax.grad(lambda x: mean_dE(mk(x, mode0)))(xi0)
-    assert float(g_mode) == pytest.approx(1.0, abs=1e-6)
-    assert jnp.isfinite(g_xi)
+    g_thickness = jax.grad(lambda t: mean_dE(mk(t, pz0)))(t0)
+    g_pz = jax.grad(lambda p: mean_dE(mk(t0, p)))(pz0)
+    assert jnp.isfinite(g_thickness)
+    assert jnp.isfinite(g_pz)
 
-    def wg_weighted_observable(mode):
-        params = mk(xi0, mode)
+    def wg_weighted_observable(thickness):
+        params = mk(thickness, pz0)
         keys = jr.split(jr.key(0), 20_000)
         dE, log_w = jax.vmap(lambda k: landau_energy_loss_sampler_wg(params, k))(keys)
-        obs = jnp.exp(-0.5 * ((dE - mode0) / (2 * xi0)) ** 2)  # bounded
+        obs = jnp.exp(-0.5 * dE**2)  # bounded
         weights = jnp.exp(log_w - logsumexp(log_w))
         return jnp.sum(weights * obs)
 
-    g_wg = jax.grad(wg_weighted_observable)(mode0)
-    assert jnp.isfinite(g_wg)
+    g_thickness_wg = jax.grad(wg_weighted_observable)(t0)
+    assert jnp.isfinite(g_thickness_wg)
 
 
 def test_landau_reweight(artifacts_dir):

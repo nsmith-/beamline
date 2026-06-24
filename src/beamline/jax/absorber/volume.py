@@ -70,6 +70,8 @@ class AbsorberCylinder(MaterialVolume):
 
     Geometry mirrors ``beamline.jax.rfcavity.pillbox.PillboxCavity``: the
     cylindrical side plus the two end disks bound the volume.
+
+    TODO: factor out common shapes into geometry utilities
     """
 
     material: Material = eqx.field(static=True)

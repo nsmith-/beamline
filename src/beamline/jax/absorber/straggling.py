@@ -14,7 +14,7 @@ branch's ``diff_random``). The physical ``StragglingParams`` are mapped to the
 ``scipy.stats.landau`` ``(loc, scale)`` parametrization by
 ``_straggling_to_landau``:
 
-- ``landau_energy_loss_sampler`` -- the *value-gradient* (SG) estimator: the draw
+- ``landau_energy_loss_sampler`` -- the *sample-gradient* (SG) estimator: the draw
   is an affine map of a standard Landau variate, so it is pathwise-differentiable
   in ``(loc, scale)``. Its log-weight is ``0.0``.
 - ``landau_energy_loss_sampler_wg`` -- the *weight-gradient* (WG) estimator: the
@@ -43,15 +43,8 @@ from jax import Array
 from beamline.jax.absorber.material import StragglingParams
 from beamline.jax.types import SFloat
 
-_EULER_GAMMA = 0.5772156649015329
-"""Euler-Mascheroni constant."""
-
 _LANDAU_MPV_OFFSET = 0.20005183774398613
-"""Offset relating the reduced-Landau most-probable value to ``scipy.stats.landau``.
-
-Combined with ``_EULER_GAMMA`` and ``log(pi/2)`` in ``_straggling_to_landau`` to
-place the sampled distribution's most probable value at ``mode_energy_loss``.
-"""
+"""Offset relating the reduced-Landau most-probable value to ``scipy.stats.landau``."""
 
 
 def _standard_landau(key: Array) -> tuple[SFloat, SFloat]:
@@ -115,7 +108,7 @@ def _straggling_to_landau(params: StragglingParams) -> tuple[SFloat, SFloat]:
     scale = xi * pi_by_2
     loc = (
         params.mode_energy_loss
-        + xi * (1 - _EULER_GAMMA - _LANDAU_MPV_OFFSET)
+        + xi * (1 - jnp.euler_gamma - _LANDAU_MPV_OFFSET)
         + xi * jnp.log(pi_by_2)
     )
     return loc, scale
