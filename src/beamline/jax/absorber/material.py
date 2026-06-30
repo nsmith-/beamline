@@ -142,18 +142,7 @@ class Material:
           particle  : has .beta(), .charge, and a momentum magnitude in MeV/c
           thickness : path length through the material
 
-        Returns theta_0 in radians, capped at pi/4.
-
-        The cap handles the unphysical blow-up of Highland's 1/(beta*p)
-        factor for stopped or near-stopped particles. In a chained
-        geometry (e.g. two absorbers in series) the rare Landau
-        high-loss tail of the first absorber can degrade a particle's
-        momentum so much that the second absorber's Highland evaluation
-        gives theta_0 in the radians. Such particles aren't beam
-        particles anymore -- they're effectively stopped. Capping
-        theta_0 at pi/4 prevents these rare outliers from dominating
-        the empirical RMS while leaving the bulk distribution
-        unchanged (typical theta_0 ~ 20 mrad, far below the cap).
+        Returns theta_0 in radians
         """
         beta = particle.beta()
         p = jnp.sqrt(jnp.sum(particle.kin.t.coords[:3] ** 2))
@@ -167,7 +156,7 @@ class Material:
         theta = (13.6 * u.MeV / (beta * p)) * z * jnp.sqrt(x_over_X0) * (
             1.0 + 0.038 * jnp.log(log_arg)
         )
-        return jnp.minimum(theta, jnp.pi / 4)
+        return theta
 
     def straggling_params(
         self, particle: IncidentParticle, thickness: SFloat

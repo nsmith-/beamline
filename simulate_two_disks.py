@@ -1,31 +1,42 @@
 """
-Simulate a muon beam passing through TWO solid SiO2 disks spaced along z.
+Simulate a muon beam passing through TWO solid SiO2 disks placed back-to-back
+along z.
 
-Each disk is just a short CylindricalAbsorber. The beam runs along +z, normal
-to both faces, so each disk's `length` IS the true path length. A particle
-crosses disk 1 (energy-loss + scattering #1), drifts the field-free gap (no
-loss, no scattering), then crosses disk 2 (energy-loss + scattering #2),
-applied to the already-degraded state, so the second disk correctly sees
-slightly lower momentum.
+Geometry: the two disks are touching (no field-free gap between them).
+A particle:
+  1) enters disk 1, where energy loss and multiple scattering are applied
+     in place (CylindricalAbsorber.apply does NOT propagate longitudinally)
+  2) drifts through disk 2's thickness using its post-disk-1 direction,
+     accumulating the transverse position offset that disk-1's exit angle
+     would produce as the particle traverses the second disk
+  3) enters disk 2, where energy loss and multiple scattering are applied
+     in place
 
-This version plots both energy loss and scattering observables, comparing
-the one-disk and two-disk distributions:
+Without step 2, the simulation would treat the two disks as two thin
+scatterers stacked at the same z-coordinate, missing the contribution of
+disk-1's exit angle to the final transverse position. Step 2 restores
+this contribution and makes the simulation faithful to a touching-disks
+geometry.
 
-  1. The energy-loss spectrum                       (Landau)
-  2. The outgoing momentum magnitude                (consequence of dE)
-  3. The transverse angular deflection theta_x      (Gaussian, RMS grows
-                                                     as sqrt(2) for two disks)
-  4. The transverse lateral displacement dx         (Gaussian)
+This script plots four observables:
 
-Theory notes for the two-disk case:
-  - Angular variances add: var(theta_x_total) = var(disk1) + var(disk2),
-    so for two identical disks the total RMS is sqrt(2) * theta_0(one disk).
-  - Lateral displacement for two disks is NOT just sqrt(2) * (one disk),
-    because the angle from disk 1 propagates as a position offset at
-    disk 2 (drift between disks contributes geometrically). The theory
-    line shown is "Highland applied to the combined 10 mm thickness",
-    which is the correct prediction if the two disks are touching;
-    if there's a gap, the empirical y RMS will be larger.
+  1) Landau energy-loss spectrum (one disk vs both)
+  2) Outgoing momentum magnitude
+  3) Transverse angular deflection theta_x
+  4) Transverse lateral displacement dx
+
+For the scattering panels, two reference theory lines are shown:
+  - The two-disk-touching theory derived for this exact geometry,
+    including disk-1's angle propagating through disk-2's thickness:
+        sigma^2(dx) = 8/3 * x^2 * theta_0^2
+    where x is the per-disk thickness. RMS = sqrt(8/3) * x * theta_0
+    ~= 112.4 um for 5+5 mm SiO2 at 200 MeV/c
+  - The single-10mm Highland prediction for the same total thickness,
+    which serves as a "continuous slab" reference. The two-disk-touching
+    and single-thick-slab numbers differ at the ~3% level because
+    Highland's log term is not linear in x; this discretization gap is
+    the expected difference between treating the material as two thin
+    scatterers vs one continuous slab.
 
 Run from the repo root:
     python simulate_two_disks.py
@@ -44,11 +55,12 @@ import jax.numpy as jnp
 import numpy as np
 import hepunits as u
 import matplotlib.pyplot as plt
+import equinox as eqx
 
 from beamline.jax.absorber.absorber import CylindricalAbsorber
 from beamline.jax.absorber.material import MATERIALS
 from beamline.jax.kinematics import MuonStateDz
-from beamline.jax.coordinates import Cartesian3, Cartesian4
+from beamline.jax.coordinates import Cartesian3, Cartesian4, Tangent
 
 import dist_stats as ds
 
@@ -73,13 +85,47 @@ def make_muon(pc_MeV):
     )
 
 
+def drift_through_thickness(state, thickness):
+    """Advance the particle's transverse position by theta * thickness.
+
+    For a particle with momentum (px, py, pz) traversing a longitudinal
+    distance `thickness`, the transverse position changes by
+        dx = (px / pz) * thickness ~= theta_x * thickness  (small angle)
+        dy = (py / pz) * thickness ~= theta_y * thickness
+
+    This is the inter-disk longitudinal-propagation step that
+    CylindricalAbsorber.apply doesn't perform. We use it to drift the
+    particle across disk 2's thickness between the two apply() calls,
+    so disk-1's exit angle contributes to the final transverse
+    position the same way it would in a continuous-slab simulation.
+    """
+    px, py, pz = state.kin.t.x, state.kin.t.y, state.kin.t.z
+    dx = px * thickness / pz
+    dy = py * thickness / pz
+
+    x_pos, y_pos = state.kin.p.x, state.kin.p.y
+    new_position = Cartesian4.make(
+        x=x_pos + dx,
+        y=y_pos + dy,
+        z=state.kin.p.z,
+        ct=state.kin.p.ct,
+    )
+    new_kin = Tangent(p=new_position, t=state.kin.t)
+    return eqx.tree_at(lambda s: s.kin, state, new_kin)
+
+
 def main():
     mat = MATERIALS[MATERIAL]
     disk1 = CylindricalAbsorber(material=mat, radius=RADIUS * u.mm, length=DISK1_LEN * u.mm)
     disk2 = CylindricalAbsorber(material=mat, radius=RADIUS * u.mm, length=DISK2_LEN * u.mm)
 
     def through_two_disks(state, key):
+        # disk 1: in-place energy loss + scattering
         state, key = disk1.apply(state, key)
+        # propagate the post-disk-1 direction across disk-2's thickness;
+        # this is the contribution missing from a naive thin-scatterer chain
+        state = drift_through_thickness(state, disk2.length)
+        # disk 2: in-place energy loss + scattering on the drifted state
         state, key = disk2.apply(state, key)
         return state
 
@@ -93,7 +139,7 @@ def main():
     theta_x_two = np.arctan2(np.asarray(out.kin.t.x), np.asarray(out.kin.t.z))
     dx_two = np.asarray(out.kin.p.x - beam.kin.p.x)
 
-    # Single-disk observables (for comparison)
+    # Single-disk observables (for comparison; just disk 1 alone)
     out1, _ = jax.jit(jax.vmap(disk1.apply))(beam, keys)
     dE_one = np.asarray(beam.kin.t.ct - out1.kin.t.ct)
     theta_x_one = np.arctan2(np.asarray(out1.kin.t.x), np.asarray(out1.kin.t.z))
@@ -102,14 +148,34 @@ def main():
     # Theory predictions
     probe = make_muon(BEAM_PC)
     pp1 = mat.straggling_params(probe, disk1.length)
-    theta0_one = float(mat.highland_theta0(probe, disk1.length))
+    theta0_one  = float(mat.highland_theta0(probe, disk1.length))
+    theta0_10mm = float(mat.highland_theta0(probe, disk1.length + disk2.length))
     y_rms_one_pred = float(disk1.length) * theta0_one / np.sqrt(3.0)
 
-    # For two touching disks the right prediction is Highland evaluated
-    # at the combined thickness (10 mm), not sqrt(2) * one-disk theta_0:
-    combined_length = disk1.length + disk2.length
-    theta0_two = float(mat.highland_theta0(probe, combined_length))
-    y_rms_two_pred = float(combined_length) * theta0_two / np.sqrt(3.0)
+    # Two-disk-touching theory: includes disk-1 in-disk offset, disk-2
+    # in-disk offset, disk-1 angle propagated through disk 2, and the
+    # cov(y_1, theta_1) cross-term (rho = sqrt(3)/2).
+    #   Var(dx) = 2 * (x*theta_0)^2 / 3      (in-disk offsets)
+    #           + (theta_0)^2 * x^2          (disk-1 angle drift through disk 2)
+    #           + 2 * rho * sigma(y) * sigma(theta) * x  (cross-term)
+    # For x_1 = x_2 = x this evaluates to 8/3 * x^2 * theta_0^2.
+    x1, x2 = float(disk1.length), float(disk2.length)
+    var_two_disk = (
+        x1**2 * theta0_one**2 / 3.0      # disk-1 in-disk offset
+        + x2**2 * theta0_one**2 / 3.0    # disk-2 in-disk offset
+        + theta0_one**2 * x2**2          # disk-1 angle through disk 2
+        + 2 * (np.sqrt(3) / 2)           # rho
+          * (x1 * theta0_one / np.sqrt(3))   # sigma(y_1)
+          * theta0_one                        # sigma(theta_1)
+          * x2                                # propagation distance
+    )
+    y_rms_two_touching = float(np.sqrt(var_two_disk))
+
+    # Single-10mm-disk reference for the same total thickness.
+    y_rms_10mm = (x1 + x2) * theta0_10mm / np.sqrt(3.0)
+
+    # Two-disk theta_0 (variances add since angle kicks are independent).
+    theta0_two_disk = np.sqrt(2.0) * theta0_one
 
     # --- precise mode/median/mean with uncertainties ---
     hr1 = (0.0, float(np.percentile(dE_one,   99.5)))
@@ -120,31 +186,32 @@ def main():
                           n_boot=N_BOOT, bins=N_BINS, hist_range=hr2, seed=SEED)
 
     print(f"Beam            : {BEAM_PC:.0f} MeV/c muons, N = {N_PARTICLES:,}")
-    print(f"Disks           : {DISK1_LEN:.0f} mm + {DISK2_LEN:.0f} mm {mat.name}")
+    print(f"Disks           : {DISK1_LEN:.0f} mm + {DISK2_LEN:.0f} mm {mat.name} (touching)")
     print(f"momentum {BEAM_PC:.0f} -> {pc_out.mean():.2f} MeV/c")
     print("-" * 56)
     print("ENERGY LOSS:")
-    print(f"  one disk    : fitted mode {stats1['mode']:.3f} +/- {stats1['mode_err']:.3f} MeV  "
+    print(f"  one disk  : fitted mode {stats1['mode']:.3f} +/- {stats1['mode_err']:.3f} MeV  "
           f"(predicted {float(pp1.mode_energy_loss):.3f})")
-    print(f"  two disks   : fitted mode {stats2['mode']:.3f} +/- {stats2['mode_err']:.3f} MeV")
-    print(f"  two disks   : median {stats2['median']:.3f} +/- {stats2['median_err']:.3f}, "
+    print(f"  two disks : fitted mode {stats2['mode']:.3f} +/- {stats2['mode_err']:.3f} MeV")
+    print(f"              median {stats2['median']:.3f} +/- {stats2['median_err']:.3f}, "
           f"mean {stats2['mean']:.3f} +/- {stats2['mean_err']:.3f} MeV")
     print("-" * 56)
     print("SCATTERING:")
-    print(f"  one disk    : predicted theta_0 = {theta0_one*1e3:.4f} mrad")
-    print(f"                empirical theta_x RMS = {np.std(theta_x_one)*1e3:.4f} mrad")
-    print(f"                empirical dx RMS      = {np.std(dx_one)*1e3:.4f} um")
-    print(f"                predicted dx RMS      = {y_rms_one_pred*1e3:.4f} um")
-    print(f"  two disks   : predicted theta_0 = {theta0_two*1e3:.4f} mrad  "
-          f"(Highland at combined {combined_length:.0f} mm)")
-    print(f"                empirical theta_x RMS = {np.std(theta_x_two)*1e3:.4f} mrad")
-    print(f"                empirical dx RMS      = {np.std(dx_two)*1e3:.4f} um")
-    print(f"                predicted dx RMS      = {y_rms_two_pred*1e3:.4f} um")
+    print(f"  one disk      : empirical theta_x RMS = {np.std(theta_x_one)*1e3:.4f} mrad")
+    print(f"                  predicted theta_0     = {theta0_one*1e3:.4f} mrad")
+    print(f"                  empirical dx RMS      = {np.std(dx_one)*1e3:.4f} um")
+    print(f"                  predicted dx RMS      = {y_rms_one_pred*1e3:.4f} um")
+    print(f"  two disks     : empirical theta_x RMS = {np.std(theta_x_two)*1e3:.4f} mrad")
+    print(f"                  predicted theta_0     = {theta0_two_disk*1e3:.4f} mrad  (sqrt(2) * single-5mm)")
+    print(f"                  single-10mm Highland  = {theta0_10mm*1e3:.4f} mrad  (continuous-slab ref)")
+    print(f"                  empirical dx RMS      = {np.std(dx_two)*1e3:.4f} um")
+    print(f"                  two-disk-touching     = {y_rms_two_touching*1e3:.4f} um  (theory for this geometry)")
+    print(f"                  single-10mm Highland  = {y_rms_10mm*1e3:.4f} um  (continuous-slab ref)")
 
     # ---- plotting -----------------------------------------------------------
     fig, axes = plt.subplots(2, 2, figsize=(13, 10))
     (axL, axR), (axT, axY) = axes
-    fig.suptitle(f"{BEAM_PC:.0f} MeV/c muons through two {DISK1_LEN:.0f} mm {mat.name} disks",
+    fig.suptitle(f"{BEAM_PC:.0f} MeV/c muons through two {DISK1_LEN:.0f} mm {mat.name} disks (touching)",
                  fontsize=13, fontweight="bold")
 
     # --- top-left: energy-loss spectrum ---
@@ -175,7 +242,9 @@ def main():
     axR.legend(); axR.grid(alpha=0.3)
 
     # --- bottom-left: angular deflection theta_x ---
-    t_lim = 5.0 * theta0_two
+    # Two reference lines: sqrt(2) * theta_0(5mm) for two-disk stacking,
+    # and theta_0(10mm) for the continuous-slab reference.
+    t_lim = 5.0 * theta0_two_disk
     axT.hist(theta_x_one, bins=N_BINS_MCS, range=(-t_lim, t_lim),
              color="#c7c7c7", alpha=0.85, density=True,
              label=f"one disk (RMS = {np.std(theta_x_one)*1e3:.3f} mrad)")
@@ -183,41 +252,23 @@ def main():
              histtype="step", lw=2, color="#937860", density=True,
              label=f"two disks (RMS = {np.std(theta_x_two)*1e3:.3f} mrad)")
     th = np.linspace(-t_lim, t_lim, 400)
-    g_one = np.exp(-0.5 * (th / theta0_one) ** 2) / (theta0_one * np.sqrt(2 * np.pi))
-    g_two = np.exp(-0.5 * (th / theta0_two) ** 2) / (theta0_two * np.sqrt(2 * np.pi))
-    axT.plot(th, g_one, color="0.4", lw=1.5, ls="--",
+    g_one    = np.exp(-0.5 * (th / theta0_one)**2)     / (theta0_one    * np.sqrt(2 * np.pi))
+    g_two    = np.exp(-0.5 * (th / theta0_two_disk)**2) / (theta0_two_disk * np.sqrt(2 * np.pi))
+    g_10mm   = np.exp(-0.5 * (th / theta0_10mm)**2)    / (theta0_10mm   * np.sqrt(2 * np.pi))
+    axT.plot(th, g_one, color="0.4", lw=1.5, ls=":",
              label=f"one-disk Highland ($\\theta_0$ = {theta0_one*1e3:.3f} mrad)")
     axT.plot(th, g_two, color="k", lw=2,
-             label=f"two-disk Highland ($\\theta_0$ = {theta0_two*1e3:.3f} mrad)")
+             label=f"two-disk theory ($\\sqrt{{2}}\\,\\theta_0$ = {theta0_two_disk*1e3:.3f} mrad)")
+    axT.plot(th, g_10mm, color="#c44e52", lw=1.5, ls="--",
+             label=f"single-10mm Highland ($\\theta_0$ = {theta0_10mm*1e3:.3f} mrad)")
     axT.set(xlabel="$\\theta_x$ [rad]", ylabel="probability density",
             title="Angular deflection (one plane)")
     axT.legend(fontsize=8); axT.grid(alpha=0.3)
 
     # --- bottom-right: lateral displacement dx ---
-    # Two-disk dx theory: each disk contributes BOTH an in-disk offset (y_i)
-    # and an out-of-disk drift from the prior disk's angular kick. With no
-    # gap between disks, the per-disk drift contribution is theta_1 * x_2.
-    # The full second-moment calculation, accounting for the sqrt(3)/2
-    # correlation between theta_1 and y_1, gives:
-    #
-    #   Var(dx_two) = 2 * (x_1 * theta_0)^2 / 3                  # in-disk offsets
-    #               + (theta_0)^2 * x_2^2                        # disk-1 angle drift through disk 2
-    #               + 2 * (sqrt(3)/2) * (x_1 * theta_0 / sqrt(3)) * theta_0 * x_2
-    #                                                            # cross-term between disk-1 (y_1, theta_1)
-    #
-    # For two touching identical disks of thickness x with single-disk
-    # theta_0_single, this simplifies. We use the closed form below.
-    x1 = float(disk1.length)
-    x2 = float(disk2.length)
-    # exact two-disk-no-drift variance (touching disks):
-    var_two = (x1**2 * theta0_one**2 / 3.0      # disk-1 in-disk offset
-               + x2**2 * theta0_one**2 / 3.0    # disk-2 in-disk offset
-               + theta0_one**2 * x2**2          # disk-1 angle propagated through disk 2
-               + 2 * (np.sqrt(3)/2) * (x1 * theta0_one / np.sqrt(3)) * theta0_one * x2
-              )                                  # correlation cross-term
-    y_rms_two_correct = float(np.sqrt(var_two))
-
-    y_lim = 5.0 * y_rms_two_correct
+    # Two reference lines: two-disk-touching theory (the right comparison for
+    # this geometry) and single-10mm Highland (continuous-slab limit).
+    y_lim = 5.0 * y_rms_two_touching
     axY.hist(dx_one, bins=N_BINS_MCS, range=(-y_lim, y_lim),
              color="#c7c7c7", alpha=0.85, density=True,
              label=f"one disk (RMS = {np.std(dx_one)*1e3:.3f} mm $\\times 10^{{-3}}$)")
@@ -225,12 +276,15 @@ def main():
              histtype="step", lw=2, color="#da8bc3", density=True,
              label=f"two disks (RMS = {np.std(dx_two)*1e3:.3f} mm $\\times 10^{{-3}}$)")
     yy = np.linspace(-y_lim, y_lim, 400)
-    g_y_one = np.exp(-0.5 * (yy / y_rms_one_pred) ** 2) / (y_rms_one_pred * np.sqrt(2 * np.pi))
-    g_y_two = np.exp(-0.5 * (yy / y_rms_two_correct) ** 2) / (y_rms_two_correct * np.sqrt(2 * np.pi))
-    axY.plot(yy, g_y_one, color="0.4", lw=1.5, ls="--",
+    g_y_one      = np.exp(-0.5 * (yy / y_rms_one_pred)**2)     / (y_rms_one_pred     * np.sqrt(2 * np.pi))
+    g_y_touching = np.exp(-0.5 * (yy / y_rms_two_touching)**2) / (y_rms_two_touching * np.sqrt(2 * np.pi))
+    g_y_10mm     = np.exp(-0.5 * (yy / y_rms_10mm)**2)         / (y_rms_10mm         * np.sqrt(2 * np.pi))
+    axY.plot(yy, g_y_one, color="0.4", lw=1.5, ls=":",
              label=f"one-disk PDG ($x\\theta_0/\\sqrt{{3}}$ = {y_rms_one_pred*1e3:.3f} $\\mu$m)")
-    axY.plot(yy, g_y_two, color="k", lw=2,
-             label=f"two-disk theory ({y_rms_two_correct*1e3:.3f} $\\mu$m)")
+    axY.plot(yy, g_y_touching, color="k", lw=2,
+             label=f"two-disk touching theory ({y_rms_two_touching*1e3:.3f} $\\mu$m)")
+    axY.plot(yy, g_y_10mm, color="#c44e52", lw=1.5, ls="--",
+             label=f"single-10mm Highland ({y_rms_10mm*1e3:.3f} $\\mu$m)")
     axY.set(xlabel="lateral displacement $\\Delta x$ [mm]", ylabel="probability density",
             title="Lateral displacement")
     axY.legend(fontsize=8); axY.grid(alpha=0.3)
