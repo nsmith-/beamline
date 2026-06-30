@@ -129,9 +129,34 @@ class Material:
     """Mean excitation energy [MeV] (to excite an electron)"""
     plasma_energy: float
     """Plasma energy [MeV]"""
+    radiation_length: float    # NEW: X_0 from PDG
+    """Radiation Length [g/cm^2]"""
     is_atomic: bool
     """True if this is an atomic element (rather than a compound)"""
     density_correction: DensityCorrection
+    
+    def highland_theta0(self, particle, thickness):
+        """RMS plane scattering angle from PDG eq. 34.15 (Highland).
+
+        Inputs:
+          particle  : has .beta(), .charge, and a momentum magnitude in MeV/c
+          thickness : path length through the material
+
+        Returns theta_0 in radians
+        """
+        beta = particle.beta()
+        p = jnp.sqrt(jnp.sum(particle.kin.t.coords[:3] ** 2))
+        z = particle.charge
+
+        x_g_per_cm2  = (thickness * self.density) / (u.g / u.cm2)
+        X0_g_per_cm2 = self.radiation_length     / (u.g / u.cm2)
+        x_over_X0 = x_g_per_cm2 / X0_g_per_cm2
+
+        log_arg = x_over_X0 * z ** 2 / beta ** 2
+        theta = (13.6 * u.MeV / (beta * p)) * z * jnp.sqrt(x_over_X0) * (
+            1.0 + 0.038 * jnp.log(log_arg)
+        )
+        return theta
 
     def straggling_params(
         self, particle: IncidentParticle, thickness: SFloat
@@ -170,7 +195,7 @@ class Material:
         )
         # (0.2 is with density correction, 0.37 is without, per Bichsel:1998if)
         mode_energy_loss = mean_energy_loss + xi * (
-            beta**2 + jnp.log(kappa) - 0.20005183774398613
+            beta**2 + jnp.log(kappa) + 0.20005183774398613
         )
         return StragglingParams(
             xi=xi,
@@ -191,6 +216,7 @@ MATERIALS: dict[str, Material] = {
         density=2.699 * u.g / u.cm3,
         mean_excitation=166.0 * u.eV,
         plasma_energy=32.86 * u.eV,
+        radiation_length=24.01 * u.g / u.cm2,
         is_atomic=True,
         density_correction=DensityCorrection(
             C=4.2395, x0=0.1708, x1=3.0127, a=0.0802, k=3.6345, delta0=0.0
@@ -204,6 +230,7 @@ MATERIALS: dict[str, Material] = {
         density=2.329 * u.g / u.cm3,
         mean_excitation=173.0 * u.eV,
         plasma_energy=31.05 * u.eV,
+        radiation_length=21.82 * u.g / u.cm2,
         is_atomic=True,
         density_correction=DensityCorrection(
             C=4.4355, x0=0.2015, x1=2.8716, a=0.1492, k=3.2546, delta0=0.14
@@ -217,9 +244,24 @@ MATERIALS: dict[str, Material] = {
         density=0.8200 * u.g / u.cm3,
         mean_excitation=36.5 * u.eV,
         plasma_energy=18.51 * u.eV,
+        radiation_length=79.61 * u.g / u.cm2,
         is_atomic=False,
         density_correction=DensityCorrection(
             C=2.3580, x0=-0.0988, x1=1.4515, a=0.9057, k=2.5849, delta0=0.0
+        ),
+    ),
+    # https://pdg.lbl.gov/2025/AtomicNuclearProperties/HTML/silicon_dioxide_fused_quartz.html
+    "silicon_dioxide_SiO2": Material(
+        name="Silicon Dioxide",
+        Z=10,
+        mass=(10 / 0.49930) * u.g / u.mol,
+        density=2.200 * u.g / u.cm3,
+        mean_excitation=139.2 * u.eV,
+        plasma_energy=30.20 * u.eV,
+        radiation_length=27.05 * u.g / u.cm2,
+        is_atomic=False,
+        density_correction=DensityCorrection(
+            C=4.0560, x0=0.1500, x1=3.0140, a=0.08408, k=3.5064, delta0=0.0
         ),
     ),
 }
