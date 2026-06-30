@@ -4,6 +4,7 @@ These are energy loss and straggling effect computations,
 as described e.g. in https://pdg.lbl.gov/2025/reviews/rpp2024-rev-passage-particles-matter.pdf
 
 The data values themselves are retrieved from https://pdg.lbl.gov/2025/AtomicNuclearProperties/
+(Commit Test)
 """
 
 from dataclasses import dataclass
