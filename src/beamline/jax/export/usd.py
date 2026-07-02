@@ -58,6 +58,10 @@ _COLOR_UNKNOWN = (
     0.6,
 )  # gray, fallback for unregistered CylinderVolume subtypes
 
+# Slightly translucent so a marker/light traveling through the interior of a
+# solenoid/cavity/absorber is still visible from outside.
+_VOLUME_OPACITY = 0.85
+
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<!^)(?=[A-Z])")
 
 
@@ -296,6 +300,7 @@ def _bind_canvas_material(
     texture_width: int | None = None,
     texture_squeeze: float = 1.0,
     texture_font_scale: float = 1.0,
+    opacity: float = 1.0,
 ) -> None:
     """Create (once per ``label``) a ``UsdPreviewSurface`` material textured
     with a generated color-canvas PNG (:func:`_make_canvas_texture`) sampled
@@ -316,6 +321,9 @@ def _bind_canvas_material(
     of that circumference:length stretch ``texture_width`` doesn't already
     cover on its own. ``texture_font_scale`` enlarges the label itself, for
     faces whose ``v`` axis spans a physically short distance.
+
+    ``opacity`` (< 1) makes the material translucent, e.g. so a marker/light
+    traveling through the volume's interior stays visible from outside.
     """
     from pxr import Sdf, UsdShade
 
@@ -358,6 +366,7 @@ def _bind_canvas_material(
         pbr_shader.CreateInput(
             "diffuseColor", Sdf.ValueTypeNames.Color3f
         ).ConnectToSource(tex_sampler.ConnectableAPI(), "rgb")
+        pbr_shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(float(opacity))
         material.CreateSurfaceOutput().ConnectToSource(
             pbr_shader.ConnectableAPI(), "surface"
         )
@@ -456,13 +465,14 @@ def _add_cylinder_prim(
     mesh.GetFaceVertexIndicesAttr().Set(Vt.IntArray(face_vertex_indices))
     mesh.CreateDoubleSidedAttr().Set(True)
     mesh.GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*color)]))
+    mesh.CreateDisplayOpacityAttr().Set(Vt.FloatArray([_VOLUME_OPACITY]))
 
     st_primvar = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
         "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
     )
     st_primvar.Set(Vt.Vec2fArray([Gf.Vec2f(float(u), float(v)) for u, v in uvs]))
 
-    _bind_canvas_material(stage, mesh, label, color)
+    _bind_canvas_material(stage, mesh, label, color, opacity=_VOLUME_OPACITY)
     return mesh
 
 
@@ -571,6 +581,7 @@ def _add_tube_prim(
     mesh.GetFaceVertexIndicesAttr().Set(Vt.IntArray(face_vertex_indices))
     mesh.CreateDoubleSidedAttr().Set(True)
     mesh.GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*color)]))
+    mesh.CreateDisplayOpacityAttr().Set(Vt.FloatArray([_VOLUME_OPACITY]))
 
     st_primvar = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
         "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
@@ -595,6 +606,7 @@ def _add_tube_prim(
         texture_width=round(256 * capped_aspect),
         texture_squeeze=float(capped_aspect / aspect),
         texture_font_scale=2.0,
+        opacity=_VOLUME_OPACITY,
     )
     return mesh
 
