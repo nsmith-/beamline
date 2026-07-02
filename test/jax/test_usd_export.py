@@ -7,8 +7,11 @@ from pathlib import Path
 
 import hepunits as u
 import jax.numpy as jnp
+import jax.random as jr
 import numpy as np
 import pytest
+
+from beamline.jax.integrate.stochastic import stochastic_solve
 
 pytest.importorskip("pxr", reason="usd-core not installed")
 
@@ -21,7 +24,7 @@ from beamline.jax.emfield import SimpleEMField, TransformEMField
 from beamline.jax.export.usd import add_trajectories, add_volume, make_stage
 from beamline.jax.integrate.propagate import diffrax_solve
 from beamline.jax.kinematics import MuonStateDct
-from beamline.jax.magnet.solenoid import ThinShellSolenoid
+from beamline.jax.magnet.solenoid import ThickSolenoid, ThinShellSolenoid
 from beamline.jax.rfcavity.pillbox import PillboxCavity
 
 
@@ -91,8 +94,80 @@ def test_add_sum_field(stage):
     combined = sol + cav
     add_volume(stage, "/beamline/combined", combined)
 
-    assert stage.GetPrimAtPath("/beamline/combined/component_0").IsValid()
-    assert stage.GetPrimAtPath("/beamline/combined/component_1").IsValid()
+    assert stage.GetPrimAtPath("/beamline/combined/thin_shell_solenoid_0").IsValid()
+    assert stage.GetPrimAtPath("/beamline/combined/pillbox_cavity_1").IsValid()
+
+
+def test_add_sum_field_distinguishes_same_type_components(stage):
+    """Two cavities of the same concrete type still get distinct prim names."""
+    cav1 = PillboxCavity(
+        length=200.0 * u.mm,
+        frequency=0.805 * u.GHz,
+        E0=15.0 * u.MV / u.m,
+        mode="TM",
+        m=0,
+        n=1,
+        p=1,
+        phase=0.0,
+    )
+    cav2 = PillboxCavity(
+        length=250.0 * u.mm,
+        frequency=1.3 * u.GHz,
+        E0=20.0 * u.MV / u.m,
+        mode="TM",
+        m=0,
+        n=1,
+        p=1,
+        phase=0.0,
+    )
+    combined = cav1 + cav2
+    add_volume(stage, "/beamline/combined", combined)
+
+    prim0 = stage.GetPrimAtPath("/beamline/combined/pillbox_cavity_0")
+    prim1 = stage.GetPrimAtPath("/beamline/combined/pillbox_cavity_1")
+    assert prim0.IsValid()
+    assert prim1.IsValid()
+    cyl0 = UsdGeom.Cylinder(prim0)
+    cyl1 = UsdGeom.Cylinder(prim1)
+    assert cyl0.GetHeightAttr().Get() != cyl1.GetHeightAttr().Get()
+
+
+def test_concrete_types_have_unique_colors(stage):
+    """Each concrete exportable type gets its own display color."""
+    sol = ThinShellSolenoid(R=80.0 * u.mm, jphi=1.0, L=400.0 * u.mm)
+    thick_sol = ThickSolenoid(
+        Rin=60.0 * u.mm, Rout=90.0 * u.mm, jphi=1.0, L=400.0 * u.mm
+    )
+    cav = PillboxCavity(
+        length=200.0 * u.mm,
+        frequency=0.805 * u.GHz,
+        E0=15.0 * u.MV / u.m,
+        mode="TM",
+        m=0,
+        n=1,
+        p=1,
+        phase=0.0,
+    )
+    mat = MATERIALS["lithium_hydride_LiH"]
+    absorber = AbsorberCylinder(material=mat, radius=150.0 * u.mm, length=350.0 * u.mm)
+
+    add_volume(stage, "/beamline/sol", sol)
+    add_volume(stage, "/beamline/thick_sol", thick_sol)
+    add_volume(stage, "/beamline/cav", cav)
+    add_volume(stage, "/beamline/absorber", absorber)
+
+    colors = []
+    for path in (
+        "/beamline/sol",
+        "/beamline/thick_sol",
+        "/beamline/cav",
+        "/beamline/absorber",
+    ):
+        prim = stage.GetPrimAtPath(path)
+        gprim = UsdGeom.Gprim(prim)
+        colors.append(tuple(gprim.GetDisplayColorAttr().Get()[0]))
+
+    assert len(set(colors)) == len(colors)
 
 
 def test_add_transformed_em_field(stage):
@@ -104,7 +179,7 @@ def test_add_transformed_em_field(stage):
     xf_prim = stage.GetPrimAtPath("/beamline/placed")
     assert xf_prim.IsValid()
     assert UsdGeom.Xform(xf_prim)
-    child = stage.GetPrimAtPath("/beamline/placed/field")
+    child = stage.GetPrimAtPath("/beamline/placed/thin_shell_solenoid")
     assert child.IsValid()
 
 
@@ -118,7 +193,7 @@ def test_add_transformed_material_volume(stage):
     xf_prim = stage.GetPrimAtPath("/beamline/placed")
     assert xf_prim.IsValid()
     assert UsdGeom.Xform(xf_prim)
-    child = stage.GetPrimAtPath("/beamline/placed/material")
+    child = stage.GetPrimAtPath("/beamline/placed/absorber_cylinder")
     assert child.IsValid()
 
 
@@ -178,11 +253,16 @@ def test_unknown_volume_warns(stage):
 
 
 def test_full_scene(artifacts_dir: Path):
-    """Integration test: build a simple cooling cell and export to a .usda file."""
-    path = str(artifacts_dir / "cooling_cell.usda")
+    """Integration test: build a simple cooling cell and export to a .usd file."""
+    path = str(artifacts_dir / "cooling_cell.usd")
     stage = make_stage(path)
 
-    sol = ThinShellSolenoid(R=200.0 * u.mm, jphi=100.0, L=1000.0 * u.mm)
+    sol = ThickSolenoid(
+        Rin=250.0 * u.mm,
+        Rout=419.3 * u.mm,
+        jphi=500.0 * u.A / u.mm**2,
+        L=140.0 * u.mm,
+    )
     add_volume(stage, "/beamline/solenoid", sol)
 
     cav = PillboxCavity(
@@ -196,30 +276,32 @@ def test_full_scene(artifacts_dir: Path):
         phase=0.0,
     )
     tf_cav = Transform.make_translation(z=-650.0 * u.mm)
+    cavity_upstream = TransformEMField(transform=tf_cav, field=cav)
     add_volume(
         stage,
         "/beamline/cavity_upstream",
-        TransformEMField(transform=tf_cav, field=cav),
+        cavity_upstream,
     )
     tf_cav2 = Transform.make_translation(z=650.0 * u.mm)
+    cavity_downstream = TransformEMField(transform=tf_cav2, field=cav)
     add_volume(
         stage,
         "/beamline/cavity_downstream",
-        TransformEMField(transform=tf_cav2, field=cav),
+        cavity_downstream,
     )
 
     mat = MATERIALS["lithium_hydride_LiH"]
-    absorber = AbsorberCylinder(material=mat, radius=150.0 * u.mm, length=350.0 * u.mm)
+    absorber = AbsorberCylinder(material=mat, radius=150.0 * u.mm, length=150.0 * u.mm)
     add_volume(stage, "/beamline/absorber", absorber)
 
-    field = SimpleEMField(E0=Cartesian3.make(), B0=Cartesian3.make(z=3.0 * u.tesla))
+    field = sol + cavity_upstream + cavity_downstream
     start = MuonStateDct.make(
-        position=Cartesian4.make(y=20.0 * u.mm),
-        momentum=Cartesian3.make(x=50.0 * u.MeV, z=200.0 * u.MeV),
+        position=Cartesian4.make(y=20.0 * u.mm, z=-800.0 * u.mm),
+        momentum=Cartesian3.make(x=20.0 * u.MeV, z=200.0 * u.MeV),
         q=1,
     )
-    cts = jnp.linspace(0.0, 3.0 * u.m, 80)
-    states, _ = diffrax_solve(field, start, cts)
+    cts = jnp.linspace(0.0, 3.0 * u.m, 100)
+    states, _ = stochastic_solve(field, absorber, start, cts, jr.key(123))
     add_trajectories(stage, "/trajectories", states)
 
     stage.Save()

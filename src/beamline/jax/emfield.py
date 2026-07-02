@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import operator
 from abc import abstractmethod
+from functools import reduce
 
 import hepunits as u
 import jax.numpy as jnp
@@ -125,6 +127,9 @@ class SumField(EMTensorField):
                 t=Cartesian3(coords=B_total),
             ),
         )
+
+    def __call__(self, vec: Tangent[Cartesian4]) -> Tangent[Cartesian4]:
+        return reduce(operator.add, (f(vec) for f in self.components))
 
 
 class TransformEMField(EMTensorField):

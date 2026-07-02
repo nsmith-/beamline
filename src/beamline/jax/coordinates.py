@@ -305,16 +305,15 @@ class Tangent[T: CoordinateChart](eqx.Module):
     # In any coordinate chart, the tangents are a vector space
 
     def __add__(self, other: Tangent[T]) -> Tangent[T]:
-        if self.p != other.p:
-            raise ValueError("Cannot add tangent vectors at different points")
+        # TODO: re-introduce in a jit-friendly way?
+        # if self.p != other.p:
+        #     raise ValueError("Cannot add tangent vectors at different points")
         return Tangent(
             p=self.p,
             t=type(self.t)(coords=self.t.coords + other.t.coords),
         )
 
     def __sub__(self, other: Tangent[T]) -> Tangent[T]:
-        if self.p != other.p:
-            raise ValueError("Cannot subtract tangent vectors at different points")
         return Tangent(
             p=self.p,
             t=type(self.t)(coords=self.t.coords - other.t.coords),
