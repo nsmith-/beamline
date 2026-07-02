@@ -47,11 +47,11 @@ def particle_interaction[T: ParticleState](
 
 
 def sdf(field: EMTensorField, state: ParticleState) -> SFloat:
-    """A signed distance function for the electromagnetic field, used for boundary-aware step size control
+    """Signed time to the nearest EM-field boundary, used for boundary-aware step size control
 
     Free function instead of lambda so BoundaryAwareStepSizeController can do its type inference.
     """
-    return field.signed_distance(state.ray())
+    return field.signed_time_to_boundary(state.ray())
 
 
 def diffrax_solve[T: ParticleState](
@@ -62,6 +62,7 @@ def diffrax_solve[T: ParticleState](
     forward_mode: bool = True,
     rtol: float = 1e-5,
     atol: float = 1e-7,
+    debug: bool = False,
 ) -> tuple[T, dict[str, Any]]:
     """An example solver for muon propagation through non-stochastic components using diffrax
 
@@ -84,6 +85,7 @@ def diffrax_solve[T: ParticleState](
         PIDController(rtol=rtol, atol=atol, factormax=2.0),
         sdf=partial(sdf, field),
         max_step=max_step,
+        debug=debug,
     )
     sol = diffeqsolve(
         terms=ODETerm(particle_interaction),

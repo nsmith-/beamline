@@ -22,7 +22,7 @@ def make_absorber(char_length: float = 10.0 * u.mm) -> AbsorberCylinder:
 
 
 def test_absorber_geometry():
-    """contains/signed_distance match the expected cylindrical bounds."""
+    """contains/signed_time_to_boundary match the expected cylindrical bounds."""
     absorber = make_absorber()
 
     assert bool(absorber.contains(Cartesian3.make()))  # origin, inside
@@ -30,14 +30,14 @@ def test_absorber_geometry():
     assert not bool(absorber.contains(Cartesian3.make(x=150.0 * u.mm)))  # past radius
 
     # On-axis ray approaching the front face (at z = -length/2 = -50 mm) from
-    # z = -200 mm at unit speed: the nearest surface is 150 mm ahead.
+    # z = -200 mm at unit speed: outside, nearest surface 150 mm ahead → positive.
     entering = Tangent(p=Cartesian3.make(z=-200.0 * u.mm), t=Cartesian3.make(z=1.0))
-    assert float(absorber.signed_distance(entering)) == pytest.approx(
+    assert float(absorber.signed_time_to_boundary(entering)) == pytest.approx(
         150.0 * u.mm, rel=1e-6
     )
 
-    # A ray offset beyond the radius, parallel to the axis, never enters.
+    # A ray offset beyond the radius, parallel to the axis, never enters → inf.
     missing = Tangent(
         p=Cartesian3.make(x=150.0 * u.mm, z=-200.0 * u.mm), t=Cartesian3.make(z=1.0)
     )
-    assert jnp.isinf(absorber.signed_distance(missing))
+    assert jnp.isinf(absorber.signed_time_to_boundary(missing))

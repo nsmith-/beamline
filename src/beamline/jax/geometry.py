@@ -50,8 +50,9 @@ def line_cylinder_intersection(
 
     Computes the time and azimuthal coordinate of the intersection of a vector
     with an infinite cylinder defined by a point and axis. The axis magnitude is the
-    cylinder radius. Will return the closest intersetion point, either in the future
-    or the past.
+    cylinder radius. Will return positive time if the ray has not reached the cylinder
+    or negative time if the ray is inside the cylinder. If the ray has passed the cylinder,
+    the returned time will be infinite.
 
     Args:
         ray: Tangent vector representing the line (e.g. a particle trajectory)
@@ -74,22 +75,35 @@ def line_cylinder_intersection(
     axn = a.cross(n)
     axb = a.cross(b)
     r2 = a.dot(a)
+    tden = axn.dot(axn)
     discriminant = axb.dot(axn) ** 2 - axn.dot(axn) * (axb.dot(axb) - r2 * r2)
-    sd = jnp.where(discriminant >= 0, jnp.sqrt(jnp.abs(discriminant)), jnp.inf)
+    # When tden==0 (ray parallel to axis), discriminant==0 identically, so sqrt'(0)=inf
+    # produces a NaN tangent under jax_debug_nans even though the result is masked.
+    # Substitute a safe positive value so sqrt is never evaluated at 0.
+    safe_disc = jnp.where(tden == 0.0, 1.0, discriminant)
+    sd = jnp.where(safe_disc >= 0, jnp.sqrt(jnp.abs(safe_disc)), jnp.inf)
     t1num = axb.dot(axn) + sd
     t2num = axb.dot(axn) - sd
-    tden = axn.dot(axn)
     t = jnp.where(
         tden == 0.0,
         jnp.inf,
-        jnp.where(abs(t1num) <= abs(t2num), t1num, t2num)
+        jnp.where(
+            # t2 will be the closest if we have not reached the cylinder yet
+            t2num >= 0.0,
+            t2num,
+            jnp.where(
+                t1num >= 0.0,
+                -t1num,  # t2 < 0, t1 > 0 => inside, so take negative time
+                jnp.inf,
+            ),
+        )
         / jnp.where(tden == 0.0, 1.0, tden),
     )
     # if n has zeros, then inf * 0 causes trouble, so work around it
     h = jnp.where(
         t == jnp.inf,
         jnp.inf,
-        a.dot(jnp.where(t == jnp.inf, 0.0, t) * n - b) / jnp.sqrt(r2),
+        a.dot(jnp.where(t == jnp.inf, 0.0, abs(t)) * n - b) / jnp.sqrt(r2),
     )
     return t, h
 
@@ -103,19 +117,65 @@ class Volume(eqx.Module):
         raise NotImplementedError
 
     @abstractmethod
-    def signed_distance(self, ray: Tangent[Cartesian3]) -> SFloat:
-        """Signed time to the volume surface
+    def signed_time_to_boundary(self, ray: Tangent[Cartesian3]) -> SFloat:
+        """Signed time to the nearest volume surface
 
-        This will be the time to the surface, assuming the ray tangent measures
-        the speed, with the sign indicating whether the intersection is in the
-        future (positive) or past (negative). If there is no intersection, this
-        should return inf.  When this method is implemented on composite
-        volumes, it should return the minimum signed distance to any of the
-        constituents.
+        Returns the smallest positive parametric time ``t`` such that
+        ``ray.p + t * ray.t`` lies on a boundary surface, with the sign
+        encoding containment:
 
-        This is useful for efficient step size control in tracking, as
-        boundaries may cause discontinuities in the fields or material
-        properties.
+        - **Positive**: the particle is *outside* the volume; the value is the
+          time until it enters (or ``inf`` if the ray never intersects).
+        - **Negative**: the particle is *inside* the volume; the magnitude is
+          the time until it exits.
 
+        Composite implementations should return the value from whichever
+        constituent surface is nearest (smallest absolute time).
+
+        Used for boundary-aware step size control in tracking, as boundaries
+        cause discontinuities in the fields or material properties.
         """
         raise NotImplementedError
+
+
+class CylinderVolume(Volume):
+    """Cylinder-shaped volume in space (mixin)"""
+
+    radius: eqx.AbstractVar[SFloat]
+    length: eqx.AbstractVar[SFloat]
+
+    def contains(self, point: Cartesian3) -> SBool:
+        pcyl = point.to_cylindric()
+        return (
+            (pcyl.z >= -self.length / 2)
+            & (pcyl.z <= self.length / 2)
+            & (pcyl.rho <= self.radius)
+        )
+
+    def signed_time_to_boundary(self, ray: Tangent[Cartesian3]) -> SFloat:
+        # cylindrical side
+        tcyl, h = line_cylinder_intersection(
+            ray, Cartesian3.make(), Cartesian3.make(z=self.radius)
+        )
+        tcyl = jnp.where(abs(h) <= self.length / 2, tcyl, jnp.inf)
+        # end disks. line_plane_intersection returns (u, v) in units of the
+        # basis vectors (here scaled by radius), so the in-disk test is the unit
+        # disk u**2 + v**2 <= 1.
+        t1, uu, vv = line_plane_intersection(
+            ray,
+            plane_point=Cartesian3.make(z=-self.length / 2),
+            plane_u=Cartesian3.make(x=self.radius, z=-self.length / 2),
+            plane_v=Cartesian3.make(y=self.radius, z=-self.length / 2),
+        )
+        t1 = jnp.where(uu**2 + vv**2 <= 1.0, t1, jnp.inf)
+        t2, uu, vv = line_plane_intersection(
+            ray,
+            plane_point=Cartesian3.make(z=self.length / 2),
+            plane_u=Cartesian3.make(x=self.radius, z=self.length / 2),
+            plane_v=Cartesian3.make(y=self.radius, z=self.length / 2),
+        )
+        t2 = jnp.where(uu**2 + vv**2 <= 1.0, t2, jnp.inf)
+        ts = jnp.array([tcyl, t1, t2])
+        t_forward = jnp.min(jnp.where(ts >= 0, ts, jnp.inf))
+        inside = ((tcyl <= 0.0) | ~jnp.isfinite(tcyl)) & (t1 * t2 <= 0.0)
+        return jnp.where(inside, -t_forward, t_forward)

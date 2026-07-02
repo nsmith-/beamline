@@ -178,7 +178,7 @@ class ThinShellSolenoid(EMTensorField):
     def contains(self, point: Cartesian3) -> SBool:
         return jnp.array(True)
 
-    def signed_distance(self, ray: Tangent[Cartesian3]) -> SFloat:
+    def signed_time_to_boundary(self, ray: Tangent[Cartesian3]) -> SFloat:
         # although there are surfaces, the field is in all space
         return jnp.inf
 
@@ -230,7 +230,7 @@ class ThickSolenoid(EMTensorField):
     def contains(self, point: Cartesian3) -> SBool:
         return jnp.array(True)
 
-    def signed_distance(self, ray: Tangent[Cartesian3]) -> SFloat:
+    def signed_time_to_boundary(self, ray: Tangent[Cartesian3]) -> SFloat:
         # although there are surfaces, the field is in all space
         return jnp.inf
 

@@ -51,7 +51,7 @@ class WireLoop(EMTensorField):
     def contains(self, point: Cartesian3) -> SBool:
         return jnp.array(True)
 
-    def signed_distance(self, ray: Tangent[Cartesian3]) -> SFloat:
+    def signed_time_to_boundary(self, ray: Tangent[Cartesian3]) -> SFloat:
         return jnp.inf
 
     def field_strength(

@@ -3,7 +3,12 @@ import jax.numpy as jnp
 import pytest
 
 from beamline.jax.coordinates import Cartesian3, Tangent
-from beamline.jax.geometry import line_cylinder_intersection, line_plane_intersection
+from beamline.jax.geometry import (
+    CylinderVolume,
+    line_cylinder_intersection,
+    line_plane_intersection,
+)
+from beamline.jax.types import SFloat
 
 
 def approx(val):
@@ -77,6 +82,7 @@ def test_line_cylinder_intersection():
     cyl_point = Cartesian3.make()
     cyl_axis = Cartesian3.make(x=1.0)
 
+    # at boundary
     ray = Tangent(
         p=Cartesian3.make(y=-1.0),
         t=Cartesian3.make(y=1.0),
@@ -85,22 +91,34 @@ def test_line_cylinder_intersection():
     assert t == approx(0.0)
     assert h == approx(0.0)
 
+    # inside the cylinder
     ray = Tangent(
         p=Cartesian3.make(z=0.1),
         t=Cartesian3.make(z=1.0),
     )
     t, h = line_cylinder_intersection(ray, cyl_point, cyl_axis)
-    assert t == approx(0.9)
+    assert t == approx(-0.9)
     assert h == approx(0.0)
 
+    # approaching the cylinder
+    ray = Tangent(
+        p=Cartesian3.make(y=-2.0),
+        t=Cartesian3.make(y=1.0),
+    )
+    t, h = line_cylinder_intersection(ray, cyl_point, cyl_axis)
+    assert t == approx(1.0)
+    assert h == approx(0.0)
+
+    # inside with axial motion
     ray = Tangent(
         p=Cartesian3.make(),
         t=Cartesian3.make(x=2.0, y=2.0),
     )
     t, h = line_cylinder_intersection(ray, cyl_point, cyl_axis)
-    assert t == approx(0.5)
+    assert t == approx(-0.5)
     assert h == approx(1.0)
 
+    # parallel to axis
     ray = Tangent(
         p=Cartesian3.make(x=0.1, y=-1.0),
         t=Cartesian3.make(x=1.0),
@@ -109,13 +127,14 @@ def test_line_cylinder_intersection():
     assert t == jnp.inf
     assert h == jnp.inf
 
+    # check with a different radius
     cyl_axis = Cartesian3.make(z=3.0)
     ray = Tangent(
         p=Cartesian3.make(y=0.5, z=1.0),
         t=Cartesian3.make(y=1.0),
     )
     t, h = line_cylinder_intersection(ray, cyl_point, cyl_axis)
-    assert t == approx(2.5)
+    assert t == approx(-2.5)
     assert h == approx(1.0)
 
 
@@ -131,15 +150,15 @@ def test_line_cylinder_intersection_grad():
         return t, h
 
     t, h = ray_cylinder(1.0)
-    assert t == approx(0.75)
+    assert t == approx(-0.75)
     assert h == approx(0.0)
 
     dt_dr, dh_dr = jax.jacfwd(ray_cylinder)(1.0)
-    assert dt_dr == approx(1.0)
+    assert dt_dr == approx(-1.0)
     assert dh_dr == approx(0.0)
 
     dt_dr, dh_dr = jax.jacrev(ray_cylinder)(1.0)
-    assert dt_dr == approx(1.0)
+    assert dt_dr == approx(-1.0)
     assert dh_dr == approx(0.0)
 
     def ray_cylinder(cyl_x):
@@ -156,10 +175,7 @@ def test_line_cylinder_intersection_grad():
     assert t == jnp.inf
     assert h == jnp.inf
 
-    return pytest.xfail(
-        reason="When parallel, the auto-diff is not handling inf correctly"
-    )
-    # TODO: is grad 0 the right behavior?
+    # When parallel, gradients are zero
 
     dt_dx, dh_dx = jax.jacfwd(ray_cylinder)(0.0)
     assert dt_dx == 0.0
@@ -168,3 +184,52 @@ def test_line_cylinder_intersection_grad():
     dt_dx, dh_dx = jax.jacrev(ray_cylinder)(0.0)
     assert dt_dx == 0.0
     assert dh_dx == 0.0
+
+
+class ConcreteCylinderVolume(CylinderVolume):
+    radius: SFloat
+    length: SFloat
+
+
+def test_cylinder_volume():
+    volume = ConcreteCylinderVolume(
+        radius=1.0,
+        length=2.0,
+    )
+    assert volume.radius == 1.0
+    assert volume.length == 2.0
+
+    # head-on, before
+    ray = Tangent(
+        p=Cartesian3.make(z=-2.0),
+        t=Cartesian3.make(z=1.0),
+    )
+    assert volume.signed_time_to_boundary(ray) == approx(1.0)
+
+    # head-on, inside
+    ray = Tangent(
+        p=Cartesian3.make(),
+        t=Cartesian3.make(z=1.0),
+    )
+    assert volume.signed_time_to_boundary(ray) == approx(-1.0)
+
+    # head-on, past
+    ray = Tangent(
+        p=Cartesian3.make(z=2.0),
+        t=Cartesian3.make(z=1.0),
+    )
+    assert volume.signed_time_to_boundary(ray) == jnp.inf
+
+    # angled, before
+    ray = Tangent(
+        p=Cartesian3.make(z=-2.0),
+        t=Cartesian3.make(x=0.25, z=1.0),
+    )
+    assert volume.signed_time_to_boundary(ray) == approx(1.0)
+
+    # angled, inside
+    ray = Tangent(
+        p=Cartesian3.make(x=0.5, z=0.0),
+        t=Cartesian3.make(x=0.25, z=1.0),
+    )
+    assert volume.signed_time_to_boundary(ray) == approx(-1.0)
