@@ -930,7 +930,7 @@ def add_trajectories(
     trail_opacity: float = 0.35,
     animate_marker: bool = False,
     marker_color_temperature: float = 2700.0,
-    marker_radius: float = 10.0,
+    marker_radius: float = 1.0,
     marker_opacity: float = 0.9,
     fps: float = 24.0,
 ) -> None:
