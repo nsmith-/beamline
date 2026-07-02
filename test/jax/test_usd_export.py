@@ -393,9 +393,10 @@ def test_add_trajectories_single_particle(stage, artifacts_dir: Path):
 
 
 def test_add_trajectories_animated_marker(stage):
-    """animate_marker=True adds a moving glow-sphere marker (not a UsdLux
-    light, which Quick Look/AR Quick Look ignores) and sets the stage's
-    time-code range to match the number of samples."""
+    """animate_marker=True adds a moving glow-sphere marker group (not a
+    UsdLux light, which Quick Look/AR Quick Look ignores) — an Xform whose
+    position is time-sampled, wrapping concentric emissive Sphere shells —
+    and sets the stage's time-code range to match the number of samples."""
     n_steps = 10
     positions = np.random.randn(n_steps, 4).astype(np.float32)
     positions[..., 3] = 1.0
@@ -411,8 +412,22 @@ def test_add_trajectories_animated_marker(stage):
 
     marker_prim = stage.GetPrimAtPath("/trajectories/particle_0_marker")
     assert marker_prim.IsValid()
-    assert marker_prim.IsA(UsdGeom.Sphere)
+    assert marker_prim.IsA(UsdGeom.Xform)
     assert not marker_prim.IsA(UsdLux.SphereLight)
+
+    core_prim = stage.GetPrimAtPath("/trajectories/particle_0_marker/core")
+    assert core_prim.IsValid()
+    assert core_prim.IsA(UsdGeom.Sphere)
+    halo_prim = stage.GetPrimAtPath("/trajectories/particle_0_marker/halo1")
+    assert halo_prim.IsValid()
+    assert halo_prim.IsA(UsdGeom.Sphere)
+    # The outer halo shell is bigger and more transparent than the core.
+    core_radius = UsdGeom.Sphere(core_prim).GetRadiusAttr().Get()
+    halo_radius = UsdGeom.Sphere(halo_prim).GetRadiusAttr().Get()
+    assert halo_radius > core_radius
+    core_opacity = UsdGeom.Gprim(core_prim).GetDisplayOpacityAttr().Get()[0]
+    halo_opacity = UsdGeom.Gprim(halo_prim).GetDisplayOpacityAttr().Get()[0]
+    assert core_opacity > halo_opacity
 
     translate_op = UsdGeom.Xformable(marker_prim).GetOrderedXformOps()[0]
     time_samples = translate_op.GetTimeSamples()
@@ -515,4 +530,5 @@ def test_full_scene(artifacts_dir: Path):
     assert loaded.GetPrimAtPath("/beamline/solenoid").IsValid()
     assert loaded.GetPrimAtPath("/trajectories/particle_0").IsValid()
     assert loaded.GetPrimAtPath("/trajectories/particle_0_marker").IsValid()
+    assert loaded.GetPrimAtPath("/trajectories/particle_0_marker/core").IsValid()
     assert loaded.GetEndTimeCode() == 99

@@ -675,12 +675,22 @@ def _bind_glow_material(
     color: tuple[float, float, float],
     opacity: float,
     label: str,
+    emissive_scale: float = 1.0,
 ) -> None:
     """Create (once per ``label``) an emissive, translucent
     ``UsdPreviewSurface`` material and bind it to ``prim``, analogous to
     :func:`_bind_canvas_material` but a flat emissive color rather than a
-    textured one — cached so e.g. every particle's marker sphere in one
+    textured one — cached so e.g. every particle's marker shell in one
     :func:`add_trajectories` call shares a single material.
+
+    ``emissive_scale`` multiplies ``color`` for ``emissiveColor`` only
+    (``diffuseColor`` stays at ``color``, i.e. <= 1 per channel) — pushing it
+    above 1 gives HDR-aware renderers (Storm, Blender/Filament, and to some
+    extent RealityKit) something to bloom, which is otherwise the only way
+    to get a soft glow out of USD: there's no bloom/post-process schema, so
+    :func:`_add_moving_glow_sphere_prim` fakes it with concentric shells
+    instead, and a bit of extra emissive punch on the outer ones helps them
+    still read as bright despite their low opacity.
     """
     from pxr import Gf, Sdf, UsdShade
 
@@ -696,7 +706,7 @@ def _bind_glow_material(
             Gf.Vec3f(*color)
         )
         shader.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).Set(
-            Gf.Vec3f(*color)
+            Gf.Vec3f(*(c * emissive_scale for c in color))
         )
         shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(float(opacity))
         shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.4)
@@ -709,6 +719,18 @@ def _bind_glow_material(
     UsdShade.MaterialBindingAPI(prim).Bind(material)
 
 
+# Concentric glow shells, relative to the marker's nominal radius/opacity:
+# a bright near-opaque core plus two larger, more transparent "halo" shells
+# with progressively boosted emissive intensity, so the fade-out still reads
+# as glowing rather than just fading to gray.
+# (radius_mult, opacity_mult, emissive_scale, name)
+_GLOW_SHELLS = (
+    (1.0, 1.0, 1.5, "core"),
+    (2.0, 0.35, 2.5, "halo0"),
+    (3.5, 0.12, 4.0, "halo1"),
+)
+
+
 def _add_moving_glow_sphere_prim(
     stage: Usd.Stage,
     prim_path: str,
@@ -717,35 +739,47 @@ def _add_moving_glow_sphere_prim(
     radius: float,
     opacity: float,
 ) -> object:
-    """Define a small emissive, translucent ``UsdGeom.Sphere`` whose position
-    is time-sampled to travel along ``positions``, one time code per sample
-    (time code ``i`` ↔ ``positions[i]``) — a visible stand-in for a moving
-    point light.
+    """Define a small ``Xform`` group, position time-sampled to travel along
+    ``positions`` (one time code per sample, time code ``i`` ↔
+    ``positions[i]``), wrapping concentric emissive/translucent
+    ``UsdGeom.Sphere`` shells (see :data:`_GLOW_SHELLS`) that together fake a
+    soft "fairy light" glow — a visible stand-in for a moving point light.
 
     A ``UsdLux.SphereLight`` is invisible in Quick Look/AR Quick Look (the
     ``.usdz`` viewer behind macOS Preview.app): its ARKit-compatible prim
     allowlist excludes every ``UsdLux`` type outright, so any light prim is
-    silently ignored. An actual ``Mesh``/``Sphere`` prim with an emissive
-    material renders everywhere, including there.
+    silently ignored. Actual ``Mesh``/``Sphere`` prims with emissive
+    materials render everywhere, including there — and grouping them under
+    an ``Xform`` (rather than nesting them in each other) keeps every shell a
+    sibling Gprim, satisfying ARKit's rule against nesting one Gprim inside
+    another.
     """
     from pxr import Gf, Usd, UsdGeom, Vt
 
     color = _blackbody_rgb(color_temperature)
+    group = UsdGeom.Xform.Define(stage, prim_path)
 
-    sphere = UsdGeom.Sphere.Define(stage, prim_path)
-    sphere.CreateRadiusAttr().Set(float(radius))
-    sphere.CreateDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*color)]))
-    sphere.CreateDisplayOpacityAttr().Set(Vt.FloatArray([float(opacity)]))
+    for radius_mult, opacity_mult, emissive_scale, name in _GLOW_SHELLS:
+        shell_radius = radius * radius_mult
+        shell_opacity = opacity * opacity_mult
+        sphere = UsdGeom.Sphere.Define(stage, f"{prim_path}/{name}")
+        sphere.CreateRadiusAttr().Set(float(shell_radius))
+        sphere.CreateDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*color)]))
+        sphere.CreateDisplayOpacityAttr().Set(Vt.FloatArray([float(shell_opacity)]))
 
-    label = f"glow_marker_{round(color_temperature)}k_op{round(opacity * 100)}"
-    _bind_glow_material(stage, sphere, color, opacity, label)
+        label = (
+            f"glow_{name}_{round(color_temperature)}k_op{round(shell_opacity * 100)}"
+        )
+        _bind_glow_material(
+            stage, sphere, color, shell_opacity, label, emissive_scale=emissive_scale
+        )
 
-    translate_op = UsdGeom.Xformable(sphere).AddTranslateOp()
+    translate_op = UsdGeom.Xformable(group).AddTranslateOp()
     for i, p in enumerate(positions):
         translate_op.Set(
             Gf.Vec3d(float(p[0]), float(p[1]), float(p[2])), Usd.TimeCode(i)
         )
-    return sphere
+    return group
 
 
 # ---------------------------------------------------------------------------
@@ -896,7 +930,7 @@ def add_trajectories(
     trail_opacity: float = 0.35,
     animate_marker: bool = False,
     marker_color_temperature: float = 2700.0,
-    marker_radius: float = 1.0,
+    marker_radius: float = 10.0,
     marker_opacity: float = 0.9,
     fps: float = 24.0,
 ) -> None:
@@ -907,19 +941,23 @@ def add_trajectories(
     the spatial (x, y, z) components are used. The curve is drawn at reduced
     opacity (``trail_opacity``) so it reads as a "ghost trail" of the full path.
 
-    If ``animate_marker`` is set, each trajectory also gets an emissive
-    ``UsdGeom.Sphere`` sibling prim (``<prim_path>/particle_<i>_marker``,
-    not nested under the curve — see below) whose position is time-sampled
-    (one time code per solver sample) to travel along the path, so
-    scrubbing/playing the stage's timeline shows a moving marker with the
-    dimmed curve as its trail. This sets the stage's time-code range and
-    playback rate (``fps``); call once per stage with the longest trajectory
-    batch, or the range will be overwritten by a later call.
+    If ``animate_marker`` is set, each trajectory also gets a glow-sphere
+    sibling prim (``<prim_path>/particle_<i>_marker``, not nested under the
+    curve — see below) whose position is time-sampled (one time code per
+    solver sample) to travel along the path, so scrubbing/playing the
+    stage's timeline shows a moving marker with the dimmed curve as its
+    trail. This sets the stage's time-code range and playback rate (``fps``);
+    call once per stage with the longest trajectory batch, or the range will
+    be overwritten by a later call.
 
-    A plain ``Mesh``/``Sphere`` with an emissive material is used rather than
-    a ``UsdLux.SphereLight`` because Quick Look/AR Quick Look (the ``.usdz``
-    viewer behind macOS Preview.app) excludes every ``UsdLux`` type from its
-    ARKit-compatible prim allowlist and silently drops any light prim.
+    The marker is an ``Xform`` group of concentric emissive/translucent
+    ``UsdGeom.Sphere`` shells (see :data:`_GLOW_SHELLS`) rather than a
+    ``UsdLux.SphereLight``, for two reasons: Quick Look/AR Quick Look (the
+    ``.usdz`` viewer behind macOS Preview.app) excludes every ``UsdLux`` type
+    from its ARKit-compatible prim allowlist and silently drops any light
+    prim, and USD has no bloom/post-process schema to glow a single small
+    sphere the way a real point light would — the concentric, increasingly
+    transparent shells fake that "fairy light" halo instead.
 
     Args:
         stage: The target USD stage.
@@ -931,9 +969,11 @@ def add_trajectories(
         animate_marker: If True, add a moving glow-sphere marker per trajectory.
         marker_color_temperature: Blackbody color temperature (Kelvin) of the
             marker.
-        marker_radius: Radius (mm) of the marker.
-        marker_opacity: Display/material opacity of the marker (0-1); < 1 so
-            it stays visible as it passes through solid volumes.
+        marker_radius: Radius (mm) of the marker's core shell (halo shells
+            scale up from this — see :data:`_GLOW_SHELLS`).
+        marker_opacity: Opacity of the marker's core shell (0-1); halo shells
+            scale down from this. The core is < 1 so it stays visible as it
+            passes through solid volumes.
         fps: Time codes per second for the marker animation.
     """
     _require_pxr()
