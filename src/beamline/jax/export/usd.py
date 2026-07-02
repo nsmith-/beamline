@@ -642,38 +642,98 @@ def _add_curve_prim(
     return curves
 
 
-def _add_moving_light_prim(
+def _blackbody_rgb(color_temperature: float) -> tuple[float, float, float]:
+    """Blackbody color at ``color_temperature`` (Kelvin), normalized so its
+    brightest channel is 1.0 — ``UsdLux.BlackbodyTemperatureAsRgb`` returns
+    unnormalized radiance ratios (e.g. > 1 in the red channel for warm
+    temperatures) intended for a light's ``inputs:color``, which is fine
+    multiplied against ``inputs:intensity`` but would clip/wash out if used
+    directly as a plain material color.
+    """
+    from pxr import UsdLux
+
+    r, g, b = UsdLux.BlackbodyTemperatureAsRgb(float(color_temperature))
+    peak = max(r, g, b, 1e-6)
+    return (r / peak, g / peak, b / peak)
+
+
+def _bind_glow_material(
+    stage: Usd.Stage,
+    prim: object,
+    color: tuple[float, float, float],
+    opacity: float,
+    label: str,
+) -> None:
+    """Create (once per ``label``) an emissive, translucent
+    ``UsdPreviewSurface`` material and bind it to ``prim``, analogous to
+    :func:`_bind_canvas_material` but a flat emissive color rather than a
+    textured one — cached so e.g. every particle's marker sphere in one
+    :func:`add_trajectories` call shares a single material.
+    """
+    from pxr import Gf, Sdf, UsdShade
+
+    material_path = f"/Materials/{label}"
+    existing = stage.GetPrimAtPath(material_path)
+    if existing.IsValid():
+        material = UsdShade.Material(existing)
+    else:
+        material = UsdShade.Material.Define(stage, material_path)
+        shader = UsdShade.Shader.Define(stage, f"{material_path}/PBRShader")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(
+            Gf.Vec3f(*color)
+        )
+        shader.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).Set(
+            Gf.Vec3f(*color)
+        )
+        shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(float(opacity))
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.4)
+        shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+        material.CreateSurfaceOutput().ConnectToSource(
+            shader.ConnectableAPI(), "surface"
+        )
+
+    UsdShade.MaterialBindingAPI.Apply(prim.GetPrim())
+    UsdShade.MaterialBindingAPI(prim).Bind(material)
+
+
+def _add_moving_glow_sphere_prim(
     stage: Usd.Stage,
     prim_path: str,
     positions: np.ndarray,
     color_temperature: float,
-    intensity: float,
     radius: float,
+    opacity: float,
 ) -> object:
-    """Define a UsdLux.SphereLight whose position is time-sampled to travel
-    along ``positions``, one time code per sample (time code ``i`` ↔
-    ``positions[i]``).
+    """Define a small emissive, translucent ``UsdGeom.Sphere`` whose position
+    is time-sampled to travel along ``positions``, one time code per sample
+    (time code ``i`` ↔ ``positions[i]``) — a visible stand-in for a moving
+    point light.
 
-    The light's color is driven by ``color_temperature`` (Kelvin) via
-    ``UsdLux``'s built-in blackbody model rather than a manually-picked RGB
-    triple, so ``inputs:color`` is left at white (1, 1, 1).
+    A ``UsdLux.SphereLight`` is invisible in Quick Look/AR Quick Look (the
+    ``.usdz`` viewer behind macOS Preview.app): its ARKit-compatible prim
+    allowlist excludes every ``UsdLux`` type outright, so any light prim is
+    silently ignored. An actual ``Mesh``/``Sphere`` prim with an emissive
+    material renders everywhere, including there.
     """
-    from pxr import Gf, Usd, UsdGeom, UsdLux
+    from pxr import Gf, Usd, UsdGeom, Vt
 
-    light = UsdLux.SphereLight.Define(stage, prim_path)
-    light.CreateRadiusAttr().Set(float(radius))
-    light.CreateIntensityAttr().Set(float(intensity))
-    light.CreateColorAttr().Set(Gf.Vec3f(1.0, 1.0, 1.0))
-    light.CreateEnableColorTemperatureAttr().Set(True)
-    light.CreateColorTemperatureAttr().Set(float(color_temperature))
-    light.CreateTreatAsPointAttr().Set(True)
+    color = _blackbody_rgb(color_temperature)
 
-    translate_op = UsdGeom.Xformable(light).AddTranslateOp()
+    sphere = UsdGeom.Sphere.Define(stage, prim_path)
+    sphere.CreateRadiusAttr().Set(float(radius))
+    sphere.CreateDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*color)]))
+    sphere.CreateDisplayOpacityAttr().Set(Vt.FloatArray([float(opacity)]))
+
+    label = f"glow_marker_{round(color_temperature)}k_op{round(opacity * 100)}"
+    _bind_glow_material(stage, sphere, color, opacity, label)
+
+    translate_op = UsdGeom.Xformable(sphere).AddTranslateOp()
     for i, p in enumerate(positions):
         translate_op.Set(
             Gf.Vec3d(float(p[0]), float(p[1]), float(p[2])), Usd.TimeCode(i)
         )
-    return light
+    return sphere
 
 
 # ---------------------------------------------------------------------------
@@ -822,10 +882,10 @@ def add_trajectories(
     *,
     width: float = 2.0,
     trail_opacity: float = 0.35,
-    animate_light: bool = False,
-    light_color_temperature: float = 2700.0,
-    light_intensity: float = 1.0,
-    light_radius: float = 1.0,
+    animate_marker: bool = False,
+    marker_color_temperature: float = 2700.0,
+    marker_radius: float = 1.0,
+    marker_opacity: float = 0.9,
     fps: float = 24.0,
 ) -> None:
     """Add particle trajectories as UsdGeom.BasisCurves polylines.
@@ -835,13 +895,19 @@ def add_trajectories(
     the spatial (x, y, z) components are used. The curve is drawn at reduced
     opacity (``trail_opacity``) so it reads as a "ghost trail" of the full path.
 
-    If ``animate_light`` is set, each trajectory also gets a
-    ``UsdLux.SphereLight`` child prim whose position is time-sampled (one
-    time code per solver sample) to travel along the path, so scrubbing/
-    playing the stage's timeline shows a moving light with the dimmed curve
-    as its trail. This sets the stage's time-code range and playback rate
-    (``fps``); call once per stage with the longest trajectory batch, or
-    the range will be overwritten by a later call.
+    If ``animate_marker`` is set, each trajectory also gets an emissive
+    ``UsdGeom.Sphere`` sibling prim (``<prim_path>/particle_<i>_marker``,
+    not nested under the curve — see below) whose position is time-sampled
+    (one time code per solver sample) to travel along the path, so
+    scrubbing/playing the stage's timeline shows a moving marker with the
+    dimmed curve as its trail. This sets the stage's time-code range and
+    playback rate (``fps``); call once per stage with the longest trajectory
+    batch, or the range will be overwritten by a later call.
+
+    A plain ``Mesh``/``Sphere`` with an emissive material is used rather than
+    a ``UsdLux.SphereLight`` because Quick Look/AR Quick Look (the ``.usdz``
+    viewer behind macOS Preview.app) excludes every ``UsdLux`` type from its
+    ARKit-compatible prim allowlist and silently drops any light prim.
 
     Args:
         stage: The target USD stage.
@@ -850,12 +916,13 @@ def add_trajectories(
             Leading axis is time; an optional second axis is the particle batch.
         width: Curve display width in mm (rendered as a tube by most viewers).
         trail_opacity: Display opacity of the trail curve (0-1).
-        animate_light: If True, add a moving ``SphereLight`` per trajectory.
-        light_color_temperature: Blackbody color temperature (Kelvin) of the
-            moving light.
-        light_intensity: Intensity of the moving light.
-        light_radius: Radius (mm) of the moving light.
-        fps: Time codes per second for the light animation.
+        animate_marker: If True, add a moving glow-sphere marker per trajectory.
+        marker_color_temperature: Blackbody color temperature (Kelvin) of the
+            marker.
+        marker_radius: Radius (mm) of the marker.
+        marker_opacity: Display/material opacity of the marker (0-1); < 1 so
+            it stays visible as it passes through solid volumes.
+        fps: Time codes per second for the marker animation.
     """
     _require_pxr()
 
@@ -878,18 +945,21 @@ def add_trajectories(
         _add_curve_prim(
             stage, particle_path, traj, width, _COLOR_TRAJECTORY, trail_opacity
         )
-        if animate_light:
-            _add_moving_light_prim(
+        if animate_marker:
+            # A sibling of particle_path, not a child: ARKit-compliant usdz
+            # (and so Quick Look/AR Quick Look) disallows nesting one Gprim
+            # (Sphere) inside another (BasisCurves).
+            _add_moving_glow_sphere_prim(
                 stage,
-                f"{particle_path}/light",
+                f"{prim_path}/particle_{i}_marker",
                 traj,
-                light_color_temperature,
-                light_intensity,
-                light_radius,
+                marker_color_temperature,
+                marker_radius,
+                marker_opacity,
             )
             max_n = max(max_n, traj.shape[0])
 
-    if animate_light and max_n > 0:
+    if animate_marker and max_n > 0:
         stage.SetTimeCodesPerSecond(fps)
         stage.SetFramesPerSecond(fps)
         stage.SetStartTimeCode(0)

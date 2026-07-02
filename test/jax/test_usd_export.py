@@ -392,8 +392,9 @@ def test_add_trajectories_single_particle(stage, artifacts_dir: Path):
     save_usdz(saved_stage)
 
 
-def test_add_trajectories_animated_light(stage):
-    """animate_light=True adds a moving SphereLight and sets the stage's
+def test_add_trajectories_animated_marker(stage):
+    """animate_marker=True adds a moving glow-sphere marker (not a UsdLux
+    light, which Quick Look/AR Quick Look ignores) and sets the stage's
     time-code range to match the number of samples."""
     n_steps = 10
     positions = np.random.randn(n_steps, 4).astype(np.float32)
@@ -406,13 +407,14 @@ def test_add_trajectories_animated_light(stage):
     class _FakeState:
         kin = _FakeKin()
 
-    add_trajectories(stage, "/trajectories", _FakeState(), animate_light=True)
+    add_trajectories(stage, "/trajectories", _FakeState(), animate_marker=True)
 
-    light_prim = stage.GetPrimAtPath("/trajectories/particle_0/light")
-    assert light_prim.IsValid()
-    assert light_prim.IsA(UsdLux.SphereLight)
+    marker_prim = stage.GetPrimAtPath("/trajectories/particle_0_marker")
+    assert marker_prim.IsValid()
+    assert marker_prim.IsA(UsdGeom.Sphere)
+    assert not marker_prim.IsA(UsdLux.SphereLight)
 
-    translate_op = UsdGeom.Xformable(light_prim).GetOrderedXformOps()[0]
+    translate_op = UsdGeom.Xformable(marker_prim).GetOrderedXformOps()[0]
     time_samples = translate_op.GetTimeSamples()
     assert time_samples == list(range(n_steps))
 
@@ -504,7 +506,7 @@ def test_full_scene(artifacts_dir: Path):
     )
     cts = jnp.linspace(0.0, 3.0 * u.m, 100)
     states, _ = stochastic_solve(field, absorber, start, cts, jr.key(123))
-    add_trajectories(stage, "/trajectories", states, animate_light=True)
+    add_trajectories(stage, "/trajectories", states, animate_marker=True)
 
     save_usdz(stage)
     assert Path(path).exists()
@@ -512,5 +514,5 @@ def test_full_scene(artifacts_dir: Path):
     loaded = Usd.Stage.Open(path)
     assert loaded.GetPrimAtPath("/beamline/solenoid").IsValid()
     assert loaded.GetPrimAtPath("/trajectories/particle_0").IsValid()
-    assert loaded.GetPrimAtPath("/trajectories/particle_0/light").IsValid()
+    assert loaded.GetPrimAtPath("/trajectories/particle_0_marker").IsValid()
     assert loaded.GetEndTimeCode() == 99
