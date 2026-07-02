@@ -15,7 +15,7 @@ pytest.importorskip("pxr", reason="usd-core not installed")
 from pxr import Usd, UsdGeom
 
 from beamline.jax.absorber.material import MATERIALS
-from beamline.jax.absorber.volume import AbsorberCylinder
+from beamline.jax.absorber.volume import AbsorberCylinder, TransformMaterialVolume
 from beamline.jax.coordinates import Cartesian3, Cartesian4, Transform
 from beamline.jax.emfield import SimpleEMField, TransformEMField
 from beamline.jax.export.usd import add_trajectories, add_volume, make_stage
@@ -24,13 +24,6 @@ from beamline.jax.kinematics import MuonStateDct
 from beamline.jax.magnet.solenoid import ThinShellSolenoid
 from beamline.jax.rfcavity.pillbox import PillboxCavity
 
-try:
-    from beamline.jax.absorber.volume import TransformMaterialVolume
-
-    _has_transform_mv = True
-except ImportError:
-    _has_transform_mv = False
-
 
 @pytest.fixture
 def stage(tmp_path: Path):
@@ -38,7 +31,7 @@ def stage(tmp_path: Path):
 
 
 def test_make_stage(stage):
-    assert UsdGeom.GetStageUpAxis(stage) == UsdGeom.Tokens.z
+    assert UsdGeom.GetStageUpAxis(stage) == UsdGeom.Tokens.y
     assert abs(UsdGeom.GetStageMetersPerUnit(stage) - 1e-3) < 1e-10
 
 
@@ -115,9 +108,6 @@ def test_add_transformed_em_field(stage):
     assert child.IsValid()
 
 
-@pytest.mark.skipif(
-    not _has_transform_mv, reason="TransformMaterialVolume not available"
-)
 def test_add_transformed_material_volume(stage):
     mat = MATERIALS["lithium_hydride_LiH"]
     absorber = AbsorberCylinder(material=mat, radius=150.0 * u.mm, length=350.0 * u.mm)

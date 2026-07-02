@@ -4,7 +4,9 @@ Requires the ``usd-core`` package (``pip install usd-core``).  All USD imports
 are deferred so the rest of ``beamline`` remains importable without it.
 
 Unit convention: the stage is configured for millimeters (``metersPerUnit =
-0.001``) and Z-up axis, matching the CLHEP system used throughout beamline.
+0.001``) and Y-up axis. Beamline geometry itself is still authored with z as
+the beam axis; the stage's up axis is just a hint for viewer cameras/grids
+and does not transform any coordinates.
 
 Typical usage::
 
@@ -50,8 +52,8 @@ def _require_pxr() -> None:
 def make_stage(path: str) -> Usd.Stage:
     """Create a new USD stage configured for beamline coordinates.
 
-    Sets Z-up axis and millimeter units (``metersPerUnit = 0.001``) to match
-    the CLHEP convention used throughout the package.
+    Sets Y-up axis and millimeter units (``metersPerUnit = 0.001``); z remains
+    the beam axis in the authored geometry.
 
     Args:
         path: File path for the stage (e.g. ``"scene.usda"`` or ``"scene.usd"``).
@@ -63,7 +65,7 @@ def make_stage(path: str) -> Usd.Stage:
     from pxr import Usd, UsdGeom
 
     stage = Usd.Stage.CreateNew(path)
-    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
     UsdGeom.SetStageMetersPerUnit(stage, 1e-3)
     return stage
 
@@ -185,8 +187,8 @@ def add_volume(
 
     - ``ThinShellSolenoid`` → ``Cylinder`` (radius ``R``, height ``L``)
     - ``ThickSolenoid`` → ``Cylinder`` (radius ``Rout``, height ``L``)
-    - ``PillboxCavity`` → ``Cylinder`` (computed ``radius``, ``length``)
-    - ``AbsorberCylinder`` → ``Cylinder`` (``radius``, ``length``)
+    - Any other ``CylinderVolume`` (e.g. ``PillboxCavity``, ``AbsorberCylinder``)
+      → ``Cylinder`` (``radius``, ``length``, per the ABC)
     - ``SumField`` → recurse into ``components``
     - ``TransformEMField`` / ``TransformMaterialVolume`` → ``Xform`` parent + child
 
@@ -199,21 +201,11 @@ def add_volume(
     """
     _require_pxr()
 
-    from beamline.jax.absorber.volume import AbsorberCylinder
+    from beamline.jax.absorber.volume import TransformMaterialVolume
     from beamline.jax.emfield import SumField, TransformEMField
-    from beamline.jax.magnet.solenoid import (
-        ThickSolenoid,
-        ThinShellSolenoid,
-    )
+    from beamline.jax.geometry import CylinderVolume
+    from beamline.jax.magnet.solenoid import ThickSolenoid, ThinShellSolenoid
     from beamline.jax.rfcavity.pillbox import PillboxCavity
-
-    # TransformMaterialVolume was introduced after the initial release
-    try:
-        from beamline.jax.absorber.volume import (
-            TransformMaterialVolume as _TMV,
-        )
-    except ImportError:
-        _TMV = None
 
     if isinstance(vol, SumField):
         for i, comp in enumerate(vol.components):
@@ -223,7 +215,7 @@ def add_volume(
         _add_xform_prim(stage, prim_path, vol.transform)
         add_volume(stage, f"{prim_path}/field", vol.field)
 
-    elif _TMV is not None and isinstance(vol, _TMV):
+    elif isinstance(vol, TransformMaterialVolume):
         _add_xform_prim(stage, prim_path, vol.transform)
         add_volume(stage, f"{prim_path}/material", vol.material)
 
@@ -233,11 +225,11 @@ def add_volume(
     elif isinstance(vol, ThickSolenoid):
         _add_cylinder_prim(stage, prim_path, vol.Rout, vol.L, _COLOR_SOLENOID)
 
-    elif isinstance(vol, PillboxCavity):
-        _add_cylinder_prim(stage, prim_path, vol.radius, vol.length, _COLOR_CAVITY)
-
-    elif isinstance(vol, AbsorberCylinder):
-        _add_cylinder_prim(stage, prim_path, vol.radius, vol.length, _COLOR_ABSORBER)
+    elif isinstance(vol, CylinderVolume):
+        # radius/length come from the ABC, shared by e.g. PillboxCavity and
+        # AbsorberCylinder; only the display color needs to be picked per type.
+        color = _COLOR_CAVITY if isinstance(vol, PillboxCavity) else _COLOR_ABSORBER
+        _add_cylinder_prim(stage, prim_path, vol.radius, vol.length, color)
 
     else:
         warnings.warn(
