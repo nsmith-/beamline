@@ -1,8 +1,8 @@
-"""Multiple Coulomb scattering for thin absorbers (PDG RPP §34.3).
+"""Multiple Coulomb scattering for thin absorbers (PDG §34.3).
 
 Implements the Highland approximation: two independent Gaussian
 deflection angles theta_x, theta_y with RMS theta_0, plus their
-correlated lateral offsets y_x, y_y per PDG eqs. 34.16-17.
+correlated lateral offsets y_x, y_y PDG eqs. 34.16-17.
 """
 from __future__ import annotations
 

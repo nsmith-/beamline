@@ -10,21 +10,27 @@ Muon beam through a single SiO2 absorber.
 
 from __future__ import annotations
 
+# dist_stats lives at test/dist_stats.py (importable because test/conftest.py
+# puts the test root on sys.path). Same helper the original script used.
+import dist_stats as ds
 import hepunits as u
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from matplotlib import pyplot as plt
+from scipy import stats as sps
 
-from beamline.jax.absorber.absorber import CylindricalAbsorber
 from beamline.jax.absorber.material import MATERIALS
+from beamline.jax.absorber.scattering import sample_scattering
+from beamline.jax.absorber.straggling import (
+    _straggling_to_landau,
+    landau_energy_loss_sampler,
+)
+from beamline.jax.absorber.volume import AbsorberCylinder
 from beamline.jax.coordinates import Cartesian3, Cartesian4
+from beamline.jax.integrate.stochastic import apply_energy_loss
 from beamline.jax.kinematics import MuonStateDz
-
-# dist_stats lives at test/dist_stats.py (importable because test/conftest.py
-# puts the test root on sys.path). Same helper the original script used.
-import dist_stats as ds
 
 # Uncomment to move this file into the slow "extended" set (excluded from the
 # default `uv run pytest`; run explicitly with `uv run pytest -m extended`):
@@ -47,7 +53,7 @@ N_BINS_MCS = 200  # histogram bins for the scattering observables
 # because the kick is applied on the post-energy-loss (slightly degraded)
 # momentum, so the empirical RMS sits a touch ABOVE the Highland prediction.
 MODE_RTOL = 0.02  # fitted Landau mode vs predicted MPV
-THETA0_BAND = (1.00, 1.05)  # empirical theta_x RMS / theta0 expected here
+THETA0_RTOL = 0.02  # empirical theta_x RMS vs Highland theta0
 DX_RTOL = 0.05  # empirical dx RMS vs x*theta0/sqrt(3)
 CORR_ATOL = 0.02  # corr(theta_x, dx) vs sqrt(3)/2
 
@@ -64,21 +70,33 @@ def make_muon(pc_MeV):
 @pytest.fixture(scope="module")
 def simulation():
     """Run the beam once and expose observables + predictions to all tests."""
-    absorber = CylindricalAbsorber(
+    absorber = AbsorberCylinder(
         material=MATERIALS[MATERIAL], radius=RADIUS * u.mm, length=LENGTH * u.mm
     )
 
     # Deterministic predictions (Bethe-Bloch + Landau, Highland MCS).
     probe = make_muon(BEAM_PC)
-    pp = absorber.material.straggling_params(probe, absorber.length)
+    pp = absorber.interaction_params(probe, absorber.length)
     theta0 = float(absorber.material.highland_theta0(probe, absorber.length))
     y_rms_pred = float(absorber.length) * theta0 / np.sqrt(3.0)
     pc_in = float(jnp.sqrt(jnp.sum(probe.kin.t.coords[:3] ** 2)))
 
+    def through_absorber(state, key):
+        """
+        MCS first so Highland sees the incoming (undegraded) beta*p; then the
+        Landau draw and momentum update.
+        apply_energy_loss floors the total energy at the rest mass.
+        """
+        state, key = sample_scattering(state, key, absorber.material, absorber.length)
+        key, subkey = jax.random.split(key)
+        params = absorber.interaction_params(state, absorber.length)
+        dE, _log_w = landau_energy_loss_sampler(params, subkey)
+        return apply_energy_loss(state, dE)
+
     # Run the beam: one PRNG key per particle.
     keys = jax.random.split(jax.random.key(SEED), N_PARTICLES)
     beam = jax.vmap(make_muon)(jnp.full(N_PARTICLES, BEAM_PC))
-    out, _ = jax.jit(jax.vmap(absorber.apply))(beam, keys)
+    out = jax.jit(jax.vmap(through_absorber))(beam, keys)
 
     dE = np.asarray(beam.kin.t.ct - out.kin.t.ct)
     pc_out = np.asarray(jnp.sqrt(jnp.sum(out.kin.t.coords[:, :3] ** 2, axis=1)))
@@ -117,16 +135,27 @@ def test_energy_loss_mode(simulation):
     assert fitted_mode == pytest.approx(predicted_mode, rel=MODE_RTOL)
 
 
+def test_energy_loss_distribution(simulation):
+    """
+    dE matches scipy.stats.landau at the mapped (loc, scale).
+    """
+    loc, scale = (float(v) for v in _straggling_to_landau(simulation["pp"]))
+    # Subsample: KS on 1e6 rejects on negligible deviations (e.g. the rest-mass floor).
+    rng = np.random.default_rng(SEED)
+    sample = rng.choice(simulation["dE"], size=20_000, replace=False)
+    ks = sps.kstest(sample, lambda x: sps.landau.cdf(x, loc=loc, scale=scale))
+    assert ks.pvalue > 0.05, f"dE does not match scipy.stats.landau: {ks}"
+
+
 def test_momentum_is_degraded(simulation):
     """Passing through the absorber reduces the beam momentum."""
     assert simulation["pc_out"].mean() < simulation["pc_in"]
 
 
 def test_scattering_angle(simulation):
-    """Empirical theta_x RMS sits in the expected band around Highland theta_0."""
-    ratio = float(np.std(simulation["theta_x"])) / simulation["theta0"]
-    lo, hi = THETA0_BAND
-    assert lo <= ratio <= hi, f"theta_x RMS / theta0 = {ratio:.4f} outside {THETA0_BAND}"
+    """Empirical theta_x RMS matches the Highland theta_0."""
+    theta_x_rms = float(np.std(simulation["theta_x"]))
+    assert theta_x_rms == pytest.approx(simulation["theta0"], rel=THETA0_RTOL)
 
 
 def test_lateral_displacement(simulation):
@@ -196,7 +225,9 @@ def test_summary_figure(simulation, artifacts_dir):
         alpha=0.85,
         density=True,
     )
-    axR.axvline(BEAM_PC, color="0.3", lw=2, ls=":", label=f"incoming {BEAM_PC:.0f} MeV/c")
+    axR.axvline(
+        BEAM_PC, color="0.3", lw=2, ls=":", label=f"incoming {BEAM_PC:.0f} MeV/c"
+    )
     axR.set(
         xlabel="outgoing momentum |p| [MeV/c]",
         ylabel="probability density",
