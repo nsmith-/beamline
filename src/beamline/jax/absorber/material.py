@@ -220,7 +220,7 @@ MATERIALS: dict[str, Material] = {
         radiation_length=24.01 * u.g / u.cm2,
         is_atomic=True,
         density_correction=DensityCorrection(
-            C=4.2395, x0=0.1708, x1=3.0127, a=0.0802, k=3.6345, delta0=0.0
+            C=4.2395, x0=0.1708, x1=3.0127, a=0.0802, k=3.6345, delta0=0.12
         ),
     ),
     # https://pdg.lbl.gov/2025/AtomicNuclearProperties/HTML/silicon_Si.html
