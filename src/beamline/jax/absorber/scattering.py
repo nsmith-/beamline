@@ -24,7 +24,7 @@ def sample_scattering(state, key, material, thickness):
     is nearly along z; for steeply-incident tracks you'd want a more
     careful treatment.
     """
-    theta0 = material.scattering_params(state, thickness).theta0
+    theta0 = material.interaction_params(state, thickness).theta0
 
     # PDG eq. 34.16: in each plane, the angle and lateral offset are
     # jointly Gaussian with correlation rho = sqrt(3)/2.
