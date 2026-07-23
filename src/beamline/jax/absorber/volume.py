@@ -84,7 +84,7 @@ class TransformMaterialVolume(MaterialVolume):
         local_state = eqx.tree_at(
             lambda x: x.kin, state, self.transform.tangent_to_local(state.kin)
         )
-        return self.material.interaction_params(local_state, thickness)
+        return self.material.interaction_params(state, thickness)
 
     def contains(self, point: Cartesian3) -> SBool:
         return self.material.contains(self.transform.to_local(point))
@@ -117,4 +117,4 @@ class AbsorberCylinder(MaterialVolume, CylinderVolume):
     def interaction_params(
         self, state: ParticleState, thickness: SFloat
     ) -> StragglingParams:
-        return self.material.straggling_params(state, thickness)
+        return self.material.interaction_params(state, thickness)
