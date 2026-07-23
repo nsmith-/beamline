@@ -129,7 +129,7 @@ class Material:
     """Mean excitation energy [MeV] (to excite an electron)"""
     plasma_energy: float
     """Plasma energy [MeV]"""
-    radiation_length: float    # NEW: X_0 from PDG
+    radiation_length: float
     """Radiation Length [g/cm^2]"""
     is_atomic: bool
     """True if this is an atomic element (rather than a compound)"""
