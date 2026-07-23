@@ -77,6 +77,32 @@ class StragglingParams:
     """Most probable energy loss"""
 
 
+@dataclass(frozen=True)
+class MultipleScatteringParams:
+    """Parameters relevant to multiple Coulomb scattering
+
+    Per PDG 34.3. The Gaussian core only; the non-Gaussian Moliere tails and
+    large-angle single scatters are outside this approximation.
+    """
+
+    theta0: SFloat
+    """RMS projected (plane) scattering angle [rad] (Highland, PDG 34.16)
+
+    The two projected planes are independent and identically distributed
+    (PDG 34.18); the space angle is sqrt(2) * theta0 (PDG 34.15).
+    """
+
+
+@dataclass(frozen=True)
+class InteractionParams:
+    """All stochastic interaction parameters for one traversal segment"""
+
+    straggling: StragglingParams
+    """Energy straggling parameters"""
+    scattering: MultipleScatteringParams
+    """Multiple Coulomb scattering parameters"""
+
+
 class IncidentParticle(Protocol):
     """Necessary incident particle properties for material interactions
 
