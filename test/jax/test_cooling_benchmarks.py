@@ -8,6 +8,7 @@ https://indico.cern.ch/event/1446644/attachments/2918391/5121897/Cooling_Code_Be
 from collections.abc import Callable
 
 import diffrax
+import equinox as eqx
 import hepunits as u
 import jax
 import jax.numpy as jnp
@@ -524,7 +525,7 @@ def test_benchmark_3p3_rf_tune(artifacts_dir, forward: bool):
         )
         return jax.tree.map(lambda x: x[-1], ys)
 
-    @jax.jit
+    @eqx.filter_jit
     def objective(phase_shift: SFloat, z_shift: SFloat) -> SFloat:
         field = build_cavity(phase_shift, z_shift)
         end = track_ref(field)
@@ -558,10 +559,8 @@ def test_benchmark_3p3_rf_tune(artifacts_dir, forward: bool):
 
     ax.set_xlabel("Phase shift [rad]")
     ax.set_ylabel("Final energy [MeV]")
-    fig.savefig(artifacts_dir / "benchmark_3p3_rf_phase_tune.png")
-
-    if not forward:
-        return pytest.xfail(reason="Reverse mode for z not working due to nans")
+    fwdlabel = "fwd" if forward else "rev"
+    fig.savefig(artifacts_dir / f"benchmark_3p3_rf_phase_tune_{fwdlabel}.png")
 
     z_vals = jnp.linspace(-150, 150, 9)
     E_vals = []
@@ -587,7 +586,4 @@ def test_benchmark_3p3_rf_tune(artifacts_dir, forward: bool):
 
     ax.set_xlabel("z shift [mm]")
     ax.set_ylabel("Final energy [MeV]")
-    fig.savefig(artifacts_dir / "benchmark_3p3_rf_z_tune.png")
-
-    # Efinal, (dE_dphase, dE_dz) = objective(0.0, 0.0)
-    # raise RuntimeError(f"Efinal={Efinal}, dE/dphase={dE_dphase}, dE/dz={dE_dz}")
+    fig.savefig(artifacts_dir / f"benchmark_3p3_rf_z_tune_{fwdlabel}.png")

@@ -53,9 +53,10 @@ TODO: a lot of the body of stochastic_solve is diffrax boilerplate, try to facto
 TODO: refactor apply_energy_loss to a general kick (scattering)
 """
 
+import functools
 from collections.abc import Callable
 from functools import partial
-from typing import Any
+from typing import Any, cast
 
 import equinox as eqx
 import equinox.internal as eqxi
@@ -69,12 +70,31 @@ from jax import Array, lax
 from beamline.jax.absorber.material import StragglingParams
 from beamline.jax.absorber.straggling import dummy_energy_loss_sampler
 from beamline.jax.absorber.volume import MaterialVolume
-from beamline.jax.coordinates import Cartesian3, Cartesian4, Tangent
+from beamline.jax.coordinates import Cartesian4, Tangent
 from beamline.jax.emfield import EMTensorField
 from beamline.jax.integrate.propagate import particle_interaction
 from beamline.jax.integrate.stepsize import BoundaryAwareStepSizeController
 from beamline.jax.kinematics import ParticleState
 from beamline.jax.types import SFloat
+
+
+@functools.partial(jax.custom_jvp, nondiff_argnums=(1,))
+def _probe_tangent(x: Array, tag: str) -> Array:
+    """Pass-through identity; during ``jax.jvp`` prints the tangent of ``x``.
+
+    Used only in debug mode to verify whether a quantity carries a gradient
+    from upstream parameters.  The tangent printout is a side-effect of the
+    JVP rule; the primal is unchanged so this is safe to insert anywhere.
+    """
+    return x
+
+
+@_probe_tangent.defjvp
+def _probe_tangent_jvp(tag: str, primals, tangents):
+    (x,) = primals
+    (tx,) = tangents
+    jax.debug.print(f"  tangent[{tag}] = {{t}}", t=tx)
+    return x, tx
 
 
 def apply_energy_loss[T: ParticleState](state: T, dE: SFloat) -> T:
@@ -105,17 +125,20 @@ def apply_energy_loss[T: ParticleState](state: T, dE: SFloat) -> T:
 def _combined_sdf(
     field: EMTensorField, material: MaterialVolume, state: ParticleState
 ) -> SFloat:
-    """Signed distance to the nearest EM-field *or* material boundary
+    """Signed time to the nearest EM-field *or* material boundary
 
-    Used only for step-size control, so the state is detached: the SDF's
-    ``where(disc >= 0, sqrt, inf)`` would otherwise produce a NaN *tangent* under
+    Used only for step-size control, so all three arguments are detached: the
+    SDF's ``where(disc >= 0, sqrt, inf)`` produces a NaN *tangent* under
     forward-mode autodiff (which evaluates tangents eagerly, before the
-    ``stop_gradient`` on the controller's outputs would discard them).
+    ``stop_gradient`` on the controller's outputs would discard them).  This
+    applies not only to the state but also to field/material parameters (e.g.
+    a rotation angle phi inside a TransformMaterialVolume) that may carry
+    forward-mode tangents when differentiating w.r.t. scene geometry.
     """
     ray = lax.stop_gradient(state).ray()
     return jax.lax.min(
-        field.signed_distance(ray),
-        material.signed_distance(ray),
+        lax.stop_gradient(field).signed_time_to_boundary(ray),
+        lax.stop_gradient(material).signed_time_to_boundary(ray),
     )
 
 
@@ -133,6 +156,7 @@ def stochastic_solve[T: ParticleState](
     rtol: float = 1e-5,
     atol: float = 1e-7,
     max_substeps: int = 64,
+    debug: bool = False,
 ) -> tuple[T, dict[str, Any]]:
     """Propagate a muon through ``field`` and ``material`` with stochastic kicks
 
@@ -158,6 +182,9 @@ def stochastic_solve[T: ParticleState](
         max_substeps: Maximum number of solver steps per sub-interval (safety
             bound on the inner while loop). Must be large enough for the
             controller (plus material segmenting) to cross each interval.
+        debug: If True, emit per-substep diagnostics via ``jax.debug.print``
+            (JIT-compatible). Useful for verifying that kicks are applied and
+            tracing where geometry gradients enter the computation.
 
     Returns:
         The saved states (batched along ``cts``) and a dict of solver stats.
@@ -203,6 +230,7 @@ def stochastic_solve[T: ParticleState](
             num_steps,
             num_accepted,
         ) = carry
+        y = cast(ParticleState, y)
 
         # Clamp the step to the interval end and (inside material) the
         # characteristic segment length.
@@ -214,6 +242,7 @@ def stochastic_solve[T: ParticleState](
         y_cand, y_error, _dense, solver_state_cand, _ = solver.step(
             term, tprev, tnext_eff, y, field, solver_state, made_jump
         )
+        y_cand = cast(ParticleState, y_cand)
         y_error = jax.tree.map(lambda x: jnp.where(jnp.isnan(x), jnp.inf, x), y_error)
 
         keep_step, tprev_next, tnext_next, ctrl_jump, controller_state, _ = (
@@ -241,17 +270,33 @@ def stochastic_solve[T: ParticleState](
         solver_state = jax.tree.map(keep, solver_state_cand, solver_state)
 
         # Stochastic kick over the segment just traversed (accepted, in material).
-        pos0 = y.kin.p.to_cartesian3().coords
-        pos1 = y_cand.kin.p.to_cartesian3().coords
-        # safe sqrt: zero-length (rejected) steps would give an infinite
-        # derivative, so differentiate a floored value and zero it back out.
-        sumsq = jnp.sum((pos1 - pos0) ** 2, axis=-1)
+        ray0 = y.ray()
+        ray1 = y_cand.ray()
+        sdf0 = material.signed_time_to_boundary(ray0)
+        sdf1 = material.signed_time_to_boundary(ray1)
+        # entirely in material: use displacement
+        # when crossing a boundary: use signed_time_to_boundary
+        # TODO: in both cases, assumes path length is displacement in a straight line
+        # though in the boundary crossing case abs(sdf0) + abs(sdf1) >= abs(pos1 - pos0)
+        displacement = abs(ray1.p - ray0.p)
         thickness = jnp.where(
-            sumsq > 0.0, jnp.sqrt(jnp.where(sumsq > 0.0, sumsq, 1.0)), 0.0
+            (sdf0 < 0.0) & (sdf1 < 0.0),
+            displacement,
+            jnp.where(
+                # pick whichever is inside
+                sdf0 < 0.0,
+                -sdf0,
+                jnp.where(
+                    sdf1 < 0.0,
+                    displacement - sdf0,
+                    0.0,  # not in material
+                ),
+            ),
         )
-        in_mat_step = material.contains(Cartesian3(coords=0.5 * (pos0 + pos1)))
-        kick_applied = keep_step & in_mat_step
+        kick_applied = keep_step & (thickness > 0.0)
 
+        # when thickness == 0.0, substitute gradient-friendly value to prevent NaNs
+        thickness = jnp.where(thickness == 0.0, 1.0, thickness)
         params = material.interaction_params(y_kept, thickness)
         key, subkey = jr.split(key)
         dE_raw, logw_raw = sampler(params, subkey)
@@ -267,6 +312,32 @@ def stochastic_solve[T: ParticleState](
 
         tprev_out = jnp.where(keep_step, tprev_next, tprev)
         tnext_out = jnp.where(keep_step, tnext_next, tnext)
+
+        if debug:
+            # _probe_tangent is a pass-through for the primal; in forward-mode AD
+            # it also prints the JVP tangent, letting us verify whether thickness
+            # and dE_raw carry gradients from upstream geometry parameters.
+            thick_p = _probe_tangent(thickness, "thick")
+            dE_raw_p = _probe_tangent(dE_raw, "dE_raw")
+            sdf_val = _combined_sdf(field, material, y_new)
+            jax.debug.print(
+                "substep: [{tprev}, {tnext_eff}] -> [{tprev_out}, {tnext_out}]"
+                "  keep={keep} sdf0={sdf0} sdf1={sdf1} kick={kick}"
+                "  thick={thick} dE_raw={dE_raw} dE={dE} sdf={sdf}",
+                tprev=tprev,
+                tnext_eff=tnext_eff,
+                tprev_out=tprev_out,
+                tnext_out=tnext_out,
+                keep=keep_step,
+                sdf0=sdf0,
+                sdf1=sdf1,
+                kick=kick_applied,
+                thick=thick_p,
+                dE_raw=dE_raw_p,
+                dE=dE,
+                sdf=sdf_val,
+            )
+
         return (
             tprev_out,
             tnext_out,
@@ -282,6 +353,10 @@ def stochastic_solve[T: ParticleState](
 
     def integrate_interval(carry, bound):
         """Integrate one sub-interval up to ``bound`` and emit the state there"""
+        if debug:
+            jax.debug.print(
+                "interval: tprev={tprev} -> bound={bound}", tprev=carry[0], bound=bound
+            )
         carry = eqxi.while_loop(
             lambda c: c[0] < bound,
             lambda c: substep(c, bound),

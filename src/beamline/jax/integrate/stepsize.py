@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from diffrax import AbstractStepSizeController, AbstractTerm
 from jaxtyping import PyTree
 
+from beamline.jax.kinematics import ParticleState
 from beamline.jax.types import SBool, SFloat, SInt, eps_of
 
 type _BoundaryState[ControllerState] = tuple[SFloat, SFloat, ControllerState]
@@ -22,40 +23,54 @@ The third element is the state of the underlying controller.
 """
 
 
-class BoundaryAwareStepSizeController[ControllerState, DT0: SFloat, Y](
+class BoundaryAwareStepSizeController[ControllerState, DT0: SFloat, Y: ParticleState](
     AbstractStepSizeController[_BoundaryState[ControllerState], DT0]
 ):
     """A boundary-aware step size controller
 
     Args:
         controller: The underlying step size controller to use
-        sdf: A signed distance function that gives the distance
-            to the nearest boundary. If the distance is negative,
-            the closest boundary is behind the current position.
+        sdf: A signed time to boundary function (``Volume.signed_time_to_boundary``
+            evaluated on the current state). Positive when outside the volume
+            (value = time to entry), negative when inside (magnitude = time to
+            exit). The absolute value is used as the step size limit.
         max_step: A maximum step size to prevent the solver from
             completely jumping over a volume.
+        crossing_eps: The desired step size at which we cross a boundary,
+            relative to the current time. The sdf is used to approach the
+            boundary up to -crossing_eps, and then the next step will be
+            2*crossing_eps. Defaults to 10x the precision of the time step
+            if not specified.
     """
 
     controller: AbstractStepSizeController[ControllerState, DT0]
     sdf: Callable[[Y], SFloat]
     max_step: SFloat
+    crossing_eps: SFloat | None
+    debug: bool
 
     def __init__(
         self,
         controller: AbstractStepSizeController[ControllerState, DT0],
         sdf: Callable[[Y], SFloat],
         max_step: SFloat,
+        *,
+        crossing_eps: SFloat | None = None,
+        debug: bool = False,
     ):
         self.controller = controller
         self.sdf = sdf
         self.max_step = max_step
+        self.crossing_eps = crossing_eps
+        self.debug = debug
 
     def wrap(self, direction: SInt):
         controller = self.controller.wrap(direction)
 
-        # TODO: direction < 0 not validated!
-        def sdf(y):
-            return self.sdf(y) * direction
+        def sdf(y: Y):
+            # scale tangent vector by the integration direction
+            y = eqx.tree_at(lambda s: s.kin, y, replace=y.kin * direction)
+            return self.sdf(y)
 
         return eqx.tree_at(
             lambda s: (s.controller, s.sdf),
@@ -63,6 +78,12 @@ class BoundaryAwareStepSizeController[ControllerState, DT0: SFloat, Y](
             (controller, sdf),
             is_leaf=lambda x: x is None,
         )
+
+    def _crossing_eps(self, val) -> SFloat:
+        """Return the effective crossing epsilon for the given value"""
+        if self.crossing_eps is None:
+            return (10 * eps_of(val)) * jnp.abs(val)
+        return self.crossing_eps * jnp.abs(val)
 
     def _softclip_sdf(self, sdf: SFloat) -> SFloat:
         """Clip large distances
@@ -94,12 +115,7 @@ class BoundaryAwareStepSizeController[ControllerState, DT0: SFloat, Y](
             terms, t0, t1, y0, dt0, args, func, error_order
         )
         sdf = self.sdf(y0)
-        max_next_step = jnp.where(
-            sdf <= 0,
-            # we just passed a boundary, the inner controller will probably return dt0
-            jnp.inf,
-            self._softclip_sdf(sdf),
-        )
+        max_next_step = self._softclip_sdf(sdf)
         t1 = jnp.minimum(t1, t0 + max_next_step)
         return t1, (sdf, dt0, inner_state)
 
@@ -140,34 +156,43 @@ class BoundaryAwareStepSizeController[ControllerState, DT0: SFloat, Y](
             inner_state,
         )
         sdf = self.sdf(y1_candidate)
+        # signs of crossing a boundary: sdf goes from positive to negative or vice versa
+        # or the sdf goes to infinity (exit the volume and no future intersection)
         # TODO: reject step if the jump went too far past the boundary?
-        made_jump = made_jump | ((last_sdf > 0) & (sdf <= 0))
+        made_jump = (
+            made_jump
+            | (last_sdf * sdf <= 0)
+            | (jnp.isfinite(last_sdf) & ~jnp.isfinite(sdf))
+        )
+        # get an epsilon at the correct scale for the addition
+        crossing_eps = self._crossing_eps(next_t0)
         next_t1 = jnp.where(
             made_jump,
+            # use initial step size since we made a jump
             next_t0 + dt0,
             jnp.where(
-                jnp.abs(sdf) <= eps_of(sdf) * jnp.abs(next_t0),
-                next_t0 + 2 * eps_of(sdf) * jnp.abs(next_t0),
+                jnp.abs(sdf) <= crossing_eps,
+                # we are about to cross the boundary, so take a special step to cross it
+                next_t0 + 2 * crossing_eps,
                 # the next boundary is at least abs(sdf) away
-                jnp.minimum(old_next_t1, next_t0 + self._softclip_sdf(jnp.abs(sdf))),
+                jnp.minimum(
+                    old_next_t1,
+                    next_t0 + self._softclip_sdf(jnp.abs(sdf)) - crossing_eps / 2,
+                ),
             ),
         )
 
-        if False:
+        if self.debug:
             jax.debug.print(
-                # "y1 candidate z {z} ct {ct} beta {beta}\n"
-                "sdf at y1c: {sdf} old next t0: {next_t0} old next t1: {old_next_t1}\n"
-                "new next t1: {calculated_next_t1}\n"
-                "keep: {keep_step} made_jump: {made_jump}\n",
-                # z=y1_candidate.kin.p.z,
-                # ct=y1_candidate.kin.t.ct,
-                # beta=y1_candidate.beta(),
-                sdf=sdf,
+                "next_t0={next_t0} old_next_t1={old_next_t1}\n"
+                "sdf={sdf} made_jump={made_jump} crossing_eps={crossing_eps}\n"
+                "next_t1={next_t1}\n",
                 next_t0=next_t0,
                 old_next_t1=old_next_t1,
-                calculated_next_t1=next_t1,
-                keep_step=keep_step,
+                sdf=sdf,
                 made_jump=made_jump,
+                crossing_eps=self._crossing_eps(next_t0),
+                next_t1=next_t1,
             )
         state = (sdf, dt0, inner_state)
         return keep_step, next_t0, next_t1, made_jump, state, result

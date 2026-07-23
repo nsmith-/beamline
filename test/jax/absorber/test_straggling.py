@@ -55,6 +55,17 @@ TEST_STRAGGLING_PARAMS = MATERIALS["lithium_hydride_LiH"].straggling_params(
 )
 
 
+def mk(thickness, pz):
+    return MATERIALS["lithium_hydride_LiH"].straggling_params(
+        MuonStateDz.make(
+            position=Cartesian4.make(),
+            momentum=Cartesian3.make(z=pz),
+            q=1,
+        ),
+        thickness=thickness,
+    )
+
+
 def test_dummy_sampler_statistics(artifacts_dir):
     """The dummy sampler is one-sided with the prescribed Bethe-Bloch mean."""
     params = TEST_STRAGGLING_PARAMS
@@ -123,16 +134,6 @@ def test_landau_sampler_gradients():
     weighted mean flows through the log-weight and is finite. (End-to-end gradients
     through full propagation are exercised elsewhere; here we isolate the sampler.)
     """
-
-    def mk(thickness, pz):
-        return MATERIALS["lithium_hydride_LiH"].straggling_params(
-            MuonStateDz.make(
-                position=Cartesian4.make(),
-                momentum=Cartesian3.make(z=pz),
-                q=1,
-            ),
-            thickness=thickness,
-        )
 
     t0 = 1.0 * u.cm
     pz0 = 200.0 * u.MeV
@@ -248,24 +249,26 @@ def test_landau_gradient_diagnostics(artifacts_dir):
 def test_landau_reweight(artifacts_dir):
     """Importance-reweighting one Landau parametrization onto another matches.
 
-    Draw a standard-Landau ensemble, map it to a proposal ``(loc, scale0)``, and
-    reweight to a target ``(loc, scale1)``. The reweight formula is the exact joint
+    Draw a standard-Landau ensemble, map it to a proposal ``(loc0, scale0)``, and
+    reweight to a target ``(loc1, scale1)``. The reweight formula is the exact joint
     ``(x, aux)`` log-density ratio, so it is an unbiased -- but, for the
     heavy-tailed Landau, high-variance -- importance estimator. We therefore check
     it on a *bounded* observable at large sample size (a full-histogram match in
     the tail is too noisy to assert), plus the trivial identity that reweighting to
     the same parameters leaves the weight at one.
     """
-    loc = 1.5 * u.MeV
-    scale0, scale1 = 0.165 * u.MeV, 0.15 * u.MeV  # mild mismatch -> usable ESS
+    param0 = mk(5.0 * u.cm, 200 * u.MeV)
+    param1 = mk(6.0 * u.cm, 200 * u.MeV)
+    loc0, scale0 = _straggling_to_landau(param0)
+    loc1, scale1 = _straggling_to_landau(param1)
 
     keys = jr.split(jr.key(0), 1_000_000)
     std, aux = jax.vmap(_standard_landau)(keys)
-    proposal = std * scale0 + loc
-    target = std * scale1 + loc  # direct target draw (paired on the same variate)
+    proposal = std * scale0 + loc0
+    target = std * scale1 + loc1  # direct target draw (paired on the same variate)
 
     log_w = jax.vmap(
-        lambda x, a: _landau_log_weight_ratio(x, a, loc, scale0, loc, scale1)
+        lambda x, a: _landau_log_weight_ratio(x, a, loc0, scale0, loc1, scale1)
     )(proposal, aux)
     weights = np.asarray(jnp.exp(log_w))
     proposal = np.asarray(proposal)
@@ -273,14 +276,14 @@ def test_landau_reweight(artifacts_dir):
 
     # Identity: reweighting to the same parameters is weight one (log-weight zero).
     log_w_same = jax.vmap(
-        lambda x, a: _landau_log_weight_ratio(x, a, loc, scale0, loc, scale0)
-    )(np.asarray(std) * scale0 + loc, aux)
+        lambda x, a: _landau_log_weight_ratio(x, a, loc0, scale0, loc0, scale0)
+    )(np.asarray(std) * scale0 + loc0, aux)
     assert np.allclose(np.asarray(log_w_same), 0.0, atol=1e-9)
 
     # Self-normalized importance estimate of a bounded observable matches the
     # direct estimate at the target parameters.
     def g(x):
-        return np.exp(-0.5 * ((x - loc) / (2 * scale1)) ** 2)
+        return np.exp(-0.5 * ((x - loc0) / (2 * scale1)) ** 2)
 
     direct = g(target).mean()
     reweighted = np.sum(weights * g(proposal)) / np.sum(weights)
@@ -290,7 +293,7 @@ def test_landau_reweight(artifacts_dir):
     # target from the proposal: value reweighting (remap the underlying variates,
     # giving exact target draws) and weight reweighting (keep the proposal samples,
     # apply importance weights). The un-reweighted proposal is shown for contrast.
-    bins = np.linspace(loc - 2 * scale1, loc + 12 * scale1, 80)
+    bins = np.linspace(loc0 - 2 * scale1, loc0 + 12 * scale1, 80)
     centers = 0.5 * (bins[:-1] + bins[1:])
     hist_proposal, _ = np.histogram(proposal, bins=bins, density=True)
     hist_value, _ = np.histogram(target, bins=bins, density=True)
@@ -303,14 +306,14 @@ def test_landau_reweight(artifacts_dir):
         where="mid",
         color="C0",
         alpha=0.6,
-        label=f"proposal, no reweight (scale={scale0 / u.MeV:.3f})",
+        label="proposal, no reweight (5 cm)",
     )
     ax.step(
         centers / u.MeV,
         hist_value * u.MeV,
         where="mid",
         color="C1",
-        label=f"value reweighting -> target (scale={scale1 / u.MeV:.3f})",
+        label="value reweighting -> target (6 cm)",
     )
     ax.step(
         centers / u.MeV,
@@ -323,6 +326,9 @@ def test_landau_reweight(artifacts_dir):
     ax.set_xlabel("energy loss [MeV]")
     ax.set_ylabel("density [1/MeV]")
     ax.set_title("Landau reweighting modes (value vs weight)")
-    ax.legend()
+    ax.set_ylim(1e-5, None)
+    ax.legend(title="200 MeV muon on LiH")
     fig.savefig(artifacts_dir / "landau_reweight.png", dpi=150)
+    ax.set_yscale("log")
+    fig.savefig(artifacts_dir / "landau_reweight_log.png", dpi=150)
     plt.close(fig)

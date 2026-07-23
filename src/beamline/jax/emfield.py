@@ -74,7 +74,7 @@ class SimpleEMField(EMTensorField):
     def contains(self, point: Cartesian3) -> SBool:
         return jnp.array(True)
 
-    def signed_distance(self, ray: Tangent[Cartesian3]) -> SFloat:
+    def signed_time_to_boundary(self, ray: Tangent[Cartesian3]) -> SFloat:
         return jnp.inf
 
     def field_strength(
@@ -102,8 +102,8 @@ class SumField(EMTensorField):
         # return jnp.any(jnp.array([comp.contains(point) for comp in self.components]))
         return jnp.array(True)
 
-    def signed_distance(self, ray: Tangent[Cartesian3]) -> SFloat:
-        ds = jnp.array([comp.signed_distance(ray) for comp in self.components])
+    def signed_time_to_boundary(self, ray: Tangent[Cartesian3]) -> SFloat:
+        ds = jnp.array([comp.signed_time_to_boundary(ray) for comp in self.components])
         return ds[jnp.argmin(jnp.abs(ds))]
 
     def field_strength(
@@ -142,8 +142,8 @@ class TransformEMField(EMTensorField):
     def contains(self, point: Cartesian3) -> SBool:
         return self.field.contains(self.transform.to_local(point))
 
-    def signed_distance(self, ray: Tangent[Cartesian3]) -> SFloat:
-        return self.field.signed_distance(self.transform.tangent_to_local(ray))
+    def signed_time_to_boundary(self, ray: Tangent[Cartesian3]) -> SFloat:
+        return self.field.signed_time_to_boundary(self.transform.tangent_to_local(ray))
 
     def field_strength(
         self, point: Cartesian4
