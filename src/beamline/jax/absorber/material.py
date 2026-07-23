@@ -130,7 +130,7 @@ class Material:
     plasma_energy: float
     """Plasma energy [MeV]"""
     radiation_length: float
-    """Radiation Length [g/cm^2]"""
+    """Radiation Length [MeV/c^2/mm^2]"""
     is_atomic: bool
     """True if this is an atomic element (rather than a compound)"""
     density_correction: DensityCorrection
