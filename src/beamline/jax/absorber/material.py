@@ -161,29 +161,27 @@ class Material:
     """True if this is an atomic element (rather than a compound)"""
     density_correction: DensityCorrection
     
-    def highland_theta0(self, particle, thickness):
-        """RMS plane scattering angle from PDG eq. 34.15 (Highland).
+    def scattering_params(
+        self, particle: IncidentParticle, thickness: SFloat
+    ) -> MultipleScatteringParams:
+        """Multiple scattering parameters for a given particle and thickness
 
-        Inputs:
-          particle  : has .beta(), .charge, and a momentum magnitude in MeV/c
-          thickness : path length through the material
-
-        Returns theta_0 in radians
+        The Highland approximation to the Moliere distribution, PDG 34.16.
+        Accurate to ~11% for 1e-3 < x/X0 < 100.
         """
         beta = particle.beta()
-        p = jnp.sqrt(jnp.sum(particle.kin.t.coords[:3] ** 2))
+        # protocol-safe momentum: p = beta * gamma * m
+        momentum = beta * particle.gamma() * particle.mass
         z = particle.charge
-
-        x_g_per_cm2  = (thickness * self.density) / (u.g / u.cm2)
-        X0_g_per_cm2 = self.radiation_length     / (u.g / u.cm2)
-        x_over_X0 = x_g_per_cm2 / X0_g_per_cm2
-
-        log_arg = x_over_X0 * z ** 2 / beta ** 2
-        theta = (13.6 * u.MeV / (beta * p)) * z * jnp.sqrt(x_over_X0) * (
-            1.0 + 0.038 * jnp.log(log_arg)
+        x_over_X0 = thickness * self.density / self.radiation_length
+        theta0 = (
+            (13.6 * u.MeV / (beta * momentum))
+            * z
+            * jnp.sqrt(x_over_X0)
+            * (1.0 + 0.038 * jnp.log(x_over_X0 * z**2 / beta**2))
         )
-        return theta
-
+        return MultipleScatteringParams(theta0=theta0)
+        
     def straggling_params(
         self, particle: IncidentParticle, thickness: SFloat
     ) -> StragglingParams:
