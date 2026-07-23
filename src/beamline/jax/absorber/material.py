@@ -52,7 +52,7 @@ class DensityCorrection:
 
 
 @dataclass(frozen=True)
-class StragglingParams:
+class InteractionParams:
     """Various parameters relevant to energy straggling"""
 
     xi: SFloat
@@ -75,33 +75,12 @@ class StragglingParams:
     """Mean energy loss (Bethe-Bloch formula)"""
     mode_energy_loss: SFloat
     """Most probable energy loss"""
-
-
-@dataclass(frozen=True)
-class MultipleScatteringParams:
-    """Parameters relevant to multiple Coulomb scattering
-
-    Per PDG 34.3. The Gaussian core only; the non-Gaussian Moliere tails and
-    large-angle single scatters are outside this approximation.
-    """
-
     theta0: SFloat
     """RMS projected (plane) scattering angle [rad] (Highland, PDG 34.16)
 
     The two projected planes are independent and identically distributed
     (PDG 34.18); the space angle is sqrt(2) * theta0 (PDG 34.15).
     """
-
-
-@dataclass(frozen=True)
-class InteractionParams:
-    """All stochastic interaction parameters for one traversal segment"""
-
-    straggling: StragglingParams
-    """Energy straggling parameters"""
-    scattering: MultipleScatteringParams
-    """Multiple Coulomb scattering parameters"""
-
 
 class IncidentParticle(Protocol):
     """Necessary incident particle properties for material interactions
@@ -182,7 +161,7 @@ class Material:
         )
         return MultipleScatteringParams(theta0=theta0)
         
-    def straggling_params(
+    def interaction_params(
         self, particle: IncidentParticle, thickness: SFloat
     ) -> StragglingParams:
         """Compute straggling parameters for a given particle and thickness"""
@@ -221,13 +200,29 @@ class Material:
         mode_energy_loss = mean_energy_loss + xi * (
             beta**2 + jnp.log(kappa) + 0.20005183774398613
         )
-        return StragglingParams(
+        """Multiple scattering parameters for a given particle and thickness
+
+        The Highland approximation to the Moliere distribution, PDG 34.16.
+        Accurate to ~11% for 1e-3 < x/X0 < 100.
+        """
+        beta = particle.beta()
+        # protocol-safe momentum: p = beta * gamma * m
+        momentum = beta * particle.gamma() * particle.mass
+        z = particle.charge
+        x_over_X0 = thickness * self.density / self.radiation_length
+        theta0 = (
+            (13.6 * u.MeV / (beta * momentum))
+            * z
+            * jnp.sqrt(x_over_X0)
+            * (1.0 + 0.038 * jnp.log(x_over_X0 * z**2 / beta**2))
+        )
+        return InteractionParams(
             xi=xi,
             kappa=kappa,
             mean_energy_loss=mean_energy_loss,
             mode_energy_loss=mode_energy_loss,
+            theta0=theta0
         )
-
 
 # TODO: build these programmatically from https://pdg.lbl.gov/2025/AtomicNuclearProperties/expert.html
 
