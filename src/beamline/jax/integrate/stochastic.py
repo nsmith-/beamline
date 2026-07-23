@@ -67,7 +67,7 @@ import jax.random as jr
 from diffrax import Dopri5, ODETerm, PIDController
 from jax import Array, lax
 
-from beamline.jax.absorber.material import StragglingParams
+from beamline.jax.absorber.material import InteractionParams
 from beamline.jax.absorber.straggling import dummy_energy_loss_sampler
 from beamline.jax.absorber.volume import MaterialVolume
 from beamline.jax.coordinates import Cartesian4, Tangent
@@ -150,7 +150,7 @@ def stochastic_solve[T: ParticleState](
     key: Array,
     *,
     sampler: Callable[
-        [StragglingParams, Array], tuple[SFloat, SFloat]
+        [InteractionParams, Array], tuple[SFloat, SFloat]
     ] = dummy_energy_loss_sampler,
     forward_mode: bool = False,
     rtol: float = 1e-5,
@@ -168,7 +168,7 @@ def stochastic_solve[T: ParticleState](
             is the start and ``cts[-1]`` the end of integration. Consecutive
             points define the integration sub-intervals.
         key: A JAX PRNG key (``vmap`` a batch of keys for an ensemble).
-        sampler: Energy-loss sampler ``(StragglingParams, key) -> (dE, log_w)``;
+        sampler: Energy-loss sampler ``(InteractionParams, key) -> (dE, log_w)``;
             pass ``landau_energy_loss_sampler`` (value/pathwise gradients) or
             ``landau_energy_loss_sampler_wg`` (weight/score-function gradients).
             The per-step ``log_w`` is accumulated and returned as

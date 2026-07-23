@@ -77,7 +77,7 @@ def simulation():
     # Deterministic predictions (Bethe-Bloch + Landau, Highland MCS).
     probe = make_muon(BEAM_PC)
     pp = absorber.interaction_params(probe, absorber.length)
-    theta0 = float(absorber.material.highland_theta0(probe, absorber.length))
+    theta0 = float(pp.theta0)
     y_rms_pred = float(absorber.length) * theta0 / np.sqrt(3.0)
     pc_in = float(jnp.sqrt(jnp.sum(probe.kin.t.coords[:3] ** 2)))
 

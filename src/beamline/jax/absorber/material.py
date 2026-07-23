@@ -82,6 +82,7 @@ class InteractionParams:
     (PDG 34.18); the space angle is sqrt(2) * theta0 (PDG 34.15).
     """
 
+
 class IncidentParticle(Protocol):
     """Necessary incident particle properties for material interactions
 
@@ -139,31 +140,10 @@ class Material:
     is_atomic: bool
     """True if this is an atomic element (rather than a compound)"""
     density_correction: DensityCorrection
-    
-    def scattering_params(
-        self, particle: IncidentParticle, thickness: SFloat
-    ) -> MultipleScatteringParams:
-        """Multiple scattering parameters for a given particle and thickness
 
-        The Highland approximation to the Moliere distribution, PDG 34.16.
-        Accurate to ~11% for 1e-3 < x/X0 < 100.
-        """
-        beta = particle.beta()
-        # protocol-safe momentum: p = beta * gamma * m
-        momentum = beta * particle.gamma() * particle.mass
-        z = particle.charge
-        x_over_X0 = thickness * self.density / self.radiation_length
-        theta0 = (
-            (13.6 * u.MeV / (beta * momentum))
-            * z
-            * jnp.sqrt(x_over_X0)
-            * (1.0 + 0.038 * jnp.log(x_over_X0 * z**2 / beta**2))
-        )
-        return MultipleScatteringParams(theta0=theta0)
-        
     def interaction_params(
         self, particle: IncidentParticle, thickness: SFloat
-    ) -> StragglingParams:
+    ) -> InteractionParams:
         """Compute straggling parameters for a given particle and thickness"""
 
         beta, gamma = particle.beta(), particle.gamma()
@@ -221,8 +201,9 @@ class Material:
             kappa=kappa,
             mean_energy_loss=mean_energy_loss,
             mode_energy_loss=mode_energy_loss,
-            theta0=theta0
+            theta0=theta0,
         )
+
 
 # TODO: build these programmatically from https://pdg.lbl.gov/2025/AtomicNuclearProperties/expert.html
 

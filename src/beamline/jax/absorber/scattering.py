@@ -4,6 +4,7 @@ Implements the Highland approximation: two independent Gaussian
 deflection angles theta_x, theta_y with RMS theta_0, plus their
 correlated lateral offsets y_x, y_y PDG eqs. 34.16-17.
 """
+
 from __future__ import annotations
 
 import jax
@@ -39,9 +40,9 @@ def sample_scattering(state, key, material, thickness):
     z2y = jax.random.normal(k4)
 
     inv_sqrt12 = 1.0 / jnp.sqrt(12.0)
-    y_x     = thickness * theta0 * (z1x * inv_sqrt12 + z2x * 0.5)
+    y_x = thickness * theta0 * (z1x * inv_sqrt12 + z2x * 0.5)
     theta_x = theta0 * z2x
-    y_y     = thickness * theta0 * (z1y * inv_sqrt12 + z2y * 0.5)
+    y_y = thickness * theta0 * (z1y * inv_sqrt12 + z2y * 0.5)
     theta_y = theta0 * z2y
 
     new_state = _rotate_direction_and_offset(state, theta_x, theta_y, y_x, y_y)

@@ -17,7 +17,7 @@ from abc import abstractmethod
 import equinox as eqx
 import hepunits as u
 
-from beamline.jax.absorber.material import Material, StragglingParams
+from beamline.jax.absorber.material import Material, InteractionParams
 from beamline.jax.coordinates import Cartesian3, Tangent, Transform
 from beamline.jax.geometry import (
     CylinderVolume,
@@ -49,7 +49,7 @@ class MaterialVolume(Volume):
     @abstractmethod
     def interaction_params(
         self, state: ParticleState, thickness: SFloat
-    ) -> StragglingParams:
+    ) -> InteractionParams:
         """Shape parameters of the stochastic interaction for ``state``
 
         Args:
@@ -58,7 +58,7 @@ class MaterialVolume(Volume):
             thickness: Path length traversed through the material [mm].
 
         Returns:
-            ``StragglingParams`` for energy straggling. Structured so that a
+            ``InteractionParams`` for energy straggling. Structured so that a
             future ``MultipleScatteringParams`` can be returned alongside.
         """
 
@@ -80,7 +80,7 @@ class TransformMaterialVolume(MaterialVolume):
 
     def interaction_params(
         self, state: ParticleState, thickness: SFloat
-    ) -> StragglingParams:
+    ) -> InteractionParams:
         local_state = eqx.tree_at(
             lambda x: x.kin, state, self.transform.tangent_to_local(state.kin)
         )
@@ -116,5 +116,5 @@ class AbsorberCylinder(MaterialVolume, CylinderVolume):
 
     def interaction_params(
         self, state: ParticleState, thickness: SFloat
-    ) -> StragglingParams:
+    ) -> InteractionParams:
         return self.material.interaction_params(state, thickness)

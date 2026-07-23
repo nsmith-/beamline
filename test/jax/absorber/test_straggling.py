@@ -47,7 +47,7 @@ def landau_energy_loss(E, E_mpv, xi):
     )
 
 
-TEST_STRAGGLING_PARAMS = MATERIALS["lithium_hydride_LiH"].straggling_params(
+TEST_STRAGGLING_PARAMS = MATERIALS["lithium_hydride_LiH"].interaction_params(
     MuonStateDz.make(
         position=Cartesian4.make(), momentum=Cartesian3.make(z=200.0 * u.MeV), q=1
     ),
@@ -56,7 +56,7 @@ TEST_STRAGGLING_PARAMS = MATERIALS["lithium_hydride_LiH"].straggling_params(
 
 
 def mk(thickness, pz):
-    return MATERIALS["lithium_hydride_LiH"].straggling_params(
+    return MATERIALS["lithium_hydride_LiH"].interaction_params(
         MuonStateDz.make(
             position=Cartesian4.make(),
             momentum=Cartesian3.make(z=pz),
@@ -170,7 +170,7 @@ def test_landau_gradient_diagnostics(artifacts_dir):
     """
 
     def mk(thickness, pz):
-        return MATERIALS["lithium_hydride_LiH"].straggling_params(
+        return MATERIALS["lithium_hydride_LiH"].interaction_params(
             MuonStateDz.make(
                 position=Cartesian4.make(),
                 momentum=Cartesian3.make(z=pz),
