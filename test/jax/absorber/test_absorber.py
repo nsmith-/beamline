@@ -171,9 +171,10 @@ def test_momentum_is_degraded(simulation):
 
 @pytest.mark.xfail(
     strict=True,
-    reason="Segmented crossing gives ~0.93*theta0 (quadrature deficit); "
-    "np.std also tail-dominated. Needs single-application Highland over the "
-    "full contiguous thickness in stochastic_solve. See test_step_size_study.",
+    reason="np.std is dominated by the unbounded Landau tail: ~0.1% of "
+    "particles lose >KE, get floored at rest mass, and Highland's 1/(beta*p) "
+    "diverges (theta up to ~2.7 rad). The bulk width is correct "
+    "(MAD-sigma ~ 0.96*theta0).",
 )
 def test_scattering_angle(simulation):
     """Empirical theta_x RMS matches the Highland theta_0."""
