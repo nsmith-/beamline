@@ -18,7 +18,7 @@ def _gaussian(x, amp, mu, sigma):
 
 def gaussian_peak_fit(samples, bins=400, k=1.0, n_iter=4, init_window_frac=0.5,
                       hist_range=None):
-    """Iterative Gaussian fit to the PEAK of a skewed distribution.
+    """Iterative Gaussian fit to the peak of a skewed distribution.
 
     Parameters
     ----------
@@ -66,6 +66,11 @@ def gaussian_peak_fit(samples, bins=400, k=1.0, n_iter=4, init_window_frac=0.5,
         lo, hi = mu - k * sigma, mu + k * sigma
 
     perr = np.sqrt(np.diag(pcov)) if pcov is not None else [np.nan] * 3
+    if popt is None:
+        raise RuntimeError(
+            f"peak fit failed: window had <4 bins (bins={bins}, "
+            f"hist_range={hist_range}). Increase `bins` or narrow `hist_range`."
+        )
     return {
         "mode": float(popt[1]), "mode_err": float(perr[1]),
         "sigma": float(abs(popt[2])), "sigma_err": float(perr[2]),
