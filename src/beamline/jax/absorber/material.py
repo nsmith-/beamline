@@ -53,7 +53,7 @@ class DensityCorrection:
 
 @dataclass(frozen=True)
 class InteractionParams:
-    """Various parameters relevant to energy straggling"""
+    """Compute interaction parameters for a given particle and thickness"""
 
     xi: SFloat
     """Landau's xi (the scaling of the dimensionless Landau parameter)"""
@@ -180,12 +180,6 @@ class Material:
         mode_energy_loss = mean_energy_loss + xi * (
             beta**2 + jnp.log(kappa) + 0.20005183774398613
         )
-        """Multiple scattering parameters for a given particle and thickness
-
-        The Highland approximation to the Moliere distribution, PDG 34.16.
-        Accurate to ~11% for 1e-3 < x/X0 < 100.
-        """
-        beta = particle.beta()
         # protocol-safe momentum: p = beta * gamma * m
         momentum = beta * particle.gamma() * particle.mass
         z = particle.charge
