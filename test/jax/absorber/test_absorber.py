@@ -282,7 +282,11 @@ def test_summary_figure(simulation, artifacts_dir):
     fig.savefig(artifacts_dir / "absorber_simulation.png", dpi=130)
     plt.close(fig)
 
-STUDY_CHAR_LENGTHS = [LENGTH, LENGTH / 2, LENGTH / 5, LENGTH / 10, LENGTH / 100]
+def _robust_sigma(a) -> float:
+    """IQR-based Gaussian-width estimate, robust to the Landau-tail muons
+    whose momentum collapses and whose angle then explodes (theta0 ~ 1/(beta p))."""
+    q1, q3 = np.percentile(np.asarray(a), [25, 75])
+    return float((q3 - q1) / 1.3489795)
 
 def test_step_size_study(artifacts_dir):
     """How stepped MCS and energy loss compare to the single-application values.
