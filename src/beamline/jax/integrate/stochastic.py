@@ -70,7 +70,7 @@ from jax import Array, lax
 from beamline.jax.absorber.material import InteractionParams
 from beamline.jax.absorber.straggling import dummy_energy_loss_sampler
 from beamline.jax.absorber.volume import MaterialVolume
-from beamline.jax.coordinates import Cartesian4, Tangent
+from beamline.jax.coordinates import Cartesian3, Cartesian4, Tangent, Transform
 from beamline.jax.emfield import EMTensorField
 from beamline.jax.integrate.propagate import particle_interaction
 from beamline.jax.integrate.stepsize import BoundaryAwareStepSizeController
@@ -121,6 +121,50 @@ def apply_energy_loss[T: ParticleState](state: T, dE: SFloat) -> T:
     )
     return eqx.tree_at(lambda s: s.kin.t, state, Cartesian4(coords=new_coords))
 
+def _perp_basis(n: Cartesian3) -> tuple[Cartesian3, Cartesian3]:
+    """Orthonormal (u, v) spanning the plane perpendicular to unit vector n
+
+    The two sampled angles are ind. with equal width, so the deflection is
+    rotationally symmetric about n.
+    """
+    near_z = jnp.abs(n.z) >= 0.9
+    ref = Cartesian3.make(
+        x=jnp.where(near_z, 1.0, 0.0), y=0.0, z=jnp.where(near_z, 0.0, 1.0)
+    )
+    u = ref.cross(n)
+    u = u * (1.0 / abs(u))
+    return u, n.cross(u)
+
+
+def apply_scattering[T: ParticleState](
+    state: T, theta_x: SFloat, theta_y: SFloat
+) -> T:
+    """Deflect a particle by projected angles, conserving |p| and energy
+
+    Rotates the momentum about an axis perpendicular to the particle's current
+    direction, so it is correct at any incidence rather than assuming travel
+    along z. Because that axis is perpendicular to the direction, Rodrigues'
+    formula loses its axis (axis . n)(1 - cos) term and reduces to
+    n' = n cos(theta) + d sin(theta), preserving the momentum magnitude. 
+    Transform.make_axis_angle builds a 4x4 that is the identity in the energy 
+    component, so E is untouched.
+
+    The position is deliberately unchanged: the integrator propagates
+    position from the deflected direction, generating the correlated lateral
+    displacement of PDG 34.22 itself. This is a state update.
+    """
+    p3 = Cartesian3(coords=state.kin.t.coords[..., :3])
+    pmag = abs(p3)
+    n = p3 * (1.0 / jnp.where(pmag > 0.0, pmag, 1.0))
+    u, v = _perp_basis(n)
+    theta = jnp.sqrt(theta_x**2 + theta_y**2)
+    axis_raw = v * theta_x - u * theta_y
+    # At theta == 0 the rotation is the identity for any axis; substitute u so
+    # 1/abs(axis) stays finite. Zero angles occur whenever no kick is applied.
+    axis = Cartesian3(coords=jnp.where(theta > 0.0, axis_raw.coords, u.coords))
+    rotation = Transform.make_axis_angle(axis, theta, Cartesian4.make())
+    return eqx.tree_at(lambda s: s.kin.t, state, rotation.to_global(state.kin.t))
+
 
 def _combined_sdf(
     field: EMTensorField, material: MaterialVolume, state: ParticleState
@@ -152,6 +196,8 @@ def stochastic_solve[T: ParticleState](
     sampler: Callable[
         [InteractionParams, Array], tuple[SFloat, SFloat]
     ] = dummy_energy_loss_sampler,
+    scattering_sampler: Callable[[InteractionParams, Array], tuple[SFloat, SFloat]]
+    | None = None,
     forward_mode: bool = False,
     rtol: float = 1e-5,
     atol: float = 1e-7,
@@ -175,6 +221,11 @@ def stochastic_solve[T: ParticleState](
             ``stats["log_weight"]`` (0 for the value-gradient samplers); under an
             ensemble ``vmap`` the weighted estimator is ``sum(w f) / sum(w)`` with
             ``w = exp(log_weight)``.
+        scattering_sampler: multiple-scattering sampler
+            ``(InteractionParams, key) -> (theta_x, theta_y)``; pass
+            ``highland_scattering_sampler`` to enable multiple Coulomb
+            scattering. ``None`` (the default) applies no angular kick, which
+            preserves the previous behaviour.
         forward_mode: If True, configure the solver for forward-mode autodiff
             (``jax.jvp`` / ``jax.jacfwd``); otherwise (default) reverse-mode
             (``jax.grad`` / ``jax.jacrev``). See the module docstring.
@@ -305,6 +356,14 @@ def stochastic_solve[T: ParticleState](
         # weight-gradient estimator's gradient must flow through it).
         log_weight = log_weight + jnp.where(kick_applied, logw_raw, 0.0)
         y_new = apply_energy_loss(y_kept, dE)
+        if scattering_sampler is not None:
+            key, subkey = jr.split(key)
+            theta_x_raw, theta_y_raw = scattering_sampler(params, subkey)
+            y_new = apply_scattering(
+                y_new,
+                jnp.where(kick_applied, theta_x_raw, 0.0),
+                jnp.where(kick_applied, theta_y_raw, 0.0),
+            )
 
         # A kick perturbs y, so the solver's cached (FSAL) derivative is stale:
         # signal a jump so it is recomputed next step.
