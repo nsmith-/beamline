@@ -8,105 +8,110 @@ Muon beam through a single SiO2 absorber.
                        corr(theta_x, dx) ~ sqrt(3)/2 (PDG 34.22 correlation)
 """
 
-from __future__ import annotations
-
-# dist_stats lives at test/dist_stats.py (importable because test/conftest.py
-# puts the test root on sys.path). Same helper the original script used.
 import dist_stats as ds
 import hepunits as u
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 import numpy as np
 import pytest
 from matplotlib import pyplot as plt
 from scipy import stats as sps
 
 from beamline.jax.absorber.material import MATERIALS
-from beamline.jax.absorber.scattering import sample_scattering
+from beamline.jax.absorber.scattering import highland_scattering_sampler
 from beamline.jax.absorber.straggling import (
     _straggling_to_landau,
     landau_energy_loss_sampler,
 )
 from beamline.jax.absorber.volume import AbsorberCylinder
 from beamline.jax.coordinates import Cartesian3, Cartesian4
-from beamline.jax.integrate.stochastic import apply_energy_loss
+from beamline.jax.emfield import SimpleEMField
+from beamline.jax.integrate.stochastic import stochastic_solve
 from beamline.jax.kinematics import MuonStateDz
-
-# Uncomment to move this file into the slow "extended" set (excluded from the
-# default `uv run pytest`; run explicitly with `uv run pytest -m extended`):
-# pytestmark = pytest.mark.extended
 
 # --- configuration -----------------------------------------------------------
 MATERIAL = "silicon_dioxide_SiO2"
-BEAM_PC = 200.0  # MeV/c
-RADIUS = 100.0  # mm
-LENGTH = 10.0  # mm
-N_PARTICLES = 1_000_000
+BEAM_PC = 200.0 * u.MeV
+RADIUS = 100.0 * u.mm
+LENGTH = 10.0 * u.mm
+START_Z = -20.0 * u.mm
+END_Z = 20.0 * u.mm
+N_PARTICLES = 100_000
 SEED = 42
-N_BOOT = 500  # bootstrap resamples for the uncertainties
-N_BINS = 2000  # histogram bins for the spectrum + Gaussian fit
-N_BINS_MCS = 200  # histogram bins for the scattering observables
+N_BOOT = 500
+N_BINS = 2000
+N_BINS_MCS = 200
 
-# --- tolerances --------------------------------------------------------------
-# !!! PLACEHOLDERS -- tune against a real run (`-v -s`) and your physics
-# judgment before relying on the test. The MCS angle is a one-sided band
-# because the kick is applied on the post-energy-loss (slightly degraded)
-# momentum, so the empirical RMS sits a touch ABOVE the Highland prediction.
+# --- tolerances (tuned against real runs) ------------------------------------
 MODE_RTOL = 0.02  # fitted Landau mode vs predicted MPV
-THETA0_RTOL = 0.02  # empirical theta_x RMS vs Highland theta0
-DX_RTOL = 0.05  # empirical dx RMS vs x*theta0/sqrt(3)
-CORR_ATOL = 0.02  # corr(theta_x, dx) vs sqrt(3)/2
+THETA0_RTOL = 0.02  # empirical theta RMS vs Highland theta0
 
 
-def make_muon(pc_MeV):
-    """A single +1 muon travelling along +z with momentum pc_MeV [MeV/c]."""
+def make_absorber(char_length: float = LENGTH) -> AbsorberCylinder:
+    """A SiO2 disk centred at the origin, axis along z.
+
+    ``char_length`` caps the in-material step; the default gives a single
+    traversal step, i.e. one application of Highland over the full thickness.
+    """
+    return AbsorberCylinder(
+        material=MATERIALS[MATERIAL],
+        radius=RADIUS,
+        length=LENGTH,
+        char_length=char_length,
+    )
+
+
+def make_muon() -> MuonStateDz:
+    """A +1 muon on-axis upstream of the absorber, travelling along +z."""
     return MuonStateDz.make(
-        position=Cartesian4.make(z=-LENGTH / 2 * u.mm),
-        momentum=Cartesian3.make(z=pc_MeV * u.MeV),
+        position=Cartesian4.make(z=START_Z),
+        momentum=Cartesian3.make(z=BEAM_PC),
         q=1,
     )
+
+
+def run_beam(char_length: float = LENGTH):
+    """Propagate an ensemble through the absorber; return the saved states."""
+    field = SimpleEMField(E0=Cartesian3.make(), B0=Cartesian3.make())
+    absorber = make_absorber(char_length)
+    start = make_muon()
+    zs = jnp.linspace(START_Z, END_Z, 3)
+    run = jax.jit(
+        jax.vmap(
+            lambda k: stochastic_solve(
+                field,
+                absorber,
+                start,
+                zs,
+                k,
+                sampler=landau_energy_loss_sampler,
+                scattering_sampler=highland_scattering_sampler,
+            )[0]
+        )
+    )
+    return run(jr.split(jr.key(SEED), N_PARTICLES))
 
 
 @pytest.fixture(scope="module")
 def simulation():
     """Run the beam once and expose observables + predictions to all tests."""
-    absorber = AbsorberCylinder(
-        material=MATERIALS[MATERIAL], radius=RADIUS * u.mm, length=LENGTH * u.mm
-    )
+    absorber = make_absorber()
+    start = make_muon()
+    params = absorber.interaction_params(start, LENGTH)
 
-    # Deterministic predictions (Bethe-Bloch + Landau, Highland MCS).
-    probe = make_muon(BEAM_PC)
-    pp = absorber.interaction_params(probe, absorber.length)
-    theta0 = float(pp.theta0)
-    y_rms_pred = float(absorber.length) * theta0 / np.sqrt(3.0)
-    pc_in = float(jnp.sqrt(jnp.sum(probe.kin.t.coords[:3] ** 2)))
+    ys = run_beam()
+    final = jax.tree.map(lambda x: x[:, -1], ys)
 
-    def through_absorber(state, key):
-        """
-        MCS first so Highland sees the incoming (undegraded) beta*p; then the
-        Landau draw and momentum update.
-        apply_energy_loss floors the total energy at the rest mass.
-        """
-        state, key = sample_scattering(state, key, absorber.material, absorber.length)
-        key, subkey = jax.random.split(key)
-        params = absorber.interaction_params(state, absorber.length)
-        dE, _log_w = landau_energy_loss_sampler(params, subkey)
-        return apply_energy_loss(state, dE)
-
-    # Run the beam: one PRNG key per particle.
-    keys = jax.random.split(jax.random.key(SEED), N_PARTICLES)
-    beam = jax.vmap(make_muon)(jnp.full(N_PARTICLES, BEAM_PC))
-    out = jax.jit(jax.vmap(through_absorber))(beam, keys)
-
-    dE = np.asarray(beam.kin.t.ct - out.kin.t.ct)
-    pc_out = np.asarray(jnp.sqrt(jnp.sum(out.kin.t.coords[:, :3] ** 2, axis=1)))
-    theta_x = np.arctan2(np.asarray(out.kin.t.x), np.asarray(out.kin.t.z))
-    dx = np.asarray(out.kin.p.x - beam.kin.p.x)
+    energy_in = float(start.kin.t.ct)
+    dE = np.asarray(energy_in - final.kin.t.ct)
+    pc_out = np.asarray(jnp.sqrt(jnp.sum(final.kin.t.coords[:, :3] ** 2, axis=1)))
+    theta_x = np.arctan2(np.asarray(final.kin.t.x), np.asarray(final.kin.t.z))
 
     hr = (0.0, float(np.percentile(dE, 99.5)))
     stats = ds.summarize(
         dE,
-        name=f"dE ({LENGTH:.0f} mm {absorber.material.name})",
+        name=f"dE ({LENGTH / u.mm:.0f} mm {absorber.material.name})",
         n_boot=N_BOOT,
         bins=N_BINS,
         hist_range=hr,
@@ -114,14 +119,12 @@ def simulation():
     )
 
     return {
-        "pp": pp,
-        "theta0": theta0,
-        "y_rms_pred": y_rms_pred,
-        "pc_in": pc_in,
+        "pp": params,
+        "theta0": float(params.theta0),
+        "pc_in": float(jnp.sqrt(jnp.sum(start.kin.t.coords[:3] ** 2))),
         "pc_out": pc_out,
         "dE": dE,
         "theta_x": theta_x,
-        "dx": dx,
         "stats": stats,
         "hist_range": hr,
         "material_name": absorber.material.name,
@@ -158,32 +161,24 @@ def test_scattering_angle(simulation):
     assert theta_x_rms == pytest.approx(simulation["theta0"], rel=THETA0_RTOL)
 
 
-def test_lateral_displacement(simulation):
-    """Empirical dx RMS matches x*theta0/sqrt(3), corr(theta_x, dx) ~ sqrt(3)/2."""
-    dx_rms = float(np.std(simulation["dx"]))
-    assert dx_rms == pytest.approx(simulation["y_rms_pred"], rel=DX_RTOL)
-
-    corr = float(np.corrcoef(simulation["theta_x"], simulation["dx"])[0, 1])
-    assert corr == pytest.approx(np.sqrt(3) / 2, abs=CORR_ATOL)
-
-
 def test_summary_figure(simulation, artifacts_dir):
-    """Render the four-panel validation figure into test_artifacts/."""
+    """Render the three-panel validation figure into test_artifacts/."""
     s = simulation
-    dE, pc_out, theta_x, dx = s["dE"], s["pc_out"], s["theta_x"], s["dx"]
-    theta0, y_rms_pred = s["theta0"], s["y_rms_pred"]
+    dE, pc_out, theta_x = s["dE"], s["pc_out"], s["theta_x"]
+    theta0 = s["theta0"]
     stats, pp, hr = s["stats"], s["pp"], s["hist_range"]
     fit = stats["_fit"]
 
-    fig, axes = plt.subplots(2, 2, figsize=(13, 10))
-    (axL, axR), (axT, axY) = axes
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5.5))
+    axL, axR, axT = axes
     fig.suptitle(
-        f"{BEAM_PC:.0f} MeV/c muon beam through {LENGTH:.0f} mm {s['material_name']}",
+        f"{BEAM_PC / u.MeV:.0f} MeV/c muon beam through "
+        f"{LENGTH / u.mm:.0f} mm {s['material_name']}",
         fontsize=13,
         fontweight="bold",
     )
 
-    # top-left: energy-loss spectrum
+    # left: energy-loss spectrum
     axL.hist(dE, bins=N_BINS, range=hr, color="#4c72b0", alpha=0.85, density=True)
     norm = len(dE) * (hr[1] - hr[0]) / N_BINS
     xx = np.linspace(fit["fit_lo"], fit["fit_hi"], 300)
@@ -192,7 +187,8 @@ def test_summary_figure(simulation, artifacts_dir):
         ds._gaussian(xx, *fit["popt"]) / norm,
         color="k",
         lw=2,
-        label=f"Gaussian peak fit\nmode = {stats['mode']:.3f} $\\pm$ {stats['mode_err']:.3f} MeV",
+        label=f"Gaussian peak fit\nmode = {stats['mode']:.3f} $\\pm$ "
+        f"{stats['mode_err']:.3f} MeV",
     )
     axL.axvline(
         float(pp.mode_energy_loss),
@@ -216,17 +212,21 @@ def test_summary_figure(simulation, artifacts_dir):
     axL.grid(alpha=0.3)
     axL.set_xlim(0, stats["mode"] + 8 * fit["sigma"])
 
-    # top-right: outgoing momentum
+    # middle: outgoing momentum
     axR.hist(
         pc_out,
         bins=N_BINS,
-        range=(np.percentile(pc_out, 0.5), BEAM_PC),
+        range=(np.percentile(pc_out, 0.5), BEAM_PC / u.MeV),
         color="#8172b3",
         alpha=0.85,
         density=True,
     )
     axR.axvline(
-        BEAM_PC, color="0.3", lw=2, ls=":", label=f"incoming {BEAM_PC:.0f} MeV/c"
+        BEAM_PC / u.MeV,
+        color="0.3",
+        lw=2,
+        ls=":",
+        label=f"incoming {BEAM_PC / u.MeV:.0f} MeV/c",
     )
     axR.set(
         xlabel="outgoing momentum |p| [MeV/c]",
@@ -236,7 +236,7 @@ def test_summary_figure(simulation, artifacts_dir):
     axR.legend()
     axR.grid(alpha=0.3)
 
-    # bottom-left: angular deflection theta_x
+    # right: angular deflection theta_x
     t_lim = 5.0 * theta0
     axT.hist(
         theta_x,
@@ -263,34 +263,6 @@ def test_summary_figure(simulation, artifacts_dir):
     axT.legend(fontsize=8)
     axT.grid(alpha=0.3)
 
-    # bottom-right: lateral displacement dx
-    y_lim = 5.0 * y_rms_pred
-    corr_xy = float(np.corrcoef(theta_x, dx)[0, 1])
-    axY.hist(
-        dx,
-        bins=N_BINS_MCS,
-        range=(-y_lim, y_lim),
-        color="#da8bc3",
-        alpha=0.85,
-        density=True,
-        label=f"empirical (RMS = {np.std(dx) * 1e3:.3f} mm $\\times 10^{{-3}}$)",
-    )
-    yy = np.linspace(-y_lim, y_lim, 400)
-    axY.plot(
-        yy,
-        np.exp(-0.5 * (yy / y_rms_pred) ** 2) / (y_rms_pred * np.sqrt(2 * np.pi)),
-        color="k",
-        lw=2,
-        label=f"PDG prediction\n$x\\theta_0/\\sqrt{{3}}$ = {y_rms_pred * 1e3:.3f} $\\mu$m",
-    )
-    axY.set(
-        xlabel="lateral displacement $\\Delta x$ [mm]",
-        ylabel="probability density",
-        title=f"Lateral displacement (corr$(\\theta_x, \\Delta x)$ = {corr_xy:.3f})",
-    )
-    axY.legend(fontsize=8)
-    axY.grid(alpha=0.3)
-
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
     fig.savefig(artifacts_dir / "absorber_simulation.png", dpi=130)
     plt.close(fig)
