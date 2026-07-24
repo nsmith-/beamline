@@ -51,6 +51,9 @@ N_BINS_MCS = 200  # histogram bins for the scattering observables
 MODE_RTOL = 0.02  # fitted Landau mode vs predicted MPV
 THETA0_RTOL = 0.02  # empirical theta RMS vs Highland theta0
 
+# --- step lengths (for comparison) -------------------------------------------
+STUDY_CHAR_LENGTHS = [LENGTH, LENGTH / 2, LENGTH / 5, LENGTH / 10, LENGTH / 20, LENGTH / 40]
+
 
 def make_absorber(char_length: float = LENGTH) -> AbsorberCylinder:
     """A SiO2 disk centred at the origin, axis along z.
@@ -278,3 +281,60 @@ def test_summary_figure(simulation, artifacts_dir):
     fig.tight_layout(rect=(0, 0, 1, 0.94))
     fig.savefig(artifacts_dir / "absorber_simulation.png", dpi=130)
     plt.close(fig)
+
+STUDY_CHAR_LENGTHS = [LENGTH, LENGTH / 2, LENGTH / 5, LENGTH / 10, LENGTH / 100]
+
+def test_step_size_study(artifacts_dir):
+    """How stepped MCS and energy loss compare to the single-application values.
+
+    PDG 34.3 says Highland must be applied once over the full contiguous
+    thickness; segmenting and combining in quadrature is systematically low.
+    """
+    absorber = make_absorber()
+    start = make_muon()
+    ref = absorber.interaction_params(start, LENGTH)
+    theta0_ref = float(ref.theta0)
+    mode_ref = float(ref.mode_energy_loss)
+    energy_in = float(start.kin.t.ct)
+
+    rows = []
+    for cl in STUDY_CHAR_LENGTHS:
+        ys = run_beam(cl)
+        dE = np.asarray(energy_in - ys.kin.t.ct[:, -1])
+        th = np.arctan2(
+            np.asarray(ys.kin.t.x[:, -1]), np.asarray(ys.kin.t.z[:, -1])
+        )
+        n = LENGTH / cl
+        rows.append((n, _robust_sigma(th) / theta0_ref, float(np.median(dE))))
+        print(
+            f"  steps={n:6.0f}  theta/theta0 = {rows[-1][1]:.4f}  "
+            f"median dE = {rows[-1][2]:.4f} MeV"
+        )
+
+    ns = np.array([r[0] for r in rows])
+    ratios = np.array([r[1] for r in rows])
+    medians = np.array([r[2] for r in rows])
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.5))
+    ax1.semilogx(ns, ratios, "o-", label="simulated (bulk width)")
+    ax1.semilogx(ns, 1 - 0.042 * np.log(ns), "k--", label=r"$1-0.042\ln N$")
+    ax1.axhline(1.0, color="0.6", lw=1)
+    ax1.set(xlabel="steps through absorber", ylabel=r"$\theta$ / $\theta_0$(10 mm)",
+            title="Multiple scattering: quadrature deficit")
+    ax1.legend(fontsize=8)
+    ax1.grid(alpha=0.3)
+
+    ax2.semilogx(ns, medians, "o-")
+    ax2.axhline(mode_ref, color="#c44e52", ls="--", label="predicted MPV")
+    ax2.set(xlabel="steps through absorber", ylabel="median $\\Delta E$ [MeV]",
+            title="Energy loss (control: should be flat)")
+    ax2.legend(fontsize=8)
+    ax2.grid(alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(artifacts_dir / "step_size_study.png", dpi=130)
+    plt.close(fig)
+
+    # the deficit is monotonic in step count, and energy loss is not
+    assert ratios[-1] < ratios[0]
+    assert medians.std() / medians.mean() < 0.02
