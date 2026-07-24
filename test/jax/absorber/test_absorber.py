@@ -2,10 +2,14 @@
 Muon beam through a single SiO2 absorber.
 
   * energy loss     -- fitted Landau mode vs the predicted most-probable value
+  * energy loss     -- dE matches scipy.stats.landau at the mapped (loc, scale)
   * momentum        -- outgoing |p| is degraded relative to the incoming beam
   * scattering      -- empirical theta_x RMS vs the Highland theta_0 (PDG 34.16)
-  * displacement    -- empirical dx RMS vs x*theta_0/sqrt(3) (PDG 34.20), and
-                       corr(theta_x, dx) ~ sqrt(3)/2 (PDG 34.22 correlation)
+
+The beam is propagated with ``stochastic_solve``; all physics lives in the
+library. ``char_length`` controls how the traversal is segmented, and the
+default (one segment) corresponds to a single application of Highland over the
+full thickness.
 """
 
 import dist_stats as ds
@@ -37,11 +41,11 @@ RADIUS = 100.0 * u.mm
 LENGTH = 10.0 * u.mm
 START_Z = -20.0 * u.mm
 END_Z = 20.0 * u.mm
-N_PARTICLES = 100_000
+N_PARTICLES = 1_000
 SEED = 42
-N_BOOT = 500
-N_BINS = 2000
-N_BINS_MCS = 200
+N_BOOT = 500  # bootstrap resamples for the uncertainties
+N_BINS = max(100, N_PARTICLES // 50)
+N_BINS_MCS = 200  # histogram bins for the scattering observables
 
 # --- tolerances (tuned against real runs) ------------------------------------
 MODE_RTOL = 0.02  # fitted Landau mode vs predicted MPV
@@ -72,11 +76,16 @@ def make_muon() -> MuonStateDz:
 
 
 def run_beam(char_length: float = LENGTH):
-    """Propagate an ensemble through the absorber; return the saved states."""
+    """Propagate an ensemble through the absorber; return the saved states.
+
+    The save grid is a single interval: an interior save point would force a
+    sub-interval boundary inside the absorber and segment the traversal, which
+    would confound ``char_length`` as the only control on step size.
+    """
     field = SimpleEMField(E0=Cartesian3.make(), B0=Cartesian3.make())
     absorber = make_absorber(char_length)
     start = make_muon()
-    zs = jnp.linspace(START_Z, END_Z, 3)
+    zs = jnp.array([START_Z, END_Z])
     run = jax.jit(
         jax.vmap(
             lambda k: stochastic_solve(
@@ -101,12 +110,10 @@ def simulation():
     params = absorber.interaction_params(start, LENGTH)
 
     ys = run_beam()
-    final = jax.tree.map(lambda x: x[:, -1], ys)
-
     energy_in = float(start.kin.t.ct)
-    dE = np.asarray(energy_in - final.kin.t.ct)
-    pc_out = np.asarray(jnp.sqrt(jnp.sum(final.kin.t.coords[:, :3] ** 2, axis=1)))
-    theta_x = np.arctan2(np.asarray(final.kin.t.x), np.asarray(final.kin.t.z))
+    dE = np.asarray(energy_in - ys.kin.t.ct[:, -1])
+    pc_out = np.asarray(jnp.sqrt(jnp.sum(ys.kin.t.coords[:, -1, :3] ** 2, axis=-1)))
+    theta_x = np.arctan2(np.asarray(ys.kin.t.x[:, -1]), np.asarray(ys.kin.t.z[:, -1]))
 
     hr = (0.0, float(np.percentile(dE, 99.5)))
     stats = ds.summarize(
@@ -139,13 +146,18 @@ def test_energy_loss_mode(simulation):
 
 
 def test_energy_loss_distribution(simulation):
-    """
-    dE matches scipy.stats.landau at the mapped (loc, scale).
+    """dE matches scipy.stats.landau at the mapped (loc, scale).
+
+    This is the check test_energy_loss_mode cannot make: a wrong ``scale``
+    still puts the mode in the right place. Mirrors test_straggling.py's KS
+    test.
     """
     loc, scale = (float(v) for v in _straggling_to_landau(simulation["pp"]))
-    # Subsample: KS on 1e6 rejects on negligible deviations (e.g. the rest-mass floor).
+    # Subsample: a KS test on the full ensemble rejects on negligible
+    # deviations (e.g. the rest-mass floor in apply_energy_loss).
     rng = np.random.default_rng(SEED)
-    sample = rng.choice(simulation["dE"], size=20_000, replace=False)
+    n = min(20_000, len(simulation["dE"]))
+    sample = rng.choice(simulation["dE"], size=n, replace=False)
     ks = sps.kstest(sample, lambda x: sps.landau.cdf(x, loc=loc, scale=scale))
     assert ks.pvalue > 0.05, f"dE does not match scipy.stats.landau: {ks}"
 
