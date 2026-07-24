@@ -44,7 +44,7 @@ END_Z = 20.0 * u.mm
 N_PARTICLES = 1_000
 SEED = 42
 N_BOOT = 500  # bootstrap resamples for the uncertainties
-N_BINS = max(100, N_PARTICLES // 50)
+N_BINS = 2000  # histogram bins for the spectrum + Gaussian peak fit
 N_BINS_MCS = 200  # histogram bins for the scattering observables
 
 # --- tolerances (tuned against real runs) ------------------------------------
