@@ -16,18 +16,15 @@ from beamline.jax.kinematics import ParticleState
 from beamline.jax.types import SFloat
 
 
-def sample_scattering(state, key, material, thickness):
-    """Apply multiple scattering to a particle traversing `thickness`
-    of `material`. Returns (new_state, new_key).
+def sample_scattering[T: ParticleState](
+    state: T, key: Array, material: Material, thickness: SFloat
+) -> tuple[T, Array]:
+    """Apply multiple scattering to a particle traversing ``thickness`` of ``material``
 
-    The state's direction is rotated by small Gaussian angles in two
-    orthogonal planes. The transverse position is offset by the
-    correlated lateral displacement.
-
-    The thin-scatterer approximation assumes the particle's direction
-    is nearly along z; for steeply-incident tracks you'd want a more
-    careful treatment.
-    """
+    Returns ``(new_state, new_key)``. The direction is deflected by small
+    Gaussian angles in two orthogonal planes and the transverse position is
+    offset by the correlated lateral displacement. The deflection is applied
+    about the particle's current direction, so it is valid at any incidence."""
     theta0 = material.interaction_params(state, thickness).theta0
 
     # PDG eq. 34.16: in each plane, the angle and lateral offset are
