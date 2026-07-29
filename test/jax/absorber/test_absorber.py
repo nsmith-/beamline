@@ -41,7 +41,7 @@ RADIUS = 100.0 * u.mm
 LENGTH = 10.0 * u.mm
 START_Z = -20.0 * u.mm
 END_Z = 20.0 * u.mm
-N_PARTICLES = 1_000
+N_PARTICLES = 10_000
 SEED = 42
 N_BOOT = 500  # bootstrap resamples for the uncertainties
 N_BINS = 2000  # histogram bins for the spectrum + Gaussian peak fit
@@ -175,16 +175,20 @@ def _robust_sigma(a) -> float:
     return float(1.4826 * np.median(np.abs(a - np.median(a))))
 
 def test_scattering_angle(simulation):
-    """Bulk theta_x width matches Highland theta_0 for the full 10 mm.
+    """Bulk theta_x width vs single-application Highland theta_0 (10 mm).
 
-    Uses the MAD-based width, not std: the unbounded Landau tail lets a
-    sub-percent population dominate the variance (see test_scattering_tail)
-    without affecting the scattering physics.
+    The integrator segments the crossing into several PID-chosen sub-steps,
+    each taking an independent Highland kick. Per PDG 34.3 the per-segment
+    widths combine in quadrature systematically low relative to one application
+    over the full thickness. So the bulk
+    width is expected a few percent under theta0, not equal to it. (This is the
+    quadrature deficit, not the Landau tail -- that inflates std upward and is
+    covered by test_scattering_tail.)
     """
-    assert _robust_sigma(simulation["theta_x"]) == pytest.approx(
-        simulation["theta0"], rel=THETA0_RTOL
-    )
-
+    ratio = _robust_sigma(simulation["theta_x"]) / simulation["theta0"]
+    print(f"  bulk theta_x width / theta0(10mm) = {ratio:.4f}")
+    assert 0.88 < ratio < 1.02, f"bulk width / theta0(10mm) = {ratio:.4f}"
+ 
 def test_scattering_tail(simulation):
     """The unbounded Landau tail inflates the raw std above the bulk width.
 
@@ -193,7 +197,6 @@ def test_scattering_tail(simulation):
     """
     th = simulation["theta_x"]
     assert float(np.std(th)) > 1.5 * _robust_sigma(th)
-
 
 def test_summary_figure(simulation, artifacts_dir):
     """Render the three-panel validation figure into test_artifacts/."""
