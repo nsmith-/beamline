@@ -51,9 +51,6 @@ N_BINS_MCS = 200  # histogram bins for the scattering observables
 MODE_RTOL = 0.02  # fitted Landau mode vs predicted MPV
 THETA0_RTOL = 0.02  # empirical theta RMS vs Highland theta0
 
-# --- step lengths (for comparison) -------------------------------------------
-STUDY_CHAR_LENGTHS = [LENGTH, LENGTH / 2, LENGTH / 5, LENGTH / 10, LENGTH / 20, LENGTH / 40]
-
 
 def make_absorber(char_length: float = LENGTH) -> AbsorberCylinder:
     """A SiO2 disk centred at the origin, axis along z.
@@ -68,7 +65,6 @@ def make_absorber(char_length: float = LENGTH) -> AbsorberCylinder:
         char_length=char_length,
     )
 
-
 def make_muon() -> MuonStateDz:
     """A +1 muon on-axis upstream of the absorber, travelling along +z."""
     return MuonStateDz.make(
@@ -76,7 +72,6 @@ def make_muon() -> MuonStateDz:
         momentum=Cartesian3.make(z=BEAM_PC),
         q=1,
     )
-
 
 def run_beam(char_length: float = LENGTH):
     """Propagate an ensemble through the absorber; return the saved states.
