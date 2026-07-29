@@ -186,7 +186,7 @@ def test_scattering_angle(simulation):
     covered by test_scattering_tail.)
     """
     ratio = _robust_sigma(simulation["theta_x"]) / simulation["theta0"]
-    print(f"  bulk theta_x width / theta0(10mm) = {ratio:.4f}")
+    print(f"  bulk theta_x width / theta0(10mm) = {ratio:.4f}") # noqa: T201
     assert 0.88 < ratio < 1.02, f"bulk width / theta0(10mm) = {ratio:.4f}"
  
 def test_scattering_tail(simulation):
