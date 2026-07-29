@@ -66,6 +66,7 @@ def make_absorber(char_length: float = LENGTH) -> AbsorberCylinder:
         char_length=char_length,
     )
 
+
 def make_muon() -> MuonStateDz:
     """A +1 muon on-axis upstream of the absorber, travelling along +z."""
     return MuonStateDz.make(
@@ -73,6 +74,7 @@ def make_muon() -> MuonStateDz:
         momentum=Cartesian3.make(z=BEAM_PC),
         q=1,
     )
+
 
 def run_beam(char_length: float = LENGTH):
     """Propagate an ensemble through the absorber; return the saved states.
@@ -165,10 +167,12 @@ def test_momentum_is_degraded(simulation):
     """Passing through the absorber reduces the beam momentum."""
     assert simulation["pc_out"].mean() < simulation["pc_in"]
 
+
 def _robust_sigma(a) -> float:
     """Tail-insensitive sigma from the MAD (equals std for a clean Gaussian)."""
     a = np.asarray(a)
     return float(1.4826 * np.median(np.abs(a - np.median(a))))
+
 
 def test_scattering_angle(simulation):
     """Bulk theta_x width vs single-application Highland theta_0 (10 mm).
@@ -182,9 +186,10 @@ def test_scattering_angle(simulation):
     covered by test_scattering_tail.)
     """
     ratio = _robust_sigma(simulation["theta_x"]) / simulation["theta0"]
-    print(f"  bulk theta_x width / theta0(10mm) = {ratio:.4f}") # noqa: T201
+    print(f"  bulk theta_x width / theta0(10mm) = {ratio:.4f}")  # noqa: T201
     assert 0.88 < ratio < 1.02, f"bulk width / theta0(10mm) = {ratio:.4f}"
- 
+
+
 def test_scattering_tail(simulation):
     """The unbounded Landau tail inflates the raw std above the bulk width.
 
@@ -193,6 +198,7 @@ def test_scattering_tail(simulation):
     """
     th = simulation["theta_x"]
     assert float(np.std(th)) > 1.5 * _robust_sigma(th)
+
 
 def test_summary_figure(simulation, artifacts_dir):
     """Render the three-panel validation figure into test_artifacts/."""
