@@ -121,6 +121,7 @@ def apply_energy_loss[T: ParticleState](state: T, dE: SFloat) -> T:
     )
     return eqx.tree_at(lambda s: s.kin.t, state, Cartesian4(coords=new_coords))
 
+
 def _perp_basis(n: Cartesian3) -> tuple[Cartesian3, Cartesian3]:
     """Orthonormal (u, v) spanning the plane perpendicular to unit vector n
 
@@ -136,17 +137,15 @@ def _perp_basis(n: Cartesian3) -> tuple[Cartesian3, Cartesian3]:
     return u, n.cross(u)
 
 
-def apply_scattering[T: ParticleState](
-    state: T, theta_x: SFloat, theta_y: SFloat
-) -> T:
+def apply_scattering[T: ParticleState](state: T, theta_x: SFloat, theta_y: SFloat) -> T:
     """Deflect a particle by projected angles, conserving |p| and energy
 
     Rotates the momentum about an axis perpendicular to the particle's current
     direction, so it is correct at any incidence rather than assuming travel
     along z. Because that axis is perpendicular to the direction, Rodrigues'
     formula loses its axis (axis . n)(1 - cos) term and reduces to
-    n' = n cos(theta) + d sin(theta), preserving the momentum magnitude. 
-    Transform.make_axis_angle builds a 4x4 that is the identity in the energy 
+    n' = n cos(theta) + d sin(theta), preserving the momentum magnitude.
+    Transform.make_axis_angle builds a 4x4 that is the identity in the energy
     component, so E is untouched.
 
     The position is deliberately unchanged: the integrator propagates

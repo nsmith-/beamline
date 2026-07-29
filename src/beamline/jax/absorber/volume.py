@@ -17,7 +17,7 @@ from abc import abstractmethod
 import equinox as eqx
 import hepunits as u
 
-from beamline.jax.absorber.material import Material, InteractionParams
+from beamline.jax.absorber.material import InteractionParams, Material
 from beamline.jax.coordinates import Cartesian3, Tangent, Transform
 from beamline.jax.geometry import (
     CylinderVolume,
