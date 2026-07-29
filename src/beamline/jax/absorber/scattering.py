@@ -4,10 +4,10 @@ The Highland approximation: two independent Gaussian deflection angles in
 orthogonal planes containing the particle direction, each with RMS ``theta0``
 (PDG 34.16, 34.18).
 
-Only angles are sampled. The correlated lateral offset of PDG 34.22 IS NOT
-applied here: within ``stochastic_solve`` the integrator propagates position
-from the deflected direction, generating a displacement. Error can be measured
-against a full-length calculation later (?).
+Only angles are sampled. The correlated lateral offset of PDG 34.22 is not
+applied here: the integrator propagates position from the deflected direction
+and generates that displacement itself. The resulting quadrature deficit versus
+single-application Highland is characterised in test_absorber.py.
 """
 
 from __future__ import annotations
