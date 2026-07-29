@@ -4,12 +4,13 @@ Muon beam through a single SiO2 absorber.
   * energy loss     -- fitted Landau mode vs the predicted most-probable value
   * energy loss     -- dE matches scipy.stats.landau at the mapped (loc, scale)
   * momentum        -- outgoing |p| is degraded relative to the incoming beam
-  * scattering      -- empirical theta_x RMS vs the Highland theta_0 (PDG 34.16)
+  * scattering      -- bulk theta_x width vs Highland theta_0 (PDG 34.16, 34.3)
+  * scattering      -- raw std inflated by the unbounded Landau tail
 
 The beam is propagated with ``stochastic_solve``; all physics lives in the
-library. ``char_length`` controls how the traversal is segmented, and the
-default (one segment) corresponds to a single application of Highland over the
-full thickness.
+library. The integrator segments the crossing into several PID-chosen
+sub-steps, so the multiple-scattering width comes in a few percent under
+single-application Highland (the quadrature deficit, PDG 34.3).
 """
 
 import dist_stats as ds
@@ -53,10 +54,10 @@ THETA0_RTOL = 0.02  # empirical theta RMS vs Highland theta0
 
 
 def make_absorber(char_length: float = LENGTH) -> AbsorberCylinder:
-    """A SiO2 disk centred at the origin, axis along z.
+    """Propagate an ensemble through the absorber; return the saved states.
 
-    ``char_length`` caps the in-material step; the default gives a single
-    traversal step, i.e. one application of Highland over the full thickness.
+    The save grid is a single interval [START_Z, END_Z]: an interior save
+    point would force a sub-interval boundary inside the absorber.
     """
     return AbsorberCylinder(
         material=MATERIALS[MATERIAL],
