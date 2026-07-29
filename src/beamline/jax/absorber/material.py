@@ -58,6 +58,7 @@ class InteractionParams:
     Energy straggling (PDG 34.2.9) and multiple Coulomb scattering (PDG 34.3)
     for one traversal segment.
     """
+
     xi: SFloat
     """Landau's xi (the scaling of the dimensionless Landau parameter)"""
     kappa: SFloat
