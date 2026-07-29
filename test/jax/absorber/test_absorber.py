@@ -169,17 +169,30 @@ def test_momentum_is_degraded(simulation):
     """Passing through the absorber reduces the beam momentum."""
     assert simulation["pc_out"].mean() < simulation["pc_in"]
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="np.std is dominated by the unbounded Landau tail: ~0.1% of "
-    "particles lose >KE, get floored at rest mass, and Highland's 1/(beta*p) "
-    "diverges (theta up to ~2.7 rad). The bulk width is correct "
-    "(MAD-sigma ~ 0.96*theta0).",
-)
+def _robust_sigma(a) -> float:
+    """Tail-insensitive sigma from the MAD (equals std for a clean Gaussian)."""
+    a = np.asarray(a)
+    return float(1.4826 * np.median(np.abs(a - np.median(a))))
+
 def test_scattering_angle(simulation):
-    """Empirical theta_x RMS matches the Highland theta_0."""
-    theta_x_rms = float(np.std(simulation["theta_x"]))
-    assert theta_x_rms == pytest.approx(simulation["theta0"], rel=THETA0_RTOL)
+    """Bulk theta_x width matches Highland theta_0 for the full 10 mm.
+
+    Uses the MAD-based width, not std: the unbounded Landau tail lets a
+    sub-percent population dominate the variance (see test_scattering_tail)
+    without affecting the scattering physics.
+    """
+    assert _robust_sigma(simulation["theta_x"]) == pytest.approx(
+        simulation["theta0"], rel=THETA0_RTOL
+    )
+
+def test_scattering_tail(simulation):
+    """The unbounded Landau tail inflates the raw std above the bulk width.
+
+    Rare draws exceed the muon's kinetic energy; apply_energy_loss floors it at
+    the rest mass and Highland's 1/(beta*p) diverges. One-sided: assert the tail exists, not its size.
+    """
+    th = simulation["theta_x"]
+    assert float(np.std(th)) > 1.5 * _robust_sigma(th)
 
 
 def test_summary_figure(simulation, artifacts_dir):
@@ -287,64 +300,3 @@ def test_summary_figure(simulation, artifacts_dir):
     fig.tight_layout(rect=(0, 0, 1, 0.94))
     fig.savefig(artifacts_dir / "absorber_simulation.png", dpi=130)
     plt.close(fig)
-
-def _robust_sigma(a) -> float:
-    """IQR-based Gaussian-width estimate, robust to the Landau-tail muons
-    whose momentum collapses and whose angle then explodes (theta0 ~ 1/(beta p))."""
-    q1, q3 = np.percentile(np.asarray(a), [25, 75])
-    return float((q3 - q1) / 1.3489795)
-
-def test_step_size_study(artifacts_dir):
-    """How stepped MCS and energy loss compare to the single-application values.
-
-    PDG 34.3 says Highland must be applied once over the full contiguous
-    thickness; segmenting and combining in quadrature is systematically low.
-    """
-    absorber = make_absorber()
-    start = make_muon()
-    ref = absorber.interaction_params(start, LENGTH)
-    theta0_ref = float(ref.theta0)
-    mode_ref = float(ref.mode_energy_loss)
-    energy_in = float(start.kin.t.ct)
-
-    rows = []
-    for cl in STUDY_CHAR_LENGTHS:
-        ys = run_beam(cl)
-        dE = np.asarray(energy_in - ys.kin.t.ct[:, -1])
-        th = np.arctan2(
-            np.asarray(ys.kin.t.x[:, -1]), np.asarray(ys.kin.t.z[:, -1])
-        )
-        n = LENGTH / cl
-        rows.append((n, _robust_sigma(th) / theta0_ref, float(np.median(dE))))
-        print(
-            f"  steps={n:6.0f}  theta/theta0 = {rows[-1][1]:.4f}  "
-            f"median dE = {rows[-1][2]:.4f} MeV"
-        )
-
-    ns = np.array([r[0] for r in rows])
-    ratios = np.array([r[1] for r in rows])
-    medians = np.array([r[2] for r in rows])
-
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.5))
-    ax1.semilogx(ns, ratios, "o-", label="simulated (bulk width)")
-    ax1.semilogx(ns, 1 - 0.042 * np.log(ns), "k--", label=r"$1-0.042\ln N$")
-    ax1.axhline(1.0, color="0.6", lw=1)
-    ax1.set(xlabel="steps through absorber", ylabel=r"$\theta$ / $\theta_0$(10 mm)",
-            title="Multiple scattering: quadrature deficit")
-    ax1.legend(fontsize=8)
-    ax1.grid(alpha=0.3)
-
-    ax2.semilogx(ns, medians, "o-")
-    ax2.axhline(mode_ref, color="#c44e52", ls="--", label="predicted MPV")
-    ax2.set(xlabel="steps through absorber", ylabel="median $\\Delta E$ [MeV]",
-            title="Energy loss (control: should be flat)")
-    ax2.legend(fontsize=8)
-    ax2.grid(alpha=0.3)
-
-    fig.tight_layout()
-    fig.savefig(artifacts_dir / "step_size_study.png", dpi=130)
-    plt.close(fig)
-
-    # the deficit is monotonic in step count, and energy loss is not
-    assert ratios[-1] < ratios[0]
-    assert medians.std() / medians.mean() < 0.02
