@@ -53,8 +53,11 @@ class DensityCorrection:
 
 @dataclass(frozen=True)
 class InteractionParams:
-    """Compute interaction parameters for a given particle and thickness"""
+    """Parameters of a particle's stochastic interaction with material
 
+    Energy straggling (PDG 34.2.9) and multiple Coulomb scattering (PDG 34.3)
+    for one traversal segment.
+    """
     xi: SFloat
     """Landau's xi (the scaling of the dimensionless Landau parameter)"""
     kappa: SFloat
@@ -144,7 +147,7 @@ class Material:
     def interaction_params(
         self, particle: IncidentParticle, thickness: SFloat
     ) -> InteractionParams:
-        """Compute straggling parameters for a given particle and thickness"""
+        """Compute interaction parameters for a given particle and thickness"""
 
         beta, gamma = particle.beta(), particle.gamma()
         mass_ratio = ELECTRON_MASS * u.c_light_sq / particle.mass
@@ -181,7 +184,7 @@ class Material:
             beta**2 + jnp.log(kappa) + 0.20005183774398613
         )
         # protocol-safe momentum: p = beta * gamma * m
-        momentum = beta * particle.gamma() * particle.mass
+        momentum = beta * gamma * particle.mass
         z = particle.charge
         x_over_X0 = thickness * self.density / self.radiation_length
         theta0 = (
