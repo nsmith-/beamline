@@ -124,9 +124,6 @@ def apply_energy_loss[T: ParticleState](state: T, dE: SFloat) -> T:
 
 def _perp_basis(n: Cartesian3) -> tuple[Cartesian3, Cartesian3]:
     """Orthonormal (u, v) spanning the plane perpendicular to unit vector n
-
-    The two sampled angles are ind. with equal width, so the deflection is
-    rotationally symmetric about n.
     """
     near_z = jnp.abs(n.z) >= 0.9
     ref = Cartesian3.make(
@@ -137,7 +134,9 @@ def _perp_basis(n: Cartesian3) -> tuple[Cartesian3, Cartesian3]:
     return u, n.cross(u)
 
 
-def apply_scattering[T: ParticleState](state: T, theta_x: SFloat, theta_y: SFloat) -> T:
+def apply_scattering[T: ParticleState](
+    state: T, theta_x: SFloat, theta_y: SFloat, y_x: SFloat, y_y: SFloat
+) -> T:
     """Deflect a particle by projected angles, conserving |p| and energy
 
     Rotates the momentum about an axis perpendicular to the particle's current
@@ -156,13 +155,15 @@ def apply_scattering[T: ParticleState](state: T, theta_x: SFloat, theta_y: SFloa
     pmag = abs(p3)
     n = p3 * (1.0 / jnp.where(pmag > 0.0, pmag, 1.0))
     u, v = _perp_basis(n)
-    theta = jnp.sqrt(theta_x**2 + theta_y**2)
-    axis_raw = v * theta_x - u * theta_y
-    # At theta == 0 the rotation is the identity for any axis; substitute u so
-    # 1/abs(axis) stays finite. Zero angles occur whenever no kick is applied.
-    axis = Cartesian3(coords=jnp.where(theta > 0.0, axis_raw.coords, u.coords))
-    rotation = Transform.make_axis_angle(axis, theta, Cartesian4.make())
-    return eqx.tree_at(lambda s: s.kin.t, state, rotation.to_global(state.kin.t))
+    rotated = eqx.tree_at(lambda s: s.kin.t, state, rotation.to_global(state.kin.t))
+    offset = u * y_x + v * y_y
+    new_pos = Cartesian4.make(
+        x=rotated.kin.p.x + offset.x,
+        y=rotated.kin.p.y + offset.y,
+        z=rotated.kin.p.z + offset.z,
+        ct=rotated.kin.p.ct,
+    )
+    return eqx.tree_at(lambda s: s.kin.p, rotated, new_pos)
 
 
 def _combined_sdf(
