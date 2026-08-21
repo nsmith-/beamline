@@ -80,8 +80,9 @@ class InteractionParams:
     mode_energy_loss: SFloat
     """Most probable energy loss"""
     theta0: SFloat
-    """RMS projected (plane) scattering angle [rad] (Highland, PDG 34.16)
-
+    """RMS projected (plane) scattering angle [rad] (Highland, PDG 34.16)"""
+    thickness: SFloat
+    """Path length of material traversed in this segment [mm]
     The two projected planes are independent and identically distributed
     (PDG 34.18); the space angle is sqrt(2) * theta0 (PDG 34.15).
     """
@@ -200,6 +201,7 @@ class Material:
             mean_energy_loss=mean_energy_loss,
             mode_energy_loss=mode_energy_loss,
             theta0=theta0,
+            thickness=thickness
         )
 
 
