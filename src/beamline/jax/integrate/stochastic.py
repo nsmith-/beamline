@@ -137,24 +137,18 @@ def _perp_basis(n: Cartesian3) -> tuple[Cartesian3, Cartesian3]:
 def apply_scattering[T: ParticleState](
     state: T, theta_x: SFloat, theta_y: SFloat, y_x: SFloat, y_y: SFloat
 ) -> T:
-    """Deflect a particle by projected angles, conserving |p| and energy
-
-    Rotates the momentum about an axis perpendicular to the particle's current
-    direction, so it is correct at any incidence rather than assuming travel
-    along z. Because that axis is perpendicular to the direction, Rodrigues'
-    formula loses its axis (axis . n)(1 - cos) term and reduces to
-    n' = n cos(theta) + d sin(theta), preserving the momentum magnitude.
-    Transform.make_axis_angle builds a 4x4 that is the identity in the energy
-    component, so E is untouched.
-
-    The position is deliberately unchanged: the integrator propagates
-    position from the deflected direction, generating the correlated lateral
-    displacement of PDG 34.22 itself. This is a state update.
+    """The in-material lateral offset is applied in the same (u, v)
+    basis as the angles, so the per-plane angle/offset correlation (rho =
+    sqrt(3)/2) is preserved.
     """
     p3 = Cartesian3(coords=state.kin.t.coords[..., :3])
     pmag = abs(p3)
     n = p3 * (1.0 / jnp.where(pmag > 0.0, pmag, 1.0))
     u, v = _perp_basis(n)
+    theta = jnp.sqrt(theta_x**2 + theta_y**2)
+    axis_raw = v * theta_x - u * theta_y
+    axis = Cartesian3(coords=jnp.where(theta > 0.0, axis_raw.coords, u.coords))
+    rotation = Transform.make_axis_angle(axis, theta, Cartesian4.make())
     rotated = eqx.tree_at(lambda s: s.kin.t, state, rotation.to_global(state.kin.t))
     offset = u * y_x + v * y_y
     new_pos = Cartesian4.make(
@@ -196,7 +190,9 @@ def stochastic_solve[T: ParticleState](
     sampler: Callable[
         [InteractionParams, Array], tuple[SFloat, SFloat]
     ] = dummy_energy_loss_sampler,
-    scattering_sampler: Callable[[InteractionParams, Array], tuple[SFloat, SFloat]]
+    scattering_sampler: Callable[
+        [InteractionParams, Array], tuple[SFloat, SFloat, SFloat, SFloat]
+    ]
     | None = None,
     forward_mode: bool = False,
     rtol: float = 1e-5,
@@ -358,12 +354,19 @@ def stochastic_solve[T: ParticleState](
         y_new = apply_energy_loss(y_kept, dE)
         if scattering_sampler is not None:
             key, subkey = jr.split(key)
-            theta_x_raw, theta_y_raw = scattering_sampler(params, subkey)
-            y_new = apply_scattering(
+            theta_x_raw, theta_y_raw, y_x_raw, y_y_raw = scattering_sampler(
+                params, subkey
+            )
+            y_kicked = apply_scattering(
                 y_new,
                 jnp.where(kick_applied, theta_x_raw, 0.0),
                 jnp.where(kick_applied, theta_y_raw, 0.0),
+                jnp.where(kick_applied, y_x_raw, 0.0),
+                jnp.where(kick_applied, y_y_raw, 0.0),
             )
+            # TODO(review): the 34.22 offset can push the position outside the
+            # volume boundary.
+            y_new = y_kicked
 
         # A kick perturbs y, so the solver's cached (FSAL) derivative is stale:
         # signal a jump so it is recomputed next step.
