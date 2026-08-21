@@ -54,10 +54,7 @@ THETA0_RTOL = 0.02  # empirical theta RMS vs Highland theta0
 
 
 def make_absorber(char_length: float = LENGTH) -> AbsorberCylinder:
-    """Propagate an ensemble through the absorber; return the saved states.
-
-    The save grid is a single interval [START_Z, END_Z]: an interior save
-    point would force a sub-interval boundary inside the absorber.
+    """A SiO2 disk centred at the origin, axis along z; char_length caps the in-material step.
     """
     return AbsorberCylinder(
         material=MATERIALS[MATERIAL],
@@ -66,51 +63,44 @@ def make_absorber(char_length: float = LENGTH) -> AbsorberCylinder:
         char_length=char_length,
     )
 
-
 def make_muon() -> MuonStateDz:
-    """A +1 muon on-axis upstream of the absorber, travelling along +z."""
+    """A +1 muon on-axis upstream of the absorber, travelling along +z.
+    """
     return MuonStateDz.make(
         position=Cartesian4.make(z=START_Z),
         momentum=Cartesian3.make(z=BEAM_PC),
         q=1,
     )
 
+def run_beam(absorber, start):
+    """Propagate an ensemble through ``absorber``; return the saved states.
 
-def run_beam(char_length: float = LENGTH):
-    """Propagate an ensemble through the absorber; return the saved states.
-
-    The save grid is a single interval: an interior save point would force a
-    sub-interval boundary inside the absorber and segment the traversal, which
-    would confound ``char_length`` as the only control on step size.
+    Single-interval save grid [START_Z, END_Z]: an interior save point would
+    force a sub-interval boundary inside the absorber and segment the traversal.
     """
     field = SimpleEMField(E0=Cartesian3.make(), B0=Cartesian3.make())
-    absorber = make_absorber(char_length)
-    start = make_muon()
     zs = jnp.array([START_Z, END_Z])
     run = jax.jit(
         jax.vmap(
             lambda k: stochastic_solve(
-                field,
-                absorber,
-                start,
-                zs,
-                k,
+                field, absorber, start, zs, k,
                 sampler=landau_energy_loss_sampler,
                 scattering_sampler=highland_scattering_sampler,
             )[0]
         )
     )
     return run(jr.split(jr.key(SEED), N_PARTICLES))
-
+ 
 
 @pytest.fixture(scope="module")
 def simulation():
-    """Run the beam once and expose observables + predictions to all tests."""
+    """Run the beam once and expose observables + predictions to all tests.
+    """
     absorber = make_absorber()
     start = make_muon()
     params = absorber.interaction_params(start, LENGTH)
 
-    ys = run_beam()
+    ys = run_beam(absorber, start)
     energy_in = float(start.kin.t.ct)
     dE = np.asarray(energy_in - ys.kin.t.ct[:, -1])
     pc_out = np.asarray(jnp.sqrt(jnp.sum(ys.kin.t.coords[:, -1, :3] ** 2, axis=-1)))
@@ -140,7 +130,8 @@ def simulation():
 
 
 def test_energy_loss_mode(simulation):
-    """The fitted Landau peak matches the predicted most-probable energy loss."""
+    """The fitted Landau peak matches the predicted most-probable energy loss.
+    """
     fitted_mode = simulation["stats"]["mode"]
     predicted_mode = float(simulation["pp"].mode_energy_loss)
     assert fitted_mode == pytest.approx(predicted_mode, rel=MODE_RTOL)
@@ -149,9 +140,7 @@ def test_energy_loss_mode(simulation):
 def test_energy_loss_distribution(simulation):
     """dE matches scipy.stats.landau at the mapped (loc, scale).
 
-    This is the check test_energy_loss_mode cannot make: a wrong ``scale``
-    still puts the mode in the right place. Mirrors test_straggling.py's KS
-    test.
+    Mirrors test_straggling.py's KS test.
     """
     loc, scale = (float(v) for v in _straggling_to_landau(simulation["pp"]))
     # Subsample: a KS test on the full ensemble rejects on negligible
@@ -164,12 +153,14 @@ def test_energy_loss_distribution(simulation):
 
 
 def test_momentum_is_degraded(simulation):
-    """Passing through the absorber reduces the beam momentum."""
+    """Passing through the absorber reduces the beam momentum.
+    """
     assert simulation["pc_out"].mean() < simulation["pc_in"]
 
 
 def _robust_sigma(a) -> float:
-    """Tail-insensitive sigma from the MAD (equals std for a clean Gaussian)."""
+    """Tail-insensitive sigma from the MAD (equals std for a Gaussian).
+    """
     a = np.asarray(a)
     return float(1.4826 * np.median(np.abs(a - np.median(a))))
 
@@ -180,10 +171,7 @@ def test_scattering_angle(simulation):
     The integrator segments the crossing into several PID-chosen sub-steps,
     each taking an independent Highland kick. Per PDG 34.3 the per-segment
     widths combine in quadrature systematically low relative to one application
-    over the full thickness. So the bulk
-    width is expected a few percent under theta0, not equal to it. (This is the
-    quadrature deficit, not the Landau tail -- that inflates std upward and is
-    covered by test_scattering_tail.)
+    over the full thickness.
     """
     ratio = _robust_sigma(simulation["theta_x"]) / simulation["theta0"]
     print(f"  bulk theta_x width / theta0(10mm) = {ratio:.4f}")  # noqa: T201
@@ -201,7 +189,8 @@ def test_scattering_tail(simulation):
 
 
 def test_summary_figure(simulation, artifacts_dir):
-    """Render the three-panel validation figure into test_artifacts/."""
+    """Render the three-panel validation figure into test_artifacts/.
+    """
     s = simulation
     dE, pc_out, theta_x = s["dE"], s["pc_out"], s["theta_x"]
     theta0 = s["theta0"]
