@@ -146,7 +146,7 @@ def test_landau_sampler_gradients():
     g_thickness = jax.grad(lambda t: mean_dE(mk(t, pz0)))(t0)
     g_pz = jax.grad(lambda p: mean_dE(mk(t0, p)))(pz0)
     assert jnp.isfinite(g_thickness)
-    assert jnp.isfinite(g_pz)
+    assert jnp.isfinite(g_pz) 
 
     def wg_weighted_observable(thickness):
         params = mk(thickness, pz0)

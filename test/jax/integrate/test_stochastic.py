@@ -165,7 +165,7 @@ def _weighted_mean_final_energy(pz, sampler, n=256):
 
     def one(k):
         ys, stats = stochastic_solve(field, absorber, start, zs, k, sampler=sampler)
-        return ys.kin.t.ct[-1], stats["log_weight"]
+        return ys.kin.t.ct[-1], ys.log_weight[-1]
 
     energy_final, log_weight = jax.vmap(one)(jr.split(jr.key(2), n))
     weights = jnp.exp(log_weight - logsumexp(log_weight))

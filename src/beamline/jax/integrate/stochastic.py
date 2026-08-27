@@ -273,7 +273,6 @@ def stochastic_solve[T: ParticleState](
             controller_state,
             made_jump,
             key,
-            log_weight,
             num_steps,
             num_accepted,
         ) = carry
@@ -350,8 +349,12 @@ def stochastic_solve[T: ParticleState](
         dE = jnp.where(kick_applied, dE_raw, 0.0)
         # Accumulate the importance log-weight (outside any stop_gradient: the
         # weight-gradient estimator's gradient must flow through it).
-        log_weight = log_weight + jnp.where(kick_applied, logw_raw, 0.0)
         y_new = apply_energy_loss(y_kept, dE)
+        y_new = eqx.tree_at(
+            lambda s: s.log_weight,
+            y_new,
+            y_new.log_weight + jnp.where(kick_applied, logw_raw, 0.0),
+        )
         if scattering_sampler is not None:
             key, subkey = jr.split(key)
             theta_x_raw, theta_y_raw, y_x_raw, y_y_raw = scattering_sampler(
@@ -408,7 +411,6 @@ def stochastic_solve[T: ParticleState](
             controller_state,
             made_jump,
             key,
-            log_weight,
             num_steps + 1,
             num_accepted + jnp.where(keep_step, 1, 0),
         )
@@ -427,7 +429,7 @@ def stochastic_solve[T: ParticleState](
             kind=kind,
         )
         y = carry[2]
-        return carry, (y.kin.p.coords, y.kin.t.coords)
+        return carry, (y.kin.p.coords, y.kin.t.coords, y.log_weight)
 
     init_carry = (
         t0,
@@ -437,23 +439,27 @@ def stochastic_solve[T: ParticleState](
         controller_state,
         jnp.array(False),
         key,
-        jnp.array(0.0),
         jnp.array(0),
         jnp.array(0),
     )
-    final_carry, (saved_p, saved_t) = lax.scan(integrate_interval, init_carry, cts[1:])
+    final_carry, (saved_p, saved_t, saved_w) = lax.scan(
+        integrate_interval, init_carry, cts[1:]
+    )
 
     # Prepend the start state (at cts[0]) to the per-interval endpoints.
     save_p = jnp.concatenate([start.kin.p.coords[None], saved_p], axis=0)
     save_t = jnp.concatenate([start.kin.t.coords[None], saved_t], axis=0)
+    save_w = jnp.concatenate([jnp.asarray(start.log_weight)[None], saved_w], axis=0)
     ys = type(start)(
         kin=Tangent(p=Cartesian4(coords=save_p), t=Cartesian4(coords=save_t)),
         q=start.q,
+        log_weight=save_w,
     )
+    final_state = final_carry[2]
     stats = {
-        "log_weight": final_carry[7],
-        "num_steps": final_carry[8],
-        "num_accepted_steps": final_carry[9],
-        "num_rejected_steps": final_carry[8] - final_carry[9],
+        "log_weight": final_state.log_weight,
+        "num_steps": final_carry[7],
+        "num_accepted_steps": final_carry[8],
+        "num_rejected_steps": final_carry[7] - final_carry[8],
     }
     return ys, stats
