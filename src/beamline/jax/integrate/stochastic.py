@@ -50,13 +50,12 @@ the physics, while the numerical step-size control is wrapped in
 tolerance, independent of).
 
 TODO: a lot of the body of stochastic_solve is diffrax boilerplate, try to factorize
-TODO: refactor apply_energy_loss to a general kick (scattering)
 """
 
 import functools
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import partial
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 import equinox as eqx
 import equinox.internal as eqxi
@@ -68,7 +67,6 @@ from diffrax import Dopri5, ODETerm, PIDController
 from jax import Array, lax
 
 from beamline.jax.absorber.material import InteractionParams
-from beamline.jax.absorber.straggling import dummy_energy_loss_sampler
 from beamline.jax.absorber.volume import MaterialVolume
 from beamline.jax.coordinates import Cartesian3, Cartesian4, Tangent, Transform
 from beamline.jax.emfield import EMTensorField
@@ -159,6 +157,48 @@ def apply_scattering[T: ParticleState](
     )
     return eqx.tree_at(lambda s: s.kin.p, rotated, new_pos)
 
+class StochasticKick(Protocol):
+    """A stochastic interaction applied over one traversed segment.
+
+    Composes sampling and application into one (state, params, key) -> state
+    call. Kicks apply unconditionally; the solver gates whether the result
+    takes effect (real in-material accepted steps only). Weight-carrying kicks
+    accumulate into state.log_weight.
+    """
+
+    def __call__(
+        self, state: ParticleState, params: InteractionParams, key: Array
+    ) -> ParticleState: ...
+
+
+def energy_loss_kick_factory(
+    sampler: Callable[[InteractionParams, Array], tuple[SFloat, SFloat]],
+) -> StochasticKick:
+    """Build an energy-loss kick from an energy-loss sampler."""
+
+    def kick[T: ParticleState](state: T, params: InteractionParams, key: Array) -> T:
+        dE, logw = sampler(params, key)
+        state = apply_energy_loss(state, dE)
+        return eqx.tree_at(
+            lambda s: s.log_weight, state, state.log_weight + logw
+        )
+
+    return kick
+
+
+def scattering_kick_factory(
+    sampler: Callable[
+        [InteractionParams, Array], tuple[SFloat, SFloat, SFloat, SFloat]
+    ],
+) -> StochasticKick:
+    """Build a multiple-scattering kick from a scattering sampler."""
+
+    def kick[T: ParticleState](state: T, params: InteractionParams, key: Array) -> T:
+        tx, ty, yx, yy = sampler(params, key)
+        return apply_scattering(state, tx, ty, yx, yy)
+
+    return kick
+
 
 def _combined_sdf(
     field: EMTensorField, material: MaterialVolume, state: ParticleState
@@ -187,13 +227,7 @@ def stochastic_solve[T: ParticleState](
     cts: Array,
     key: Array,
     *,
-    sampler: Callable[
-        [InteractionParams, Array], tuple[SFloat, SFloat]
-    ] = dummy_energy_loss_sampler,
-    scattering_sampler: Callable[
-        [InteractionParams, Array], tuple[SFloat, SFloat, SFloat, SFloat]
-    ]
-    | None = None,
+    kicks: Sequence[StochasticKick] = (),
     forward_mode: bool = False,
     rtol: float = 1e-5,
     atol: float = 1e-7,
@@ -210,18 +244,11 @@ def stochastic_solve[T: ParticleState](
             is the start and ``cts[-1]`` the end of integration. Consecutive
             points define the integration sub-intervals.
         key: A JAX PRNG key (``vmap`` a batch of keys for an ensemble).
-        sampler: Energy-loss sampler ``(InteractionParams, key) -> (dE, log_w)``;
-            pass ``landau_energy_loss_sampler`` (value/pathwise gradients) or
-            ``landau_energy_loss_sampler_wg`` (weight/score-function gradients).
-            The per-step ``log_w`` is accumulated and returned as
-            ``stats["log_weight"]`` (0 for the value-gradient samplers); under an
-            ensemble ``vmap`` the weighted estimator is ``sum(w f) / sum(w)`` with
-            ``w = exp(log_weight)``.
-        scattering_sampler: multiple-scattering sampler
-            ``(InteractionParams, key) -> (theta_x, theta_y)``; pass
-            ``highland_scattering_sampler`` to enable multiple Coulomb
-            scattering. ``None`` (the default) applies no angular kick, which
-            preserves the previous behaviour.
+        kicks: Sequence of StochasticKick to apply each accepted in-material
+            substep, in order. Each is ``(state, params, key) -> state`` and
+            self-gates on ``params.thickness``. Build them with
+            ``energy_loss_kick_factory`` / ``scattering_kick_factory``. Empty
+            (the default) means only deterministic propagation.
         forward_mode: If True, configure the solver for forward-mode autodiff
             (``jax.jvp`` / ``jax.jacfwd``); otherwise (default) reverse-mode
             (``jax.grad`` / ``jax.jacrev``). See the module docstring.
@@ -340,36 +367,20 @@ def stochastic_solve[T: ParticleState](
             ),
         )
         kick_applied = keep_step & (thickness > 0.0)
-
-        # when thickness == 0.0, substitute gradient-friendly value to prevent NaNs
         thickness = jnp.where(thickness == 0.0, 1.0, thickness)
         params = material.interaction_params(y_kept, thickness)
-        key, subkey = jr.split(key)
-        dE_raw, logw_raw = sampler(params, subkey)
-        dE = jnp.where(kick_applied, dE_raw, 0.0)
-        # Accumulate the importance log-weight (outside any stop_gradient: the
-        # weight-gradient estimator's gradient must flow through it).
-        y_new = apply_energy_loss(y_kept, dE)
-        y_new = eqx.tree_at(
-            lambda s: s.log_weight,
-            y_new,
-            y_new.log_weight + jnp.where(kick_applied, logw_raw, 0.0),
-        )
-        if scattering_sampler is not None:
+
+        y_new = y_kept
+        for kick in kicks:
             key, subkey = jr.split(key)
-            theta_x_raw, theta_y_raw, y_x_raw, y_y_raw = scattering_sampler(
-                params, subkey
-            )
-            y_kicked = apply_scattering(
-                y_new,
-                jnp.where(kick_applied, theta_x_raw, 0.0),
-                jnp.where(kick_applied, theta_y_raw, 0.0),
-                jnp.where(kick_applied, y_x_raw, 0.0),
-                jnp.where(kick_applied, y_y_raw, 0.0),
-            )
-            # TODO(review): the 34.22 offset can push the position outside the
-            # volume boundary.
-            y_new = y_kicked
+            y_new = kick(y_new, params, subkey)
+
+        # Gate the whole kick on a real, accepted, in-material step (kick_applied
+        # already includes keep_step, so rejected steps revert here too). This
+        # also reverts log_weight accumulation outside material.
+        y_new = jax.tree.map(
+            lambda a, b: jnp.where(kick_applied, a, b), y_new, y_kept
+        )
 
         # A kick perturbs y, so the solver's cached (FSAL) derivative is stale:
         # signal a jump so it is recomputed next step.
@@ -379,28 +390,18 @@ def stochastic_solve[T: ParticleState](
         tnext_out = jnp.where(keep_step, tnext_next, tnext)
 
         if debug:
-            # _probe_tangent is a pass-through for the primal; in forward-mode AD
-            # it also prints the JVP tangent, letting us verify whether thickness
-            # and dE_raw carry gradients from upstream geometry parameters.
+            # _probe_tangent prints the JVP tangent in forward-mode AD, to verify
+            # whether thickness carries a gradient from upstream geometry params.
             thick_p = _probe_tangent(thickness, "thick")
-            dE_raw_p = _probe_tangent(dE_raw, "dE_raw")
             sdf_val = _combined_sdf(field, material, y_new)
             jax.debug.print(
                 "substep: [{tprev}, {tnext_eff}] -> [{tprev_out}, {tnext_out}]"
-                "  keep={keep} sdf0={sdf0} sdf1={sdf1} kick={kick}"
-                "  thick={thick} dE_raw={dE_raw} dE={dE} sdf={sdf}",
-                tprev=tprev,
-                tnext_eff=tnext_eff,
-                tprev_out=tprev_out,
-                tnext_out=tnext_out,
-                keep=keep_step,
-                sdf0=sdf0,
-                sdf1=sdf1,
-                kick=kick_applied,
-                thick=thick_p,
-                dE_raw=dE_raw_p,
-                dE=dE,
-                sdf=sdf_val,
+                "  keep={keep} sdf0={sdf0} sdf1={sdf1} kicked={kicked}"
+                "  thick={thick} sdf={sdf}",
+                tprev=tprev, tnext_eff=tnext_eff,
+                tprev_out=tprev_out, tnext_out=tnext_out,
+                keep=keep_step, sdf0=sdf0, sdf1=sdf1,
+                kicked=kick_applied, thick=thick_p, sdf=sdf_val,
             )
 
         return (

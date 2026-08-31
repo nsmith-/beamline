@@ -32,7 +32,11 @@ from beamline.jax.absorber.straggling import (
 from beamline.jax.absorber.volume import AbsorberCylinder
 from beamline.jax.coordinates import Cartesian3, Cartesian4
 from beamline.jax.emfield import SimpleEMField
-from beamline.jax.integrate.stochastic import stochastic_solve
+from beamline.jax.integrate.stochastic import (
+    energy_loss_kick_factory,
+    scattering_kick_factory,
+    stochastic_solve,
+)
 from beamline.jax.kinematics import MuonStateDz
 
 # --- configuration -----------------------------------------------------------
@@ -80,14 +84,12 @@ def run_beam(absorber, start):
     """
     field = SimpleEMField(E0=Cartesian3.make(), B0=Cartesian3.make())
     zs = jnp.array([START_Z, END_Z])
+    kicks = [
+        energy_loss_kick_factory(landau_energy_loss_sampler),
+        scattering_kick_factory(highland_scattering_sampler),
+    ]
     run = jax.jit(
-        jax.vmap(
-            lambda k: stochastic_solve(
-                field, absorber, start, zs, k,
-                sampler=landau_energy_loss_sampler,
-                scattering_sampler=highland_scattering_sampler,
-            )[0]
-        )
+        jax.vmap(lambda k: stochastic_solve(field, absorber, start, zs, k, kicks=kicks)[0])
     )
     return run(jr.split(jr.key(SEED), N_PARTICLES))
  
