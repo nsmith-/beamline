@@ -24,7 +24,7 @@ from beamline.jax.absorber.volume import AbsorberCylinder
 from beamline.jax.coordinates import Cartesian3, Cartesian4
 from beamline.jax.emfield import SimpleEMField
 from beamline.jax.integrate.stochastic import (
-    energy_loss_kick_factory,
+    StochasticKick,
     stochastic_solve,
 )
 from beamline.jax.kinematics import MuonStateDz
@@ -70,7 +70,7 @@ def test_stochastic_propagation(artifacts_dir):
         jax.vmap(
             lambda k: stochastic_solve(
                 field, absorber, start, zs, k,
-                kicks=[energy_loss_kick_factory(dummy_energy_loss_sampler)],
+                kick=StochasticKick(straggling=dummy_energy_loss_sampler),
             )[0]
         )
     )
@@ -94,7 +94,7 @@ def test_stochastic_propagation(artifacts_dir):
     miss, _ = jax.jit(
         lambda s, k: stochastic_solve(
             field, absorber, s, zs, k,
-            kicks=[energy_loss_kick_factory(dummy_energy_loss_sampler)],
+            kick=StochasticKick(straggling=dummy_energy_loss_sampler),
         )
     )(make_muon(x=200.0 * u.mm), jr.key(1))
     assert float(miss.kin.t.ct[-1]) == pytest.approx(energy_initial, rel=1e-9)
@@ -131,7 +131,7 @@ def _mean_final_energy(forward_mode, pz):
         lambda k: stochastic_solve(
             field, absorber, start, zs, k,
             forward_mode=forward_mode,
-            kicks=[energy_loss_kick_factory(dummy_energy_loss_sampler)],
+            kick=StochasticKick(straggling=landau_energy_loss_sampler),
         )[0]
     )(jr.split(jr.key(1), 256))
     return jnp.mean(ys.kin.t.ct[:, -1])
@@ -180,7 +180,7 @@ def _weighted_mean_final_energy(pz, sampler, n=256):
     def one(k):
         ys, _ = stochastic_solve(
           field, absorber, start, zs, k,
-          kicks=[energy_loss_kick_factory(sampler)],
+          kick=StochasticKick(straggling=sampler),
         )
         return ys.kin.t.ct[-1], ys.log_weight[-1]
 
@@ -216,7 +216,7 @@ def test_stochastic_weight_plumbing():
             make_muon(pz0),
             _save_grid(),
             k,
-            kicks=[energy_loss_kick_factory(landau_energy_loss_sampler_wg)],
+            kick=StochasticKick(straggling=landau_energy_loss_sampler_wg),
         )
     )(jr.split(jr.key(2), 256))
     assert "log_weight" in stats

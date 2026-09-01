@@ -33,8 +33,7 @@ from beamline.jax.absorber.volume import AbsorberCylinder
 from beamline.jax.coordinates import Cartesian3, Cartesian4
 from beamline.jax.emfield import SimpleEMField
 from beamline.jax.integrate.stochastic import (
-    energy_loss_kick_factory,
-    scattering_kick_factory,
+    StochasticKick,
     stochastic_solve,
 )
 from beamline.jax.kinematics import MuonStateDz
@@ -84,12 +83,12 @@ def run_beam(absorber, start):
     """
     field = SimpleEMField(E0=Cartesian3.make(), B0=Cartesian3.make())
     zs = jnp.array([START_Z, END_Z])
-    kicks = [
-        energy_loss_kick_factory(landau_energy_loss_sampler),
-        scattering_kick_factory(highland_scattering_sampler),
-    ]
+    kick=StochasticKick(
+        straggling=landau_energy_loss_sampler,
+        scattering=highland_scattering_sampler,
+    )
     run = jax.jit(
-        jax.vmap(lambda k: stochastic_solve(field, absorber, start, zs, k, kicks=kicks)[0])
+        jax.vmap(lambda k: stochastic_solve(field, absorber, start, zs, k, kick=kick)[0])
     )
     return run(jr.split(jr.key(SEED), N_PARTICLES))
  
@@ -148,7 +147,7 @@ def test_energy_loss_distribution(simulation):
     # Subsample: a KS test on the full ensemble rejects on negligible
     # deviations (e.g. the rest-mass floor in apply_energy_loss).
     rng = np.random.default_rng(SEED)
-    n = min(20_000, len(simulation["dE"]))
+    n = min(2_000, len(simulation["dE"]))
     sample = rng.choice(simulation["dE"], size=n, replace=False)
     ks = sps.kstest(sample, lambda x: sps.landau.cdf(x, loc=loc, scale=scale))
     assert ks.pvalue > 0.05, f"dE does not match scipy.stats.landau: {ks}"

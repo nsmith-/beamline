@@ -27,7 +27,7 @@ from beamline.jax.absorber.volume import AbsorberCylinder, TransformMaterialVolu
 from beamline.jax.coordinates import Cartesian3, Cartesian4, Transform
 from beamline.jax.emfield import SimpleEMField
 from beamline.jax.integrate.stochastic import (
-    energy_loss_kick_factory,
+    StochasticKick,
     stochastic_solve,
 )
 from beamline.jax.kinematics import MuonStateDz
@@ -102,7 +102,7 @@ def _batch_pz(
             start,
             zs,
             key,
-            kicks=[energy_loss_kick_factory(landau_energy_loss_sampler)],
+            kick=StochasticKick(straggling=landau_energy_loss_sampler),
             forward_mode=forward_mode,
             debug=debug,
         )

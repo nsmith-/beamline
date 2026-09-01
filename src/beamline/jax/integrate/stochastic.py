@@ -1,8 +1,8 @@
 """Stochastic muon propagation via operator splitting
 
 This is a worked example of propagating a muon through electromagnetic fields
-*and* material, where the material adds stochastic effects (energy straggling
-now, multiple scattering later). As with ``diffrax_solve`` in ``propagate.py``,
+*and* material, where the material adds stochastic effects. 
+As with ``diffrax_solve`` in ``propagate.py``,
 you will probably want to write your own driver per use case; this one
 demonstrates the intended structure.
 
@@ -53,7 +53,7 @@ TODO: a lot of the body of stochastic_solve is diffrax boilerplate, try to facto
 """
 
 import functools
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from functools import partial
 from typing import Any, Protocol, cast
 
@@ -135,9 +135,12 @@ def _perp_basis(n: Cartesian3) -> tuple[Cartesian3, Cartesian3]:
 def apply_scattering[T: ParticleState](
     state: T, theta_x: SFloat, theta_y: SFloat, y_x: SFloat, y_y: SFloat
 ) -> T:
-    """The in-material lateral offset is applied in the same (u, v)
-    basis as the angles, so the per-plane angle/offset correlation (rho =
-    sqrt(3)/2) is preserved.
+    """Deflect the momentum by projected angles and offset the position.
+
+    Rotates about the particle's current direction (correct at any incidence),
+    conserving |p| and energy. The in-material lateral offset is applied in the
+    same (u, v) basis as the angles, so the per-plane angle/offset correlation
+    (rho = sqrt(3)/2) is preserved.
     """
     p3 = Cartesian3(coords=state.kin.t.coords[..., :3])
     pmag = abs(p3)
@@ -157,47 +160,38 @@ def apply_scattering[T: ParticleState](
     )
     return eqx.tree_at(lambda s: s.kin.p, rotated, new_pos)
 
-class StochasticKick(Protocol):
-    """A stochastic interaction applied over one traversed segment.
-
-    Composes sampling and application into one (state, params, key) -> state
-    call. Kicks apply unconditionally; the solver gates whether the result
-    takes effect (real in-material accepted steps only). Weight-carrying kicks
-    accumulate into state.log_weight.
-    """
+class Kick(Protocol):
+    """A single stochastic process sampler: (params, key) -> samples."""
 
     def __call__(
-        self, state: ParticleState, params: InteractionParams, key: Array
-    ) -> ParticleState: ...
+        self, params: InteractionParams, key: Array
+    ) -> tuple[SFloat, ...]: ...
 
 
-def energy_loss_kick_factory(
-    sampler: Callable[[InteractionParams, Array], tuple[SFloat, SFloat]],
-) -> StochasticKick:
-    """Build an energy-loss kick from an energy-loss sampler."""
+class StochasticKick(eqx.Module):
+    """Bundles a material's stochastic processes and applies them to a state.
 
-    def kick[T: ParticleState](state: T, params: InteractionParams, key: Array) -> T:
-        dE, logw = sampler(params, key)
+    Straggling and (optional) scattering samplers are injected at construction,
+    so algorithms can be swapped without a class per combination. The injected
+    callables are plain samplers returning raw samples; this container owns the
+    state update and log_weight accumulation.
+    """
+
+    straggling: Callable[[InteractionParams, Array], tuple[SFloat, SFloat]]
+    scattering: (
+        Callable[[InteractionParams, Array], tuple[SFloat, SFloat, SFloat, SFloat]]
+        | None
+    ) = None
+
+    def __call__(self, state, params, key):
+        k_strag, k_scat = jr.split(key)
+        dE, logw = self.straggling(params, k_strag)
         state = apply_energy_loss(state, dE)
-        return eqx.tree_at(
-            lambda s: s.log_weight, state, state.log_weight + logw
-        )
-
-    return kick
-
-
-def scattering_kick_factory(
-    sampler: Callable[
-        [InteractionParams, Array], tuple[SFloat, SFloat, SFloat, SFloat]
-    ],
-) -> StochasticKick:
-    """Build a multiple-scattering kick from a scattering sampler."""
-
-    def kick[T: ParticleState](state: T, params: InteractionParams, key: Array) -> T:
-        tx, ty, yx, yy = sampler(params, key)
-        return apply_scattering(state, tx, ty, yx, yy)
-
-    return kick
+        state = eqx.tree_at(lambda s: s.log_weight, state, state.log_weight + logw)
+        if self.scattering is not None:
+            tx, ty, yx, yy = self.scattering(params, k_scat)
+            state = apply_scattering(state, tx, ty, yx, yy)
+        return state
 
 
 def _combined_sdf(
@@ -227,7 +221,7 @@ def stochastic_solve[T: ParticleState](
     cts: Array,
     key: Array,
     *,
-    kicks: Sequence[StochasticKick] = (),
+    kick: StochasticKick | None = None,
     forward_mode: bool = False,
     rtol: float = 1e-5,
     atol: float = 1e-7,
@@ -244,11 +238,11 @@ def stochastic_solve[T: ParticleState](
             is the start and ``cts[-1]`` the end of integration. Consecutive
             points define the integration sub-intervals.
         key: A JAX PRNG key (``vmap`` a batch of keys for an ensemble).
-        kicks: Sequence of StochasticKick to apply each accepted in-material
-            substep, in order. Each is ``(state, params, key) -> state`` and
-            self-gates on ``params.thickness``. Build them with
-            ``energy_loss_kick_factory`` / ``scattering_kick_factory``. Empty
-            (the default) means only deterministic propagation.
+        kick: Optional StochasticKick applied each accepted in-material substep.
+            Bundles the straggling and optional scattering samplers; the
+            container owns the state update and log_weight accumulation. Gating
+            to real in-material accepted steps happens in the solver. ``None``
+            (default) is deterministic propagation only.
         forward_mode: If True, configure the solver for forward-mode autodiff
             (``jax.jvp`` / ``jax.jacfwd``); otherwise (default) reverse-mode
             (``jax.grad`` / ``jax.jacrev``). See the module docstring.
@@ -371,7 +365,7 @@ def stochastic_solve[T: ParticleState](
         params = material.interaction_params(y_kept, thickness)
 
         y_new = y_kept
-        for kick in kicks:
+        if kick is not None:
             key, subkey = jr.split(key)
             y_new = kick(y_new, params, subkey)
 
