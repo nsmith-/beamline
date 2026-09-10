@@ -35,6 +35,8 @@ from beamline.jax.emfield import SimpleEMField
 from beamline.jax.integrate.stochastic import (
     StochasticKick,
     stochastic_solve,
+    energy_loss_kick,
+    scattering_kick
 )
 from beamline.jax.kinematics import MuonStateDz
 
@@ -84,8 +86,8 @@ def run_beam(absorber, start):
     field = SimpleEMField(E0=Cartesian3.make(), B0=Cartesian3.make())
     zs = jnp.array([START_Z, END_Z])
     kick=StochasticKick(
-        straggling=landau_energy_loss_sampler,
-        scattering=highland_scattering_sampler,
+        straggling=energy_loss_kick(landau_energy_loss_sampler),
+        scattering=scattering_kick(highland_scattering_sampler),
     )
     run = jax.jit(
         jax.vmap(lambda k: stochastic_solve(field, absorber, start, zs, k, kick=kick)[0])

@@ -53,7 +53,7 @@ class ParticleState(eqx.Module):
         """
 
     @abstractmethod
-    def build_tangent(self, dkin: Tangent[Cartesian4]) -> MuonStateDz:
+    def build_tangent(self, dkin: Tangent[Cartesian4]) -> Self:
         """Build particle state structure with specified tangent vector
 
         Any non-kinematic parts of the state (e.g. charge) should be static

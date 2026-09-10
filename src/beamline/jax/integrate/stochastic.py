@@ -161,36 +161,62 @@ def apply_scattering[T: ParticleState](
     return eqx.tree_at(lambda s: s.kin.p, rotated, new_pos)
 
 class Kick(Protocol):
-    """A single stochastic process sampler: (params, key) -> samples."""
+    """A single stochastic process applied to a state: (state, params, key) -> state.
 
-    def __call__(
-        self, params: InteractionParams, key: Array
-    ) -> tuple[SFloat, ...]: ...
+    Composes sampling and application; any weight it produces is accumulated
+    into ``state.log_weight`` and carried in the returned state.
+    """
+
+    def __call__[T: ParticleState](
+        self, state: T, params: InteractionParams, key: Array
+    ) -> T: ...
+
+
+def energy_loss_kick(
+    sampler: Callable[[InteractionParams, Array], tuple[SFloat, SFloat]],
+) -> Kick:
+    """Adapt an energy-loss sampler ``(params, key) -> (dE, log_w)`` into a Kick."""
+
+    def kick[T: ParticleState](state: T, params: InteractionParams, key: Array) -> T:
+        dE, logw = sampler(params, key)
+        state = apply_energy_loss(state, dE)
+        return eqx.tree_at(lambda s: s.log_weight, state, state.log_weight + logw)
+
+    return kick
+
+
+def scattering_kick(
+    sampler: Callable[
+        [InteractionParams, Array], tuple[SFloat, SFloat, SFloat, SFloat]
+    ],
+) -> Kick:
+    """Adapt a scattering sampler ``(params, key) -> (tx, ty, yx, yy)`` into a Kick."""
+
+    def kick[T: ParticleState](state: T, params: InteractionParams, key: Array) -> T:
+        tx, ty, yx, yy = sampler(params, key)
+        return apply_scattering(state, tx, ty, yx, yy)
+
+    return kick
 
 
 class StochasticKick(eqx.Module):
-    """Bundles a material's stochastic processes and applies them to a state.
+    """Bundles a material's stochastic processes into one state update.
 
-    Straggling and (optional) scattering samplers are injected at construction,
-    so algorithms can be swapped without a class per combination. The injected
-    callables are plain samplers returning raw samples; this container owns the
-    state update and log_weight accumulation.
+    Straggling and (optional) scattering are injected as ``Kick`` callables at
+    construction, so algorithms can be swapped without a class per combination.
+    Each Kick owns its own sample-and-apply; log_weight rides in the state.
     """
 
-    straggling: Callable[[InteractionParams, Array], tuple[SFloat, SFloat]]
-    scattering: (
-        Callable[[InteractionParams, Array], tuple[SFloat, SFloat, SFloat, SFloat]]
-        | None
-    ) = None
+    straggling: Kick
+    scattering: Kick | None = None
 
-    def __call__(self, state, params, key):
+    def __call__[T: ParticleState](
+        self, state: T, params: InteractionParams, key: Array
+    ) -> T:
         k_strag, k_scat = jr.split(key)
-        dE, logw = self.straggling(params, k_strag)
-        state = apply_energy_loss(state, dE)
-        state = eqx.tree_at(lambda s: s.log_weight, state, state.log_weight + logw)
+        state = self.straggling(state, params, k_strag)
         if self.scattering is not None:
-            tx, ty, yx, yy = self.scattering(params, k_scat)
-            state = apply_scattering(state, tx, ty, yx, yy)
+            state = self.scattering(state, params, k_scat)
         return state
 
 
@@ -450,9 +476,7 @@ def stochastic_solve[T: ParticleState](
         q=start.q,
         log_weight=save_w,
     )
-    final_state = final_carry[2]
     stats = {
-        "log_weight": final_state.log_weight,
         "num_steps": final_carry[7],
         "num_accepted_steps": final_carry[8],
         "num_rejected_steps": final_carry[7] - final_carry[8],

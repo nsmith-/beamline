@@ -25,6 +25,7 @@ from beamline.jax.coordinates import Cartesian3, Cartesian4
 from beamline.jax.emfield import SimpleEMField
 from beamline.jax.integrate.stochastic import (
     StochasticKick,
+    energy_loss_kick,
     stochastic_solve,
 )
 from beamline.jax.kinematics import MuonStateDz
@@ -70,7 +71,7 @@ def test_stochastic_propagation(artifacts_dir):
         jax.vmap(
             lambda k: stochastic_solve(
                 field, absorber, start, zs, k,
-                kick=StochasticKick(straggling=dummy_energy_loss_sampler),
+                kick=StochasticKick(straggling=energy_loss_kick(dummy_energy_loss_sampler)),
             )[0]
         )
     )
@@ -94,7 +95,7 @@ def test_stochastic_propagation(artifacts_dir):
     miss, _ = jax.jit(
         lambda s, k: stochastic_solve(
             field, absorber, s, zs, k,
-            kick=StochasticKick(straggling=dummy_energy_loss_sampler),
+            kick=StochasticKick(straggling=energy_loss_kick(dummy_energy_loss_sampler)),
         )
     )(make_muon(x=200.0 * u.mm), jr.key(1))
     assert float(miss.kin.t.ct[-1]) == pytest.approx(energy_initial, rel=1e-9)
@@ -131,7 +132,7 @@ def _mean_final_energy(forward_mode, pz):
         lambda k: stochastic_solve(
             field, absorber, start, zs, k,
             forward_mode=forward_mode,
-            kick=StochasticKick(straggling=landau_energy_loss_sampler),
+            kick=StochasticKick(straggling=energy_loss_kick(landau_energy_loss_sampler)),
         )[0]
     )(jr.split(jr.key(1), 256))
     return jnp.mean(ys.kin.t.ct[:, -1])
@@ -180,7 +181,7 @@ def _weighted_mean_final_energy(pz, sampler, n=256):
     def one(k):
         ys, _ = stochastic_solve(
           field, absorber, start, zs, k,
-          kick=StochasticKick(straggling=sampler),
+          kick=StochasticKick(straggling=energy_loss_kick(sampler)),
         )
         return ys.kin.t.ct[-1], ys.log_weight[-1]
 
@@ -209,18 +210,17 @@ def test_stochastic_weight_plumbing():
     pz0 = 200.0 * u.MeV
 
     # The accumulated weight is numerically zero (it carries only a gradient).
-    _, stats = jax.vmap(
+    ys, _ = jax.vmap(
         lambda k: stochastic_solve(
             _free_field(),
             make_absorber(),
             make_muon(pz0),
             _save_grid(),
             k,
-            kick=StochasticKick(straggling=landau_energy_loss_sampler_wg),
+            kick=StochasticKick(straggling=energy_loss_kick(landau_energy_loss_sampler_wg)),
         )
     )(jr.split(jr.key(2), 256))
-    assert "log_weight" in stats
-    assert np.allclose(np.asarray(stats["log_weight"]), 0.0, atol=1e-9)
+    assert np.allclose(np.asarray(ys.log_weight), 0.0, atol=1e-9)
 
     # WG and SG agree in the forward pass (same draws, unit weights).
     value_wg = float(_weighted_mean_final_energy(pz0, landau_energy_loss_sampler_wg))

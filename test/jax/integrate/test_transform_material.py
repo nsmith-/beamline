@@ -28,6 +28,7 @@ from beamline.jax.coordinates import Cartesian3, Cartesian4, Transform
 from beamline.jax.emfield import SimpleEMField
 from beamline.jax.integrate.stochastic import (
     StochasticKick,
+    energy_loss_kick,
     stochastic_solve,
 )
 from beamline.jax.kinematics import MuonStateDz
@@ -102,7 +103,7 @@ def _batch_pz(
             start,
             zs,
             key,
-            kick=StochasticKick(straggling=landau_energy_loss_sampler),
+            kick=StochasticKick(straggling=energy_loss_kick(landau_energy_loss_sampler)),
             forward_mode=forward_mode,
             debug=debug,
         )
