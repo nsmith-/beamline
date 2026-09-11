@@ -134,6 +134,19 @@ MATERIALS: dict[str, Material] = {
             C=2.3580, x0=-0.0988, x1=1.4515, a=0.9057, k=2.5849, delta0=0.0
         ),
     ),
+    # https://pdg.lbl.gov/2025/AtomicNuclearProperties/HTML/silicon_dioxide_fused_quartz.html
+    "silicon_dioxide_SiO2": Material(
+        name="Silicon Dioxide",
+        Z=10,
+        mass=(10 / 0.49930) * u.g / u.mol,
+        density=2.200 * u.g / u.cm3,
+        mean_excitation=139.2 * u.eV,
+        plasma_energy=30.20 * u.eV,
+        is_atomic=False,
+        density_correction=DensityCorrection(
+            C=3.5064, x0=0.1385, x1=3.0025, a=0.08408, k=3.5064, delta0=0.0
+        ),
+    ),
 }
 
 

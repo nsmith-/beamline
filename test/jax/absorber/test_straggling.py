@@ -47,7 +47,7 @@ def landau_energy_loss(E, E_mpv, xi):
     )
 
 
-TEST_STRAGGLING_PARAMS = MATERIALS["lithium_hydride_LiH"].straggling_params(
+TEST_STRAGGLING_PARAMS = MATERIALS["lithium_hydride_LiH"].interaction_params(
     MuonStateDz.make(
         position=Cartesian4.make(), momentum=Cartesian3.make(z=200.0 * u.MeV), q=1
     ),
@@ -56,7 +56,7 @@ TEST_STRAGGLING_PARAMS = MATERIALS["lithium_hydride_LiH"].straggling_params(
 
 
 def mk(thickness, pz):
-    return MATERIALS["lithium_hydride_LiH"].straggling_params(
+    return MATERIALS["lithium_hydride_LiH"].interaction_params(
         MuonStateDz.make(
             position=Cartesian4.make(),
             momentum=Cartesian3.make(z=pz),
@@ -146,7 +146,7 @@ def test_landau_sampler_gradients():
     g_thickness = jax.grad(lambda t: mean_dE(mk(t, pz0)))(t0)
     g_pz = jax.grad(lambda p: mean_dE(mk(t0, p)))(pz0)
     assert jnp.isfinite(g_thickness)
-    assert jnp.isfinite(g_pz)
+    assert jnp.isfinite(g_pz) 
 
     def wg_weighted_observable(thickness):
         params = mk(thickness, pz0)
@@ -170,7 +170,7 @@ def test_landau_gradient_diagnostics(artifacts_dir):
     """
 
     def mk(thickness, pz):
-        return MATERIALS["lithium_hydride_LiH"].straggling_params(
+        return MATERIALS["lithium_hydride_LiH"].interaction_params(
             MuonStateDz.make(
                 position=Cartesian4.make(),
                 momentum=Cartesian3.make(z=pz),

@@ -26,6 +26,8 @@ class ParticleState(eqx.Module):
     """
     q: eqx.AbstractVar[SInt]
     """Charge sign of the particle"""
+    log_weight: eqx.AbstractVar[SFloat]
+    """Log importance weight (0 for an unweighted draw)"""
 
     @property
     @abstractmethod
@@ -113,8 +115,8 @@ class MuonState(ParticleState):
         )
         p4, t4 = jnp.broadcast_arrays(pos.coords, mom4.coords)
         tangent_vector = Tangent(p=Cartesian4(p4), t=Cartesian4(t4))
-        return cls(kin=tangent_vector, q=q)
-
+        log_weight = jnp.zeros(p4.shape[:-1])
+        return cls(kin=tangent_vector, q=q, log_weight=log_weight)
 
 class MuonStateDct(MuonState):
     """Muon state, propagating with respect to coordinate time ct"""
@@ -123,13 +125,16 @@ class MuonStateDct(MuonState):
     """State of a muon particle"""
     q: SInt = eqx.field(static=True)
     """Sign of the muon charge (+1 or -1)"""
+    log_weight: SFloat
 
     def scale(self) -> SFloat:
         return 1.0
 
     def build_tangent(self, dkin: Tangent[Cartesian4]) -> MuonStateDct:
-        return MuonStateDct(kin=dkin, q=self.q)
-
+        """Time-derivative of log_weight is zero; it changes only at kicks."""
+        return MuonStateDct(
+            kin=dkin, q=self.q, log_weight=jnp.zeros_like(self.log_weight)
+        )
 
 class MuonStateDz(MuonState):
     """Muon state, propagating with respect to longitudinal position z"""
@@ -138,10 +143,14 @@ class MuonStateDz(MuonState):
     """State of a muon particle"""
     q: SInt = eqx.field(static=True)
     """Sign of the muon charge (+1 or -1)"""
+    log_weight: SFloat
 
     def scale(self) -> SFloat:
         # convert from d/dz to d/dct
         return self.kin.t.ct / self.kin.t.z
 
     def build_tangent(self, dkin: Tangent[Cartesian4]) -> MuonStateDz:
-        return MuonStateDz(kin=dkin, q=self.q)
+        """Time-derivative of log_weight is zero; it changes only at kicks."""
+        return MuonStateDz(
+            kin=dkin, q=self.q, log_weight=jnp.zeros_like(self.log_weight)
+        )

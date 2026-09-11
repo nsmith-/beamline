@@ -52,8 +52,12 @@ class DensityCorrection:
 
 
 @dataclass(frozen=True)
-class StragglingParams:
-    """Various parameters relevant to energy straggling"""
+class InteractionParams:
+    """Parameters of a particle's stochastic interaction with material
+
+    Energy straggling (PDG 34.2.9) and multiple Coulomb scattering (PDG 34.3)
+    for one traversal segment.
+    """
 
     xi: SFloat
     """Landau's xi (the scaling of the dimensionless Landau parameter)"""
@@ -75,6 +79,13 @@ class StragglingParams:
     """Mean energy loss (Bethe-Bloch formula)"""
     mode_energy_loss: SFloat
     """Most probable energy loss"""
+    theta0: SFloat
+    """RMS projected (plane) scattering angle [rad] (Highland, PDG 34.16)"""
+    thickness: SFloat
+    """Path length of material traversed in this segment [mm]
+    The two projected planes are independent and identically distributed
+    (PDG 34.18); the space angle is sqrt(2) * theta0 (PDG 34.15).
+    """
 
 
 class IncidentParticle(Protocol):
@@ -129,14 +140,16 @@ class Material:
     """Mean excitation energy [MeV] (to excite an electron)"""
     plasma_energy: float
     """Plasma energy [MeV]"""
+    radiation_length: float
+    """Radiation Length [MeV/c^2/mm^2]"""
     is_atomic: bool
     """True if this is an atomic element (rather than a compound)"""
     density_correction: DensityCorrection
 
-    def straggling_params(
+    def interaction_params(
         self, particle: IncidentParticle, thickness: SFloat
-    ) -> StragglingParams:
-        """Compute straggling parameters for a given particle and thickness"""
+    ) -> InteractionParams:
+        """Compute interaction parameters for a given particle and thickness"""
 
         beta, gamma = particle.beta(), particle.gamma()
         mass_ratio = ELECTRON_MASS * u.c_light_sq / particle.mass
@@ -170,13 +183,25 @@ class Material:
         )
         # (0.2 is with density correction, 0.37 is without, per Bichsel:1998if)
         mode_energy_loss = mean_energy_loss + xi * (
-            beta**2 + jnp.log(kappa) - 0.20005183774398613
+            beta**2 + jnp.log(kappa) + 0.20005183774398613
         )
-        return StragglingParams(
+        # protocol-safe momentum: p = beta * gamma * m
+        momentum = beta * gamma * particle.mass
+        z = particle.charge
+        x_over_X0 = thickness * self.density / self.radiation_length
+        theta0 = (
+            (13.6 * u.MeV / (beta * momentum))
+            * z
+            * jnp.sqrt(x_over_X0)
+            * (1.0 + 0.038 * jnp.log(x_over_X0 * z**2 / beta**2))
+        )
+        return InteractionParams(
             xi=xi,
             kappa=kappa,
             mean_energy_loss=mean_energy_loss,
             mode_energy_loss=mode_energy_loss,
+            theta0=theta0,
+            thickness=thickness
         )
 
 
@@ -191,9 +216,10 @@ MATERIALS: dict[str, Material] = {
         density=2.699 * u.g / u.cm3,
         mean_excitation=166.0 * u.eV,
         plasma_energy=32.86 * u.eV,
+        radiation_length=24.01 * u.g / u.cm2,
         is_atomic=True,
         density_correction=DensityCorrection(
-            C=4.2395, x0=0.1708, x1=3.0127, a=0.0802, k=3.6345, delta0=0.0
+            C=4.2395, x0=0.1708, x1=3.0127, a=0.0802, k=3.6345, delta0=0.12
         ),
     ),
     # https://pdg.lbl.gov/2025/AtomicNuclearProperties/HTML/silicon_Si.html
@@ -204,6 +230,7 @@ MATERIALS: dict[str, Material] = {
         density=2.329 * u.g / u.cm3,
         mean_excitation=173.0 * u.eV,
         plasma_energy=31.05 * u.eV,
+        radiation_length=21.82 * u.g / u.cm2,
         is_atomic=True,
         density_correction=DensityCorrection(
             C=4.4355, x0=0.2015, x1=2.8716, a=0.1492, k=3.2546, delta0=0.14
@@ -217,9 +244,24 @@ MATERIALS: dict[str, Material] = {
         density=0.8200 * u.g / u.cm3,
         mean_excitation=36.5 * u.eV,
         plasma_energy=18.51 * u.eV,
+        radiation_length=79.61 * u.g / u.cm2,
         is_atomic=False,
         density_correction=DensityCorrection(
             C=2.3580, x0=-0.0988, x1=1.4515, a=0.9057, k=2.5849, delta0=0.0
+        ),
+    ),
+    # https://pdg.lbl.gov/2025/AtomicNuclearProperties/HTML/silicon_dioxide_fused_quartz.html
+    "silicon_dioxide_SiO2": Material(
+        name="Silicon Dioxide",
+        Z=10,
+        mass=(10 / 0.49930) * u.g / u.mol,
+        density=2.200 * u.g / u.cm3,
+        mean_excitation=139.2 * u.eV,
+        plasma_energy=30.20 * u.eV,
+        radiation_length=27.05 * u.g / u.cm2,
+        is_atomic=False,
+        density_correction=DensityCorrection(
+            C=4.0560, x0=0.1500, x1=3.0140, a=0.08408, k=3.5064, delta0=0.0
         ),
     ),
 }

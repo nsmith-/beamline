@@ -1,8 +1,8 @@
 """Stochastic muon propagation via operator splitting
 
 This is a worked example of propagating a muon through electromagnetic fields
-*and* material, where the material adds stochastic effects (energy straggling
-now, multiple scattering later). As with ``diffrax_solve`` in ``propagate.py``,
+*and* material, where the material adds stochastic effects. 
+As with ``diffrax_solve`` in ``propagate.py``,
 you will probably want to write your own driver per use case; this one
 demonstrates the intended structure.
 
@@ -50,13 +50,12 @@ the physics, while the numerical step-size control is wrapped in
 tolerance, independent of).
 
 TODO: a lot of the body of stochastic_solve is diffrax boilerplate, try to factorize
-TODO: refactor apply_energy_loss to a general kick (scattering)
 """
 
 import functools
 from collections.abc import Callable
 from functools import partial
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 import equinox as eqx
 import equinox.internal as eqxi
@@ -67,10 +66,9 @@ import jax.random as jr
 from diffrax import Dopri5, ODETerm, PIDController
 from jax import Array, lax
 
-from beamline.jax.absorber.material import StragglingParams
-from beamline.jax.absorber.straggling import dummy_energy_loss_sampler
+from beamline.jax.absorber.material import InteractionParams
 from beamline.jax.absorber.volume import MaterialVolume
-from beamline.jax.coordinates import Cartesian4, Tangent
+from beamline.jax.coordinates import Cartesian3, Cartesian4, Tangent, Transform
 from beamline.jax.emfield import EMTensorField
 from beamline.jax.integrate.propagate import particle_interaction
 from beamline.jax.integrate.stepsize import BoundaryAwareStepSizeController
@@ -122,6 +120,106 @@ def apply_energy_loss[T: ParticleState](state: T, dE: SFloat) -> T:
     return eqx.tree_at(lambda s: s.kin.t, state, Cartesian4(coords=new_coords))
 
 
+def _perp_basis(n: Cartesian3) -> tuple[Cartesian3, Cartesian3]:
+    """Orthonormal (u, v) spanning the plane perpendicular to unit vector n
+    """
+    near_z = jnp.abs(n.z) >= 0.9
+    ref = Cartesian3.make(
+        x=jnp.where(near_z, 1.0, 0.0), y=0.0, z=jnp.where(near_z, 0.0, 1.0)
+    )
+    u = ref.cross(n)
+    u = u * (1.0 / abs(u))
+    return u, n.cross(u)
+
+
+def apply_scattering[T: ParticleState](
+    state: T, theta_x: SFloat, theta_y: SFloat, y_x: SFloat, y_y: SFloat
+) -> T:
+    """Deflect the momentum by projected angles and offset the position.
+
+    Rotates about the particle's current direction (correct at any incidence),
+    conserving |p| and energy. The in-material lateral offset is applied in the
+    same (u, v) basis as the angles, so the per-plane angle/offset correlation
+    (rho = sqrt(3)/2) is preserved.
+    """
+    p3 = Cartesian3(coords=state.kin.t.coords[..., :3])
+    pmag = abs(p3)
+    n = p3 * (1.0 / jnp.where(pmag > 0.0, pmag, 1.0))
+    u, v = _perp_basis(n)
+    theta = jnp.sqrt(theta_x**2 + theta_y**2)
+    axis_raw = v * theta_x - u * theta_y
+    axis = Cartesian3(coords=jnp.where(theta > 0.0, axis_raw.coords, u.coords))
+    rotation = Transform.make_axis_angle(axis, theta, Cartesian4.make())
+    rotated = eqx.tree_at(lambda s: s.kin.t, state, rotation.to_global(state.kin.t))
+    offset = u * y_x + v * y_y
+    new_pos = Cartesian4.make(
+        x=rotated.kin.p.x + offset.x,
+        y=rotated.kin.p.y + offset.y,
+        z=rotated.kin.p.z + offset.z,
+        ct=rotated.kin.p.ct,
+    )
+    return eqx.tree_at(lambda s: s.kin.p, rotated, new_pos)
+
+class Kick(Protocol):
+    """A single stochastic process applied to a state: (state, params, key) -> state.
+
+    Composes sampling and application; any weight it produces is accumulated
+    into ``state.log_weight`` and carried in the returned state.
+    """
+
+    def __call__[T: ParticleState](
+        self, state: T, params: InteractionParams, key: Array
+    ) -> T: ...
+
+
+def energy_loss_kick(
+    sampler: Callable[[InteractionParams, Array], tuple[SFloat, SFloat]],
+) -> Kick:
+    """Adapt an energy-loss sampler ``(params, key) -> (dE, log_w)`` into a Kick."""
+
+    def kick[T: ParticleState](state: T, params: InteractionParams, key: Array) -> T:
+        dE, logw = sampler(params, key)
+        state = apply_energy_loss(state, dE)
+        return eqx.tree_at(lambda s: s.log_weight, state, state.log_weight + logw)
+
+    return kick
+
+
+def scattering_kick(
+    sampler: Callable[
+        [InteractionParams, Array], tuple[SFloat, SFloat, SFloat, SFloat]
+    ],
+) -> Kick:
+    """Adapt a scattering sampler ``(params, key) -> (tx, ty, yx, yy)`` into a Kick."""
+
+    def kick[T: ParticleState](state: T, params: InteractionParams, key: Array) -> T:
+        tx, ty, yx, yy = sampler(params, key)
+        return apply_scattering(state, tx, ty, yx, yy)
+
+    return kick
+
+
+class StochasticKick(eqx.Module):
+    """Bundles a material's stochastic processes into one state update.
+
+    Straggling and (optional) scattering are injected as ``Kick`` callables at
+    construction, so algorithms can be swapped without a class per combination.
+    Each Kick owns its own sample-and-apply; log_weight rides in the state.
+    """
+
+    straggling: Kick
+    scattering: Kick | None = None
+
+    def __call__[T: ParticleState](
+        self, state: T, params: InteractionParams, key: Array
+    ) -> T:
+        k_strag, k_scat = jr.split(key)
+        state = self.straggling(state, params, k_strag)
+        if self.scattering is not None:
+            state = self.scattering(state, params, k_scat)
+        return state
+
+
 def _combined_sdf(
     field: EMTensorField, material: MaterialVolume, state: ParticleState
 ) -> SFloat:
@@ -149,9 +247,7 @@ def stochastic_solve[T: ParticleState](
     cts: Array,
     key: Array,
     *,
-    sampler: Callable[
-        [StragglingParams, Array], tuple[SFloat, SFloat]
-    ] = dummy_energy_loss_sampler,
+    kick: StochasticKick | None = None,
     forward_mode: bool = False,
     rtol: float = 1e-5,
     atol: float = 1e-7,
@@ -168,13 +264,11 @@ def stochastic_solve[T: ParticleState](
             is the start and ``cts[-1]`` the end of integration. Consecutive
             points define the integration sub-intervals.
         key: A JAX PRNG key (``vmap`` a batch of keys for an ensemble).
-        sampler: Energy-loss sampler ``(StragglingParams, key) -> (dE, log_w)``;
-            pass ``landau_energy_loss_sampler`` (value/pathwise gradients) or
-            ``landau_energy_loss_sampler_wg`` (weight/score-function gradients).
-            The per-step ``log_w`` is accumulated and returned as
-            ``stats["log_weight"]`` (0 for the value-gradient samplers); under an
-            ensemble ``vmap`` the weighted estimator is ``sum(w f) / sum(w)`` with
-            ``w = exp(log_weight)``.
+        kick: Optional StochasticKick applied each accepted in-material substep.
+            Bundles the straggling and optional scattering samplers; the
+            container owns the state update and log_weight accumulation. Gating
+            to real in-material accepted steps happens in the solver. ``None``
+            (default) is deterministic propagation only.
         forward_mode: If True, configure the solver for forward-mode autodiff
             (``jax.jvp`` / ``jax.jacfwd``); otherwise (default) reverse-mode
             (``jax.grad`` / ``jax.jacrev``). See the module docstring.
@@ -226,7 +320,6 @@ def stochastic_solve[T: ParticleState](
             controller_state,
             made_jump,
             key,
-            log_weight,
             num_steps,
             num_accepted,
         ) = carry
@@ -294,17 +387,20 @@ def stochastic_solve[T: ParticleState](
             ),
         )
         kick_applied = keep_step & (thickness > 0.0)
-
-        # when thickness == 0.0, substitute gradient-friendly value to prevent NaNs
         thickness = jnp.where(thickness == 0.0, 1.0, thickness)
         params = material.interaction_params(y_kept, thickness)
-        key, subkey = jr.split(key)
-        dE_raw, logw_raw = sampler(params, subkey)
-        dE = jnp.where(kick_applied, dE_raw, 0.0)
-        # Accumulate the importance log-weight (outside any stop_gradient: the
-        # weight-gradient estimator's gradient must flow through it).
-        log_weight = log_weight + jnp.where(kick_applied, logw_raw, 0.0)
-        y_new = apply_energy_loss(y_kept, dE)
+
+        y_new = y_kept
+        if kick is not None:
+            key, subkey = jr.split(key)
+            y_new = kick(y_new, params, subkey)
+
+        # Gate the whole kick on a real, accepted, in-material step (kick_applied
+        # already includes keep_step, so rejected steps revert here too). This
+        # also reverts log_weight accumulation outside material.
+        y_new = jax.tree.map(
+            lambda a, b: jnp.where(kick_applied, a, b), y_new, y_kept
+        )
 
         # A kick perturbs y, so the solver's cached (FSAL) derivative is stale:
         # signal a jump so it is recomputed next step.
@@ -314,28 +410,18 @@ def stochastic_solve[T: ParticleState](
         tnext_out = jnp.where(keep_step, tnext_next, tnext)
 
         if debug:
-            # _probe_tangent is a pass-through for the primal; in forward-mode AD
-            # it also prints the JVP tangent, letting us verify whether thickness
-            # and dE_raw carry gradients from upstream geometry parameters.
+            # _probe_tangent prints the JVP tangent in forward-mode AD, to verify
+            # whether thickness carries a gradient from upstream geometry params.
             thick_p = _probe_tangent(thickness, "thick")
-            dE_raw_p = _probe_tangent(dE_raw, "dE_raw")
             sdf_val = _combined_sdf(field, material, y_new)
             jax.debug.print(
                 "substep: [{tprev}, {tnext_eff}] -> [{tprev_out}, {tnext_out}]"
-                "  keep={keep} sdf0={sdf0} sdf1={sdf1} kick={kick}"
-                "  thick={thick} dE_raw={dE_raw} dE={dE} sdf={sdf}",
-                tprev=tprev,
-                tnext_eff=tnext_eff,
-                tprev_out=tprev_out,
-                tnext_out=tnext_out,
-                keep=keep_step,
-                sdf0=sdf0,
-                sdf1=sdf1,
-                kick=kick_applied,
-                thick=thick_p,
-                dE_raw=dE_raw_p,
-                dE=dE,
-                sdf=sdf_val,
+                "  keep={keep} sdf0={sdf0} sdf1={sdf1} kicked={kicked}"
+                "  thick={thick} sdf={sdf}",
+                tprev=tprev, tnext_eff=tnext_eff,
+                tprev_out=tprev_out, tnext_out=tnext_out,
+                keep=keep_step, sdf0=sdf0, sdf1=sdf1,
+                kicked=kick_applied, thick=thick_p, sdf=sdf_val,
             )
 
         return (
@@ -346,7 +432,6 @@ def stochastic_solve[T: ParticleState](
             controller_state,
             made_jump,
             key,
-            log_weight,
             num_steps + 1,
             num_accepted + jnp.where(keep_step, 1, 0),
         )
@@ -365,7 +450,7 @@ def stochastic_solve[T: ParticleState](
             kind=kind,
         )
         y = carry[2]
-        return carry, (y.kin.p.coords, y.kin.t.coords)
+        return carry, (y.kin.p.coords, y.kin.t.coords, y.log_weight)
 
     init_carry = (
         t0,
@@ -375,23 +460,25 @@ def stochastic_solve[T: ParticleState](
         controller_state,
         jnp.array(False),
         key,
-        jnp.array(0.0),
         jnp.array(0),
         jnp.array(0),
     )
-    final_carry, (saved_p, saved_t) = lax.scan(integrate_interval, init_carry, cts[1:])
+    final_carry, (saved_p, saved_t, saved_w) = lax.scan(
+        integrate_interval, init_carry, cts[1:]
+    )
 
     # Prepend the start state (at cts[0]) to the per-interval endpoints.
     save_p = jnp.concatenate([start.kin.p.coords[None], saved_p], axis=0)
     save_t = jnp.concatenate([start.kin.t.coords[None], saved_t], axis=0)
+    save_w = jnp.concatenate([jnp.asarray(start.log_weight)[None], saved_w], axis=0)
     ys = type(start)(
         kin=Tangent(p=Cartesian4(coords=save_p), t=Cartesian4(coords=save_t)),
         q=start.q,
+        log_weight=save_w,
     )
     stats = {
-        "log_weight": final_carry[7],
-        "num_steps": final_carry[8],
-        "num_accepted_steps": final_carry[9],
-        "num_rejected_steps": final_carry[8] - final_carry[9],
+        "num_steps": final_carry[7],
+        "num_accepted_steps": final_carry[8],
+        "num_rejected_steps": final_carry[7] - final_carry[8],
     }
     return ys, stats
