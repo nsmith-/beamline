@@ -16,13 +16,18 @@ from matplotlib import pyplot as plt
 
 from beamline.jax.absorber.material import MATERIALS
 from beamline.jax.absorber.straggling import (
+    dummy_energy_loss_sampler,
     landau_energy_loss_sampler,
     landau_energy_loss_sampler_wg,
 )
 from beamline.jax.absorber.volume import AbsorberCylinder
 from beamline.jax.coordinates import Cartesian3, Cartesian4
 from beamline.jax.emfield import SimpleEMField
-from beamline.jax.integrate.stochastic import stochastic_solve
+from beamline.jax.integrate.stochastic import (
+    StochasticKick,
+    energy_loss_kick,
+    stochastic_solve,
+)
 from beamline.jax.kinematics import MuonStateDz
 
 ABSORBER_RADIUS = 100.0 * u.mm
@@ -63,7 +68,12 @@ def test_stochastic_propagation(artifacts_dir):
 
     keys = jr.split(jr.key(0), 1000)
     run = jax.jit(
-        jax.vmap(lambda k: stochastic_solve(field, absorber, start, zs, k)[0])
+        jax.vmap(
+            lambda k: stochastic_solve(
+                field, absorber, start, zs, k,
+                kick=StochasticKick(straggling=energy_loss_kick(dummy_energy_loss_sampler)),
+            )[0]
+        )
     )
     ys = run(keys)
 
@@ -82,9 +92,12 @@ def test_stochastic_propagation(artifacts_dir):
     assert loss.mean() == pytest.approx(reference, rel=0.4)
 
     # A muon that misses the absorber must conserve energy exactly.
-    miss, _ = jax.jit(lambda s, k: stochastic_solve(field, absorber, s, zs, k))(
-        make_muon(x=200.0 * u.mm), jr.key(1)
-    )
+    miss, _ = jax.jit(
+        lambda s, k: stochastic_solve(
+            field, absorber, s, zs, k,
+            kick=StochasticKick(straggling=energy_loss_kick(dummy_energy_loss_sampler)),
+        )
+    )(make_muon(x=200.0 * u.mm), jr.key(1))
     assert float(miss.kin.t.ct[-1]) == pytest.approx(energy_initial, rel=1e-9)
 
     with open(artifacts_dir / "stochastic_final_states.csv", "w") as f:
@@ -117,7 +130,9 @@ def _mean_final_energy(forward_mode, pz):
     start = make_muon(pz)
     ys = jax.vmap(
         lambda k: stochastic_solve(
-            field, absorber, start, zs, k, forward_mode=forward_mode
+            field, absorber, start, zs, k,
+            forward_mode=forward_mode,
+            kick=StochasticKick(straggling=energy_loss_kick(landau_energy_loss_sampler)),
         )[0]
     )(jr.split(jr.key(1), 256))
     return jnp.mean(ys.kin.t.ct[:, -1])
@@ -164,8 +179,11 @@ def _weighted_mean_final_energy(pz, sampler, n=256):
     start = make_muon(pz)
 
     def one(k):
-        ys, stats = stochastic_solve(field, absorber, start, zs, k, sampler=sampler)
-        return ys.kin.t.ct[-1], stats["log_weight"]
+        ys, _ = stochastic_solve(
+          field, absorber, start, zs, k,
+          kick=StochasticKick(straggling=energy_loss_kick(sampler)),
+        )
+        return ys.kin.t.ct[-1], ys.log_weight[-1]
 
     energy_final, log_weight = jax.vmap(one)(jr.split(jr.key(2), n))
     weights = jnp.exp(log_weight - logsumexp(log_weight))
@@ -192,18 +210,17 @@ def test_stochastic_weight_plumbing():
     pz0 = 200.0 * u.MeV
 
     # The accumulated weight is numerically zero (it carries only a gradient).
-    _, stats = jax.vmap(
+    ys, _ = jax.vmap(
         lambda k: stochastic_solve(
             _free_field(),
             make_absorber(),
             make_muon(pz0),
             _save_grid(),
             k,
-            sampler=landau_energy_loss_sampler_wg,
+            kick=StochasticKick(straggling=energy_loss_kick(landau_energy_loss_sampler_wg)),
         )
     )(jr.split(jr.key(2), 256))
-    assert "log_weight" in stats
-    assert np.allclose(np.asarray(stats["log_weight"]), 0.0, atol=1e-9)
+    assert np.allclose(np.asarray(ys.log_weight), 0.0, atol=1e-9)
 
     # WG and SG agree in the forward pass (same draws, unit weights).
     value_wg = float(_weighted_mean_final_energy(pz0, landau_energy_loss_sampler_wg))
