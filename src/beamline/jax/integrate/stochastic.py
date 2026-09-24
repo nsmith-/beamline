@@ -1,7 +1,7 @@
 """Stochastic muon propagation via operator splitting
 
 This is a worked example of propagating a muon through electromagnetic fields
-*and* material, where the material adds stochastic effects. 
+*and* material, where the material adds stochastic effects.
 As with ``diffrax_solve`` in ``propagate.py``,
 you will probably want to write your own driver per use case; this one
 demonstrates the intended structure.
@@ -121,8 +121,7 @@ def apply_energy_loss[T: ParticleState](state: T, dE: SFloat) -> T:
 
 
 def _perp_basis(n: Cartesian3) -> tuple[Cartesian3, Cartesian3]:
-    """Orthonormal (u, v) spanning the plane perpendicular to unit vector n
-    """
+    """Orthonormal (u, v) spanning the plane perpendicular to unit vector n"""
     near_z = jnp.abs(n.z) >= 0.9
     ref = Cartesian3.make(
         x=jnp.where(near_z, 1.0, 0.0), y=0.0, z=jnp.where(near_z, 0.0, 1.0)
@@ -159,6 +158,7 @@ def apply_scattering[T: ParticleState](
         ct=rotated.kin.p.ct,
     )
     return eqx.tree_at(lambda s: s.kin.p, rotated, new_pos)
+
 
 class Kick(Protocol):
     """A single stochastic process applied to a state: (state, params, key) -> state.
@@ -252,6 +252,7 @@ def stochastic_solve[T: ParticleState](
     rtol: float = 1e-5,
     atol: float = 1e-7,
     max_substeps: int = 64,
+    throw: bool = True,
     debug: bool = False,
 ) -> tuple[T, dict[str, Any]]:
     """Propagate a muon through ``field`` and ``material`` with stochastic kicks
@@ -276,6 +277,10 @@ def stochastic_solve[T: ParticleState](
         max_substeps: Maximum number of solver steps per sub-interval (safety
             bound on the inner while loop). Must be large enough for the
             controller (plus material segmenting) to cross each interval.
+        throw: If True (default), raise a runtime error if any sub-interval
+            exhausts ``max_substeps`` before reaching its endpoint (the saved
+            states from then on would be stale). If False, only report it via
+            ``stats["num_unfinished_intervals"]``.
         debug: If True, emit per-substep diagnostics via ``jax.debug.print``
             (JIT-compatible). Useful for verifying that kicks are applied and
             tracing where geometry gradients enter the computation.
@@ -398,16 +403,16 @@ def stochastic_solve[T: ParticleState](
         # Gate the whole kick on a real, accepted, in-material step (kick_applied
         # already includes keep_step, so rejected steps revert here too). This
         # also reverts log_weight accumulation outside material.
-        y_new = jax.tree.map(
-            lambda a, b: jnp.where(kick_applied, a, b), y_new, y_kept
-        )
+        y_new = jax.tree.map(lambda a, b: jnp.where(kick_applied, a, b), y_new, y_kept)
 
         # A kick perturbs y, so the solver's cached (FSAL) derivative is stale:
         # signal a jump so it is recomputed next step.
         made_jump = jnp.where(keep_step, ctrl_jump | kick_applied, made_jump)
 
-        tprev_out = jnp.where(keep_step, tprev_next, tprev)
-        tnext_out = jnp.where(keep_step, tnext_next, tnext)
+        # On rejection the controller returns tprev_next == tprev and a shrunk
+        # tnext_next; we must take it, or the same step is retried forever.
+        tprev_out = tprev_next
+        tnext_out = tnext_next
 
         if debug:
             # _probe_tangent prints the JVP tangent in forward-mode AD, to verify
@@ -418,10 +423,16 @@ def stochastic_solve[T: ParticleState](
                 "substep: [{tprev}, {tnext_eff}] -> [{tprev_out}, {tnext_out}]"
                 "  keep={keep} sdf0={sdf0} sdf1={sdf1} kicked={kicked}"
                 "  thick={thick} sdf={sdf}",
-                tprev=tprev, tnext_eff=tnext_eff,
-                tprev_out=tprev_out, tnext_out=tnext_out,
-                keep=keep_step, sdf0=sdf0, sdf1=sdf1,
-                kicked=kick_applied, thick=thick_p, sdf=sdf_val,
+                tprev=tprev,
+                tnext_eff=tnext_eff,
+                tprev_out=tprev_out,
+                tnext_out=tnext_out,
+                keep=keep_step,
+                sdf0=sdf0,
+                sdf1=sdf1,
+                kicked=kick_applied,
+                thick=thick_p,
+                sdf=sdf_val,
             )
 
         return (
@@ -450,7 +461,8 @@ def stochastic_solve[T: ParticleState](
             kind=kind,
         )
         y = carry[2]
-        return carry, (y.kin.p.coords, y.kin.t.coords, y.log_weight)
+        finished = carry[0] >= bound
+        return carry, (y.kin.p.coords, y.kin.t.coords, y.log_weight, finished)
 
     init_carry = (
         t0,
@@ -463,7 +475,7 @@ def stochastic_solve[T: ParticleState](
         jnp.array(0),
         jnp.array(0),
     )
-    final_carry, (saved_p, saved_t, saved_w) = lax.scan(
+    final_carry, (saved_p, saved_t, saved_w, finished) = lax.scan(
         integrate_interval, init_carry, cts[1:]
     )
 
@@ -471,6 +483,13 @@ def stochastic_solve[T: ParticleState](
     save_p = jnp.concatenate([start.kin.p.coords[None], saved_p], axis=0)
     save_t = jnp.concatenate([start.kin.t.coords[None], saved_t], axis=0)
     save_w = jnp.concatenate([jnp.asarray(start.log_weight)[None], saved_w], axis=0)
+    if throw:
+        save_p = eqx.error_if(
+            save_p,
+            ~jnp.all(finished),
+            "stochastic_solve: a sub-interval exhausted max_substeps before "
+            "reaching its endpoint; increase max_substeps",
+        )
     ys = type(start)(
         kin=Tangent(p=Cartesian4(coords=save_p), t=Cartesian4(coords=save_t)),
         q=start.q,
@@ -480,5 +499,6 @@ def stochastic_solve[T: ParticleState](
         "num_steps": final_carry[7],
         "num_accepted_steps": final_carry[8],
         "num_rejected_steps": final_carry[7] - final_carry[8],
+        "num_unfinished_intervals": jnp.sum(~finished),
     }
     return ys, stats

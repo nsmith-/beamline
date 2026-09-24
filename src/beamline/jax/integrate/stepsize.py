@@ -155,14 +155,15 @@ class BoundaryAwareStepSizeController[ControllerState, DT0: SFloat, Y: ParticleS
             error_order,
             inner_state,
         )
-        sdf = self.sdf(y1_candidate)
+        # A rejected candidate says nothing about where we are: keep the sdf
+        # of the current (accepted) state, and don't flag a boundary crossing.
+        sdf = jnp.where(keep_step, self.sdf(y1_candidate), last_sdf)
         # signs of crossing a boundary: sdf goes from positive to negative or vice versa
         # or the sdf goes to infinity (exit the volume and no future intersection)
         # TODO: reject step if the jump went too far past the boundary?
-        made_jump = (
-            made_jump
-            | (last_sdf * sdf <= 0)
-            | (jnp.isfinite(last_sdf) & ~jnp.isfinite(sdf))
+        made_jump = made_jump | (
+            keep_step
+            & ((last_sdf * sdf <= 0) | (jnp.isfinite(last_sdf) & ~jnp.isfinite(sdf)))
         )
         # get an epsilon at the correct scale for the addition
         crossing_eps = self._crossing_eps(next_t0)
