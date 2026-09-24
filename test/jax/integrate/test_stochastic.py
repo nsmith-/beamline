@@ -70,8 +70,14 @@ def test_stochastic_propagation(artifacts_dir):
     run = jax.jit(
         jax.vmap(
             lambda k: stochastic_solve(
-                field, absorber, start, zs, k,
-                kick=StochasticKick(straggling=energy_loss_kick(dummy_energy_loss_sampler)),
+                field,
+                absorber,
+                start,
+                zs,
+                k,
+                kick=StochasticKick(
+                    straggling=energy_loss_kick(dummy_energy_loss_sampler)
+                ),
             )[0]
         )
     )
@@ -94,7 +100,11 @@ def test_stochastic_propagation(artifacts_dir):
     # A muon that misses the absorber must conserve energy exactly.
     miss, _ = jax.jit(
         lambda s, k: stochastic_solve(
-            field, absorber, s, zs, k,
+            field,
+            absorber,
+            s,
+            zs,
+            k,
             kick=StochasticKick(straggling=energy_loss_kick(dummy_energy_loss_sampler)),
         )
     )(make_muon(x=200.0 * u.mm), jr.key(1))
@@ -130,9 +140,15 @@ def _mean_final_energy(forward_mode, pz):
     start = make_muon(pz)
     ys = jax.vmap(
         lambda k: stochastic_solve(
-            field, absorber, start, zs, k,
+            field,
+            absorber,
+            start,
+            zs,
+            k,
             forward_mode=forward_mode,
-            kick=StochasticKick(straggling=energy_loss_kick(landau_energy_loss_sampler)),
+            kick=StochasticKick(
+                straggling=energy_loss_kick(landau_energy_loss_sampler)
+            ),
         )[0]
     )(jr.split(jr.key(1), 256))
     return jnp.mean(ys.kin.t.ct[:, -1])
@@ -180,8 +196,12 @@ def _weighted_mean_final_energy(pz, sampler, n=256):
 
     def one(k):
         ys, _ = stochastic_solve(
-          field, absorber, start, zs, k,
-          kick=StochasticKick(straggling=energy_loss_kick(sampler)),
+            field,
+            absorber,
+            start,
+            zs,
+            k,
+            kick=StochasticKick(straggling=energy_loss_kick(sampler)),
         )
         return ys.kin.t.ct[-1], ys.log_weight[-1]
 
@@ -217,7 +237,9 @@ def test_stochastic_weight_plumbing():
             make_muon(pz0),
             _save_grid(),
             k,
-            kick=StochasticKick(straggling=energy_loss_kick(landau_energy_loss_sampler_wg)),
+            kick=StochasticKick(
+                straggling=energy_loss_kick(landau_energy_loss_sampler_wg)
+            ),
         )
     )(jr.split(jr.key(2), 256))
     assert np.allclose(np.asarray(ys.log_weight), 0.0, atol=1e-9)
@@ -226,3 +248,27 @@ def test_stochastic_weight_plumbing():
     value_wg = float(_weighted_mean_final_energy(pz0, landau_energy_loss_sampler_wg))
     value_sg = float(_weighted_mean_final_energy(pz0, landau_energy_loss_sampler))
     assert value_wg == pytest.approx(value_sg, rel=1e-9)
+
+
+def test_max_substeps_exhausted():
+    """Running out of substeps is reported (stats) or raised (throw=True)."""
+
+    def solve(max_substeps, throw):
+        return stochastic_solve(
+            _free_field(),
+            make_absorber(),
+            make_muon(),
+            _save_grid(),
+            jr.key(0),
+            max_substeps=max_substeps,
+            throw=throw,
+        )
+
+    _, stats = solve(64, throw=True)
+    assert int(stats["num_unfinished_intervals"]) == 0
+
+    _, stats = solve(1, throw=False)
+    assert int(stats["num_unfinished_intervals"]) > 0
+
+    with pytest.raises(Exception, match="max_substeps"):
+        solve(1, throw=True)
