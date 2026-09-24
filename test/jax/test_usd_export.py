@@ -12,7 +12,14 @@ import jax.random as jr
 import numpy as np
 import pytest
 
-from beamline.jax.integrate.stochastic import stochastic_solve
+from beamline.jax.absorber.scattering import highland_scattering_sampler
+from beamline.jax.absorber.straggling import landau_energy_loss_sampler
+from beamline.jax.integrate.stochastic import (
+    StochasticKick,
+    energy_loss_kick,
+    scattering_kick,
+    stochastic_solve,
+)
 
 pytest.importorskip("pxr", reason="usd-core not installed")
 
@@ -520,7 +527,11 @@ def test_full_scene(artifacts_dir: Path):
         q=1,
     )
     cts = jnp.linspace(0.0, 3.0 * u.m, 100)
-    states, _ = stochastic_solve(field, absorber, start, cts, jr.key(123))
+    kick = StochasticKick(
+        straggling=energy_loss_kick(landau_energy_loss_sampler),
+        scattering=scattering_kick(highland_scattering_sampler),
+    )
+    states, _ = stochastic_solve(field, absorber, start, cts, jr.key(123), kick=kick)
     add_trajectories(stage, "/trajectories", states, animate_marker=True)
 
     save_usdz(stage)
