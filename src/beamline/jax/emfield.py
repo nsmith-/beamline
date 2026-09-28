@@ -115,8 +115,8 @@ class SumField(EMTensorField):
         B_total = jnp.array([0.0, 0.0, 0.0])
         for comp in self.components:
             E, B = comp.field_strength(point)
-            E_total.at[:].add(E.t.coords)
-            B_total.at[:].add(B.t.coords)
+            E_total = E_total.at[:].add(E.t.coords)
+            B_total = B_total.at[:].add(B.t.coords)
         return (
             Tangent(
                 p=point.to_cartesian3(),
