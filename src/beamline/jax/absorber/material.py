@@ -147,7 +147,10 @@ class Material:
     density_correction: DensityCorrection
 
     def interaction_params(
-        self, particle: IncidentParticle, thickness: SFloat
+        self,
+        particle: IncidentParticle,
+        thickness: SFloat,
+        reference_thickness: SFloat | None = None,
     ) -> InteractionParams:
         """Compute interaction parameters for a given particle and thickness"""
 
@@ -188,13 +191,17 @@ class Material:
         # protocol-safe momentum: p = beta * gamma * m
         momentum = beta * gamma * particle.mass
         z = particle.charge
-        x_over_X0 = thickness * self.density / self.radiation_length
-        theta0 = (
+        x_ref = (
+            thickness if reference_thickness is None else reference_thickness
+        ) * self.density / self.radiation_length
+        x_seg = thickness * self.density / self.radiation_length
+        theta0_ref = (
             (13.6 * u.MeV / (beta * momentum))
             * z
-            * jnp.sqrt(x_over_X0)
-            * (1.0 + 0.038 * jnp.log(x_over_X0 * z**2 / beta**2))
+            * jnp.sqrt(x_ref)
+            * (1.0 + 0.038 * jnp.log(x_ref * z**2 / beta**2))
         )
+        theta0 = theta0_ref * jnp.sqrt(x_seg / x_ref)
         return InteractionParams(
             xi=xi,
             kappa=kappa,
@@ -248,6 +255,20 @@ MATERIALS: dict[str, Material] = {
         is_atomic=False,
         density_correction=DensityCorrection(
             C=2.3580, x0=-0.0988, x1=1.4515, a=0.9057, k=2.5849, delta0=0.0
+        ),
+    ),
+    # https://indico.cern.ch/event/1446644/attachments/2918391/5121897/Cooling_Code_Benchmarking-1.pdf
+    "liquid_hydrogen_H2": Material(
+        name="Liquid Hydrogen",
+        Z=1,
+        mass=1.008 * u.g / u.mol,
+        density=0.07080 * u.g / u.cm3,
+        mean_excitation=21.8 * u.eV,
+        plasma_energy=7.64 * u.eV,
+        radiation_length=63.04 * u.g / u.cm2,
+        is_atomic=True,
+        density_correction=DensityCorrection(
+            C=3.0977, x0=0.4400, x1=1.8856, a=0.13483, k=5.6249, delta0=0.0
         ),
     ),
     # https://pdg.lbl.gov/2025/AtomicNuclearProperties/HTML/silicon_dioxide_fused_quartz.html

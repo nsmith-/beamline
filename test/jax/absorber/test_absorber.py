@@ -34,9 +34,9 @@ from beamline.jax.coordinates import Cartesian3, Cartesian4
 from beamline.jax.emfield import SimpleEMField
 from beamline.jax.integrate.stochastic import (
     StochasticKick,
-    stochastic_solve,
     energy_loss_kick,
-    scattering_kick
+    scattering_kick,
+    stochastic_solve,
 )
 from beamline.jax.kinematics import MuonStateDz
 

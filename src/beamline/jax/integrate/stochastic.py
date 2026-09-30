@@ -251,7 +251,7 @@ def stochastic_solve[T: ParticleState](
     forward_mode: bool = False,
     rtol: float = 1e-5,
     atol: float = 1e-7,
-    max_substeps: int = 64,
+    max_substeps: int = 512,
     debug: bool = False,
 ) -> tuple[T, dict[str, Any]]:
     """Propagate a muon through ``field`` and ``material`` with stochastic kicks
