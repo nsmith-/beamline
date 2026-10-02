@@ -29,7 +29,9 @@ MU1 = 0.1
 SMOOTH = 0.1
 EDGES = np.arange(-3.5, 3.5 + 1e-9, 0.25)
 ARROW_DMU = 0.5
-"""Arrows in the top panels show the change for this step in mu"""
+"""Arrows in the top left panel show the change for this step in mu"""
+BIN_ARROW_DMU = 0.25
+"""Arrows on histogram bins show the change for this step in mu"""
 
 
 def window(x):
@@ -199,13 +201,14 @@ def test_reparam_animation(samples, artifacts_dir):
     ax_h.quiver(
         histogram(x0),
         centers,
-        ARROW_DMU * np.asarray(dbins),
+        BIN_ARROW_DMU * np.asarray(dbins),
         np.zeros_like(centers),
         color="C3",
+        alpha=0.5,
         angles="xy",
         scale_units="xy",
         scale=1,
-        width=0.006,
+        width=0.004,
     )
 
     # bottom right: MC estimate (with common random numbers) is a staircase
@@ -221,12 +224,8 @@ def test_reparam_animation(samples, artifacts_dir):
     (marker,) = ax_i.plot([], [], "ko")
     i0 = float(reparam_estimate(0.0, u))
     g_hard = float(jax.grad(reparam_estimate)(0.0, u))
-    g_soft = float(jax.grad(reparam_estimate)(0.0, u, soft_window))
     _slope_arrow(ax_i, 0.0, i0, float(true_slope(0.0)), "gray", "exact slope")
     _slope_arrow(ax_i, 0.0, i0, g_hard, "C3", f"grad, hard window = {g_hard:.3f}")
-    _slope_arrow(
-        ax_i, 0.0, i0, g_soft, "C2", f"grad, smoothed (h={SMOOTH}) = {g_soft:.3f}"
-    )
     ax_i.legend(loc="upper left", fontsize="small")
 
     _explain(
@@ -245,8 +244,8 @@ def test_reparam_animation(samples, artifacts_dir):
             "only seen once the edges are smoothed (width $h$, $O(h^2)$ bias).",
             "",
             (
-                f"N = {NSAMPLES}; arrows in top panels show the change for "
-                f"$\\Delta\\mu$ = {ARROW_DMU}"
+                f"N = {NSAMPLES}; arrows show the change for $\\Delta\\mu$ = "
+                f"{ARROW_DMU} (top left), {BIN_ARROW_DMU} (bins)"
             ),
         ],
     )
@@ -325,13 +324,14 @@ def test_weighted_animation(samples, artifacts_dir):
     ax_h.quiver(
         histogram(x0),
         centers,
-        ARROW_DMU * dbins,
+        BIN_ARROW_DMU * dbins,
         np.zeros_like(centers),
         color=np.where(centers > 0, "C3", "C0"),
+        alpha=0.5,
         angles="xy",
         scale_units="xy",
         scale=1,
-        width=0.006,
+        width=0.004,
     )
 
     # bottom right: the reweighted MC estimate is smooth in mu
@@ -371,8 +371,8 @@ def test_weighted_animation(samples, artifacts_dir):
             "at the cost of higher variance.",
             "",
             (
-                f"N = {NSAMPLES}; arrows in top panels show the change for "
-                f"$\\Delta\\mu$ = {ARROW_DMU}"
+                f"N = {NSAMPLES}; arrows show the change for $\\Delta\\mu$ = "
+                f"{ARROW_DMU} (top left), {BIN_ARROW_DMU} (bins)"
             ),
         ],
     )
