@@ -64,15 +64,6 @@ def histogram(x, w=None):
     return counts / (len(x) * np.diff(EDGES))
 
 
-def soft_histogram(x):
-    """Histogram with sigmoid-smoothed bin edges, so pathwise derivatives exist"""
-    lo, hi = jnp.asarray(EDGES[:-1]), jnp.asarray(EDGES[1:])
-    s = jax.nn.sigmoid((x[:, None] - lo) / SMOOTH) - jax.nn.sigmoid(
-        (x[:, None] - hi) / SMOOTH
-    )
-    return s.sum(axis=0) / (len(x) * jnp.diff(jnp.asarray(EDGES)))
-
-
 def _setup_figure(title: str):
     fig = plt.figure(figsize=(11, 9), layout="constrained")
     gs = fig.add_gridspec(2, 2, height_ratios=[1.3, 1])
@@ -190,26 +181,12 @@ def test_reparam_animation(samples, artifacts_dir):
     (curve,) = ax_q.plot([], [], "k", lw=1.5)
     uu = np.linspace(1e-4, 1 - 1e-4, 400)
 
-    # top right: histogram; pathwise bin derivatives need smoothed bin edges
+    # top right: histogram; samples flow between bins as they move
     stairs = ax_h.stairs(
         histogram(x0), EDGES, orientation="horizontal", color="k", lw=1.5
     )
     ax_h.stairs(histogram(x0 + MU1), EDGES, orientation="horizontal", color="C1")
     ax_h.stairs(histogram(x0), EDGES, orientation="horizontal", color="C0")
-    dbins = jax.jacfwd(lambda mu: soft_histogram(mu + x0))(0.0)
-    centers = 0.5 * (EDGES[1:] + EDGES[:-1])
-    ax_h.quiver(
-        histogram(x0),
-        centers,
-        BIN_ARROW_DMU * np.asarray(dbins),
-        np.zeros_like(centers),
-        color="C3",
-        alpha=0.5,
-        angles="xy",
-        scale_units="xy",
-        scale=1,
-        width=0.004,
-    )
 
     # bottom right: MC estimate (with common random numbers) is a staircase
     est = jax.vmap(reparam_estimate, (0, None))(mus, u)
@@ -237,16 +214,13 @@ def test_reparam_animation(samples, artifacts_dir):
         ],
         [
             "Samples move (red arrows, top left: $\\partial x_i/\\partial\\mu = 1$)",
-            "and carry their weight across bin edges (red arrows,",
-            "top right, smoothed edges). But $f$ is a step: $f'(x_i) = 0$",
-            "for every sample, so autodiff returns exactly 0. The gradient",
-            "is the flux of samples through the window edges, $p(a) - p(b)$,",
-            "only seen once the edges are smoothed (width $h$, $O(h^2)$ bias).",
+            "and carry their weight across bin edges (top right).",
+            "But $f$ is a step: $f'(x_i) = 0$ for every sample, so autodiff",
+            "returns exactly 0. The gradient is the flux of samples through",
+            "the window edges, $p(a) - p(b)$, only seen once the edges are",
+            "smoothed (width $h$, $O(h^2)$ bias).",
             "",
-            (
-                f"N = {NSAMPLES}; arrows show the change for $\\Delta\\mu$ = "
-                f"{ARROW_DMU} (top left), {BIN_ARROW_DMU} (bins)"
-            ),
+            (f"N = {NSAMPLES}; arrows show the change for $\\Delta\\mu$ = {ARROW_DMU}"),
         ],
     )
 
