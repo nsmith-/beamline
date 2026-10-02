@@ -204,6 +204,23 @@ class ThickSolenoid(EMTensorField):
     L: SFloat
     """Length of the solenoid [mm]"""
 
+    def Bz_onaxis(self, z: SFloat) -> SFloat:
+        """Magnetic field on-axis (rho=0), in closed form
+
+        Integrates the thin shell on-axis field over the winding radius:
+        Bz = mu0 j / 2 [zeta ln((Rout + hypot(Rout, zeta)) / (Rin + hypot(Rin, zeta)))]
+        evaluated between zeta = z - L/2 and zeta = z + L/2.
+        """
+
+        def edge(zeta: SFloat) -> SFloat:
+            return zeta * jnp.log(
+                (self.Rout + jnp.hypot(self.Rout, zeta))
+                / (self.Rin + jnp.hypot(self.Rin, zeta))
+            )
+
+        halfL = self.L / 2
+        return MU0 * self.jphi / 2 * (edge(z + halfL) - edge(z - halfL))
+
     def B_shells(
         self, rho: SFloat, z: SFloat, num_shells: int = 8, vmap: bool = False
     ) -> tuple[SFloat, SFloat]:
