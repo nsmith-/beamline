@@ -270,9 +270,10 @@ def test_thick_shell_onaxis(vmap: bool):
 def test_thick_shell_performance(benchmark, shells: int, vmap: str, grad: str):
     """Performance of thick shell solenoid field/gradient calculation
 
-    Conclusion seems to be that for values, vmap is faster, by about 10% for
-    10 shells and up to 2x for 200 shells. With gradients, they are about the
-    same performance.
+    With Gauss-Legendre shells, vmap is ~10% faster than scan for values and
+    ~30% faster for gradients. In this grid (rho up to 0.95 Rin) 8 shells give
+    ~1e-6 accuracy (better far from the winding), vs ~1e-3 for the previous
+    200 uniform shells at ~10x the cost.
     """
 
     solenoid = jsol.ThickSolenoid(
@@ -282,8 +283,9 @@ def test_thick_shell_performance(benchmark, shells: int, vmap: str, grad: str):
         L=140.0 * u.mm,
     )
 
+    # field region inside the bore, where the shell quadrature converges exponentially
     rho, z = jnp.meshgrid(
-        jnp.linspace(0, 0.95 * solenoid.Rout, 20),
+        jnp.linspace(0, 0.95 * solenoid.Rin, 20),
         jnp.linspace(-2 * solenoid.L, 2 * solenoid.L, 10),
         indexing="ij",
     )
@@ -293,7 +295,7 @@ def test_thick_shell_performance(benchmark, shells: int, vmap: str, grad: str):
     def bfun(rho, z):
         if grad == "grad":
             return jax.jacfwd(solenoid.B_shells, argnums=(0, 1))(
-                rho, z, num_shells=shells, vmap=vmap
+                rho, z, num_shells=shells, vmap=vmap == "vmap"
             )
         return solenoid.B_shells(rho, z, num_shells=shells, vmap=vmap == "vmap")
 
@@ -302,5 +304,16 @@ def test_thick_shell_performance(benchmark, shells: int, vmap: str, grad: str):
 
     # warmup
     run_bfun()
-    # TODO: compare accuracy to reference
+
+    # field accuracy vs a converged (64 node) reference
+    Brho, Bz = jax.jit(jnp.vectorize(partial(solenoid.B_shells, num_shells=shells)))(
+        rho, z
+    )
+    Brho_ref, Bz_ref = jax.jit(
+        jnp.vectorize(partial(solenoid.B_shells, num_shells=64))
+    )(rho, z)
+    scale = jnp.max(jnp.abs(Bz_ref))
+    benchmark.extra_info["max_rel_err"] = float(
+        max(jnp.max(jnp.abs(Brho - Brho_ref)), jnp.max(jnp.abs(Bz - Bz_ref))) / scale
+    )
     benchmark(run_bfun)
