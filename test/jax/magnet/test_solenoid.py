@@ -8,6 +8,7 @@ from matplotlib import pyplot as plt
 
 from beamline.jax.magnet import solenoid as jsol
 from beamline.numpy import solenoid as nsol
+from beamline.units import MU0
 
 REF_SOLENOID = nsol.ThinShellSolenoid(
     R=43.81 * u.mm,
@@ -237,8 +238,33 @@ def test_optimize_rho0limit(artifacts_dir):
     fig.savefig(artifacts_dir / "optimize_rho0limit.png")
 
 
+@pytest.mark.parametrize("vmap", [True, False])
+def test_thick_shell_onaxis(vmap: bool):
+    """Gauss-Legendre shell quadrature vs closed-form on-axis field of a thick solenoid"""
+    solenoid = jsol.ThickSolenoid(
+        Rin=250.0 * u.mm,
+        Rout=419.3 * u.mm,
+        jphi=500.0 * u.A / u.mm**2,
+        L=140.0 * u.mm,
+    )
+    zpts = jnp.linspace(-4 * solenoid.L, 4 * solenoid.L, 101)
+
+    def edge(zeta):
+        return zeta * jnp.log(
+            (solenoid.Rout + jnp.hypot(solenoid.Rout, zeta))
+            / (solenoid.Rin + jnp.hypot(solenoid.Rin, zeta))
+        )
+
+    halfL = solenoid.L / 2
+    Bz_expected = MU0 * solenoid.jphi / 2 * (edge(zpts + halfL) - edge(zpts - halfL))
+    Brho, Bz = jax.vmap(lambda z: solenoid.B_shells(0.0, z, vmap=vmap))(zpts)
+    assert Bz == pytest.approx(Bz_expected, rel=1e-12)
+    assert Brho == pytest.approx(jnp.zeros_like(Brho), abs=1e-12 * jnp.max(Bz))
+    assert Bz_expected[50] / u.tesla == pytest.approx(22.21, abs=0.01)
+
+
 @pytest.mark.extended
-@pytest.mark.parametrize("shells", [10, 50, 200])
+@pytest.mark.parametrize("shells", [4, 8, 16])
 @pytest.mark.parametrize("vmap", ["vmap", "scan"])
 @pytest.mark.parametrize("grad", ["grad", "val"])
 def test_thick_shell_performance(benchmark, shells: int, vmap: str, grad: str):
