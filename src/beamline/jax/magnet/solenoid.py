@@ -222,7 +222,7 @@ class ThickSolenoid(EMTensorField):
         return MU0 * self.jphi / 2 * (edge(z + halfL) - edge(z - halfL))
 
     def B_shells(
-        self, rho: SFloat, z: SFloat, num_shells: int = 8, vmap: bool = False
+        self, rho: SFloat, z: SFloat, num_shells: int = 8, vmap: bool = True
     ) -> tuple[SFloat, SFloat]:
         """Return the rho and z component of the magnetic field
 
@@ -235,7 +235,7 @@ class ThickSolenoid(EMTensorField):
         Args:
             rho, z: Field point in the solenoid frame [mm]
             num_shells: Number of quadrature nodes (thin shells)
-            vmap: Evaluate shells with vmap instead of scan
+            vmap: Evaluate shells with vmap (default; faster) instead of scan
         """
         nodes, weights = np.polynomial.legendre.leggauss(num_shells)
         half_width = (self.Rout - self.Rin) / 2
