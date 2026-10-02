@@ -205,6 +205,21 @@ def _explain(ax, formulas, prose):
     )
 
 
+def _save_animation(fig, update, nframes, path):
+    """Save a still of the first frame and the animation, with a fixed layout
+
+    Constrained layout re-solves on every draw, so axes would shift between frames
+    as tick labels and line widths change; solve it once and freeze it.
+    """
+    update(0)
+    fig.canvas.draw()
+    fig.set_layout_engine("none")
+    fig.savefig(path.with_suffix(".png"), dpi=150)
+    anim = FuncAnimation(fig, update, frames=nframes, blit=True)
+    anim.save(path.with_suffix(".gif"), writer="pillow", fps=10, dpi=150)
+    plt.close(fig)
+
+
 def _frame_mus(nframes=40):
     t = np.linspace(0, 1, nframes, endpoint=False)
     return 0.5 * MU1 * (1 - np.cos(2 * np.pi * t))
@@ -326,13 +341,9 @@ def test_reparam_animation(samples, artifacts_dir, case: Case):
         return (curve, lines, dots, q_samp, stairs, marker)
 
     frame_mus = _frame_mus()
-    update(0)
-    fig.savefig(artifacts_dir / f"reparam_gradient_{case.name}.png", dpi=150)
-    anim = FuncAnimation(fig, update, frames=len(frame_mus), blit=True)
-    anim.save(
-        artifacts_dir / f"reparam_gradient_{case.name}.gif", writer="pillow", fps=10
+    _save_animation(
+        fig, update, len(frame_mus), artifacts_dir / f"reparam_gradient_{case.name}"
     )
-    plt.close(fig)
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c.name)
@@ -454,13 +465,9 @@ def test_weighted_animation(samples, artifacts_dir, case: Case):
         return (curve, dots, lines, stairs, marker)
 
     frame_mus = _frame_mus()
-    update(0)
-    fig.savefig(artifacts_dir / f"weighted_gradient_{case.name}.png", dpi=150)
-    anim = FuncAnimation(fig, update, frames=len(frame_mus), blit=True)
-    anim.save(
-        artifacts_dir / f"weighted_gradient_{case.name}.gif", writer="pillow", fps=10
+    _save_animation(
+        fig, update, len(frame_mus), artifacts_dir / f"weighted_gradient_{case.name}"
     )
-    plt.close(fig)
 
 
 def _trial_gradients(width, key):
