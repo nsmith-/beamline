@@ -4,7 +4,9 @@ import operator
 from abc import abstractmethod
 from functools import reduce
 
+import equinox as eqx
 import hepunits as u
+import jax
 import jax.numpy as jnp
 
 from beamline.jax.coordinates import Cartesian3, Cartesian4, Tangent, Transform
@@ -130,6 +132,59 @@ class SumField(EMTensorField):
 
     def __call__(self, vec: Tangent[Cartesian4]) -> Tangent[Cartesian4]:
         return reduce(operator.add, (f(vec) for f in self.components))
+
+
+class StackedField(EMTensorField):
+    """Sum of a batch of identically-structured fields
+
+    Every array leaf of ``fields`` carries a leading axis indexing the batch member,
+    e.g. as produced by ``eqx.filter_vmap`` over a function constructing a field.
+    Unlike SumField, the trace (and compile) cost does not grow with the batch size,
+    which makes it suitable for tiling many copies of a repeated lattice cell.
+    """
+
+    fields: EMTensorField
+    """A batched field, with a leading axis on all array leaves"""
+
+    def __len__(self) -> int:
+        leaves = jax.tree.leaves(eqx.filter(self.fields, eqx.is_array))
+        return leaves[0].shape[0]
+
+    def unstack(self) -> list[EMTensorField]:
+        """Split into a list of the individual (unbatched) fields"""
+        arrays, static = eqx.partition(self.fields, eqx.is_array)
+        return [
+            eqx.combine(jax.tree.map(operator.itemgetter(i), arrays), static)
+            for i in range(len(self))
+        ]
+
+    def contains(self, point: Cartesian3) -> SBool:
+        return jnp.any(eqx.filter_vmap(lambda f: f.contains(point))(self.fields))
+
+    def signed_time_to_boundary(self, ray: Tangent[Cartesian3]) -> SFloat:
+        ds = eqx.filter_vmap(lambda f: jnp.asarray(f.signed_time_to_boundary(ray)))(
+            self.fields
+        )
+        return ds[jnp.argmin(jnp.abs(ds))]
+
+    def field_strength(
+        self, point: Cartesian4
+    ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
+        E, B = eqx.filter_vmap(lambda f: f.field_strength(point))(self.fields)
+        return (
+            Tangent(
+                p=point.to_cartesian3(),
+                t=Cartesian3(coords=jnp.sum(E.t.coords, axis=0)),
+            ),
+            Tangent(
+                p=point.to_cartesian3(),
+                t=Cartesian3(coords=jnp.sum(B.t.coords, axis=0)),
+            ),
+        )
+
+    def __call__(self, vec: Tangent[Cartesian4]) -> Tangent[Cartesian4]:
+        out = eqx.filter_vmap(lambda f: f(vec))(self.fields)
+        return Tangent(p=vec.p, t=Cartesian4(coords=jnp.sum(out.t.coords, axis=0)))
 
 
 class TransformEMField(EMTensorField):
