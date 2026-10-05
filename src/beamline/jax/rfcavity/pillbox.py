@@ -2,6 +2,7 @@
 
 from typing import Literal
 
+import equinox as eqx
 import hepunits as u
 import jax
 import jax.numpy as jnp
@@ -30,13 +31,13 @@ class PillboxCavity(EMTensorField, CylinderVolume):
     """Resonant frequency of the mode [GHz]"""
     E0: SFloat
     """Peak electric field [MeV/e/mm]"""
-    mode: Literal["TE", "TM"]
+    mode: Literal["TE", "TM"] = eqx.field(static=True)
     """Resonant mode type (transverse electric or transverse magnetic)"""
-    m: int
+    m: int = eqx.field(static=True)
     """Azimuthal mode number"""
-    n: int
+    n: int = eqx.field(static=True)
     """Radial mode number"""
-    p: int
+    p: int = eqx.field(static=True)
     """Longitudinal mode number"""
     phase: SFloat
     """Time phase offset [rad]"""
@@ -46,7 +47,28 @@ class PillboxCavity(EMTensorField, CylinderVolume):
     Only relevant for m > 0 modes
     """
 
-    def __post_init__(self):
+    def __init__(
+        self,
+        length: SFloat,
+        frequency: SFloat,
+        E0: SFloat,
+        mode: Literal["TE", "TM"],
+        m: int,
+        n: int,
+        p: int,
+        phase: SFloat,
+        rotation: SFloat = 0.0,
+    ):
+        # the dataclass constructor doesn't have the correct signature because of CylinderVolume's abstract radius
+        self.length = length
+        self.frequency = frequency
+        self.E0 = E0
+        self.mode = mode
+        self.m = m
+        self.n = n
+        self.p = p
+        self.phase = phase
+        self.rotation = rotation
         if self.n < 1:
             raise ValueError("n must be >= 1")
         if self.mode not in ("TE", "TM"):

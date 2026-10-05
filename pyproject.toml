@@ -8,7 +8,7 @@ name = "beamline"
 authors = [{ name = "Nick Smith", email = "nick.smith@cern.ch" }]
 description = "A beamline simulator"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = "==3.14.*"
 classifiers = [
   "Development Status :: 1 - Planning",
   "Intended Audience :: Science/Research",
@@ -33,6 +33,7 @@ dependencies = [
 
 [project.optional-dependencies]
 jax = ["jax", "diffrax", "equinox", "jaxtyping", "quadax"]
+usd = ["usd-core", "pillow"]
 
 [dependency-groups]
 test = ["pytest >=6", "pytest-cov >=3", "ruff>=0.14.9", "pytest-benchmark"]
@@ -43,7 +44,7 @@ docs = [
   "sphinx_autodoc_typehints",
   "furo>=2023.08.17",
 ]
-dev = ["beamline[jax]", "ipykernel", { include-group = "test" }]
+dev = ["beamline[jax,usd]", "ipykernel", { include-group = "test" }]
 
 [project.urls]
 Homepage = "https://github.com/nsmith-/beamline"
