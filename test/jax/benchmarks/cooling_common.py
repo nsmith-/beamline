@@ -46,13 +46,13 @@ CELL_LENGTH = 800.0 * u.mm
 COIL_Z = (100.7 * u.mm, 699.3 * u.mm)  # Table 4 gives the first; second by symmetry
 RF_CENTRES = (211.4 * u.mm, 400.0 * u.mm, 588.6 * u.mm)  # 188.6 mm pitch about 400
 APERTURE = 81.6 * u.mm  # beam pipe and iris radius are both this
-N_FRINGE = 3  # cells added up- and downstream for correct fringe overlap
+N_FRINGE = 3  # cells added up and downstream for correct fringe overlap
 ABSORBER_HALF = 5.0 * u.mm  # half the Table 5 thickness, one at each end
 RF_PHASE_DEG = 20.0  # Table 4, relative to bunching mode
 REF_MOMENTUM = 200.0 * u.MeV
 
 def reference_muon() -> MuonStateDz:
-    """An on-axis 200 MeV/c muon at the origin; used for mass, energy, beta.
+    """An on-axis 200 MeV/c muon at the origin.
     """
     return MuonStateDz.make(
         position=Cartesian4.make(),
@@ -102,18 +102,13 @@ def cooling_cell_field(phase_deg: float = RF_PHASE_DEG) -> EMTensorField:
     """Coils plus the three-cell RF cavity for the demonstrator cell.
 
     Coils alternate polarity with an 800 mm period. N_FRINGE cells are added
-    up- and downstream so the overlapping fringe fields at the tracking
+    up and downstream so the overlapping fringe fields at the tracking
     boundaries are right (section 4).
 
     Each cavity's phase is derived from the reference particle's arrival time
     at that cavity's own centre. This reproduces the required 180 deg adjacent
-    phasing automatically: the 188.6 mm pitch is beta*lambda/2 = 188.26 mm at
-    beta = 0.8842, so consecutive phases differ by very nearly pi. Deriving it
-    also absorbs that 0.2% mismatch, which hard-coding 0, pi, 0 would not.
-
-    Sign convention: the reference particle reaches a cavity centre at phase
-    argument pi/2 (bunching, no net energy change); subtracting phase_deg moves
-    it into the accelerating half.
+    phasing: the 188.6 mm pitch is beta*lambda/2 = 188.26 mm at beta = 0.8842,
+    so consecutive phases differ by very nearly pi.
     """
     frequency = 704.0 * u.MHz
     beta = reference_muon().beta()
@@ -165,9 +160,7 @@ def make_beam(
         sigma_px = sqrt(eps_perp * m * p / beta_perp)
 
     With alpha = 0 and L_kin = 0 there are no correlations, so x, px, y, py are
-    four independent Gaussians. L_kin is the kinetic angular momentum, fixed
-    directly by the x-py / y-px correlation; no vector potential enters.
-    pz then follows on-shell from the sampled total energy.
+    independent.
 
     Targets: Table 4 gives sigma_x = 0.375923 mm, sigma_px = 0.702660 MeV/c;
     Table 5 gives sigma_x = 11.887730 mm, sigma_px = 22.220050 MeV/c.
@@ -216,8 +209,7 @@ def optics(track: MuonStateDz, mask, index: int, mass: float) -> dict[str, float
     eps_long is in eV*ms because that is the unit Tables 4 and 5 quote: their
     sigma_t * sigma_E products are 1.304e-3 and 1.3047 in eV*ms.
 
-    The det^(1/4) estimator is biased low for small ensembles so use a
-    few thousand particles before reading these as physics.
+    The det^(1/4) estimator is biased low for small ensembles.
     """
     sel = np.asarray(mask)
     x = np.asarray(track.kin.p.x[sel, index]) / u.mm
@@ -230,7 +222,7 @@ def optics(track: MuonStateDz, mask, index: int, mass: float) -> dict[str, float
 
     eps_perp = float(np.linalg.det(np.cov(np.stack([x, px, y, py]))) ** 0.25) / mass
     p_mean = float(np.mean(np.sqrt(px**2 + py**2 + pz**2)))
-    t_ms = ct / u.c_light / u.ns * 1e-6  # CLHEP length -> ns -> ms
+    t_ms = ct / u.c_light / u.ns * 1e-6
     eps_long = float(
         np.sqrt(np.linalg.det(np.cov(np.stack([t_ms, E * 1e6]))))
     )

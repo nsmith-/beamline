@@ -50,8 +50,7 @@ def test_benchmark_4_cooling_cell_no_absorber(artifacts_dir):
 
     track = run(beam)
 
-    # Aperture losses counted post hoc on the save grid rather than with a
-    # solver event.
+    # Aperture losses counted on the save grid
     rho = jnp.hypot(track.kin.p.x, track.kin.p.y)
     survived = np.asarray(jnp.all(rho <= cc.APERTURE, axis=-1))
     transmission = float(survived.mean())

@@ -36,13 +36,11 @@ def test_benchmark_4_cooling_cell_absorber(artifacts_dir):
       transverse: cooling -0.970%, heating +0.247%, net -0.72%
       longitudinal: sigma_E 11.680 -> 11.688 MeV (+0.065%)
       RF: transit-time factor 0.652, gain 3.687 MeV, net +1.97 MeV per cell
-    So the cell is net-accelerating.
     """
     field = cc.cooling_cell_field()
     mass = float(cc.reference_muon().mass) / u.MeV
 
-    # An absorber at each end, hence the union volume: stochastic_solve takes
-    # a single material.
+    # An absorber at each end
     absorbers = SumMaterialVolume(
         components=[
             TransformMaterialVolume(
@@ -81,7 +79,6 @@ def test_benchmark_4_cooling_cell_absorber(artifacts_dir):
     track = run(beam, keys)
 
     # Exclude both aperture losses and particles stopped by the Landau tail
-    # (pz -> 0 makes the d/dz right-hand side diverge, so they go non-finite).
     rho = jnp.hypot(track.kin.p.x, track.kin.p.y)
     finite = jnp.all(jnp.isfinite(track.kin.t.z), axis=-1)
     survived = np.asarray(jnp.all(rho <= cc.APERTURE, axis=-1) & finite)

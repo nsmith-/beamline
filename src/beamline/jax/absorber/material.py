@@ -257,6 +257,29 @@ MATERIALS: dict[str, Material] = {
             C=2.3580, x0=-0.0988, x1=1.4515, a=0.9057, k=2.5849, delta0=0.0
         ),
     ),
+    """MICE 6Li-enriched LiH absorber. Composition and thickness from the
+    benchmark note Table 1; radiation length calculated in arXiv:2209.10251.
+    
+    <Z/A> = 0.56624 from Li6 0.814 / Li7 0.043 / H 0.143 by mass. 
+    plasma = 28.816 sqrt(rho <Z/A>) = 18.012 eV. 
+    C = 2 ln(I / plasma) + 1 = 2.4126. I is set by the electronic structure,
+    identical for Li6 and Li7, so the PDG LiH value carries over.
+    Sternheimer parameters are reused from PDG LiH.
+    """
+    # TODO: Revisit Sternheimer corrections & other parameters at some point
+    "lithium_hydride_MICE": Material(
+        name="Lithium Hydride (MICE, 6Li-enriched)",
+        Z=2,
+        mass=(2 / 0.56624) * u.g / u.mol,
+        density=0.69 * u.g / u.cm3,
+        mean_excitation=36.5 * u.eV,
+        plasma_energy=18.012 * u.eV,
+        radiation_length=70.38 * u.g / u.cm2,
+        is_atomic=False,
+        density_correction=DensityCorrection(
+            C=2.3580, x0=-0.0988, x1=1.4515, a=0.9057, k=2.5849, delta0=0.0
+        ),
+    ),
     # https://indico.cern.ch/event/1446644/attachments/2918391/5121897/Cooling_Code_Benchmarking-1.pdf
     "liquid_hydrogen_H2": Material(
         name="Liquid Hydrogen",

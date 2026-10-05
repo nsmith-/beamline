@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import operator
 from abc import abstractmethod
+from functools import reduce
 
 import hepunits as u
 import jax.numpy as jnp
@@ -109,12 +111,12 @@ class SumField(EMTensorField):
     def field_strength(
         self, point: Cartesian4
     ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
-        E_total = jnp.zeros(3)
-        B_total = jnp.zeros(3)
+        E_total = jnp.array([0.0, 0.0, 0.0])
+        B_total = jnp.array([0.0, 0.0, 0.0])
         for comp in self.components:
             E, B = comp.field_strength(point)
-            E_total = E_total + E.t.coords
-            B_total = B_total + B.t.coords
+            E_total = E_total.at[:].add(E.t.coords)
+            B_total = B_total.at[:].add(B.t.coords)
         return (
             Tangent(
                 p=point.to_cartesian3(),
@@ -125,14 +127,9 @@ class SumField(EMTensorField):
                 t=Cartesian3(coords=B_total),
             ),
         )
+
     def __call__(self, vec: Tangent[Cartesian4]) -> Tangent[Cartesian4]:
-        """Sum the contracted field tensors.
-        """
-        total = None
-        for comp in self.components:
-            out = comp(vec)
-            total = out.t.coords if total is None else total + out.t.coords
-        return Tangent(p=vec.p, t=Cartesian4(total))
+        return reduce(operator.add, (f(vec) for f in self.components))
 
 
 class TransformEMField(EMTensorField):
