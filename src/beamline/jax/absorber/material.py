@@ -86,6 +86,22 @@ class InteractionParams:
     The two projected planes are independent and identically distributed
     (PDG 34.18); the space angle is sqrt(2) * theta0 (PDG 34.15).
     """
+    # NOTE: the following are needed by the new sampler, which only recieves
+    # InteractionParams. I figured the duplication was sensible since they are
+    # real interaction parameters in this case, but let me know!
+    radiation_lengths: SFloat
+    """Segment thickness in radiation lengths, d/X0 (dimensionless)
+    Used by the mixture scattering models, where the variance is proportional to
+    d/X0 and additive over segments.
+    """
+    beta: SFloat
+    """Incident particle velocity v/c"""
+    momentum: SFloat
+    """Incident particle momentum |p| [MeV]"""
+    charge: SFloat
+    """Incident particle charge [e]"""
+    Z: SFloat
+    """(Average) nuclear charge of the material"""
 
 
 class IncidentParticle(Protocol):
@@ -192,8 +208,10 @@ class Material:
         momentum = beta * gamma * particle.mass
         z = particle.charge
         x_ref = (
-            thickness if reference_thickness is None else reference_thickness
-        ) * self.density / self.radiation_length
+            (thickness if reference_thickness is None else reference_thickness)
+            * self.density
+            / self.radiation_length
+        )
         x_seg = thickness * self.density / self.radiation_length
         theta0_ref = (
             (13.6 * u.MeV / (beta * momentum))
@@ -208,7 +226,12 @@ class Material:
             mean_energy_loss=mean_energy_loss,
             mode_energy_loss=mode_energy_loss,
             theta0=theta0,
-            thickness=thickness
+            thickness=thickness,
+            radiation_lengths=x_seg,
+            beta=beta,
+            momentum=momentum,
+            charge=z,
+            Z=float(self.Z),
         )
 
 
@@ -259,13 +282,11 @@ MATERIALS: dict[str, Material] = {
     ),
     # MICE 6Li-enriched LiH absorber. Composition and thickness from the
     # benchmark note Table 1; radiation length calculated in arXiv:2209.10251.
-    
-    # <Z/A> = 0.56624 from Li6 0.814 / Li7 0.043 / H 0.143 by mass. 
-    # plasma = 28.816 sqrt(rho <Z/A>) = 18.012 eV. 
+    # <Z/A> = 0.56624 from Li6 0.814 / Li7 0.043 / H 0.143 by mass.
+    # plasma = 28.816 sqrt(rho <Z/A>) = 18.012 eV.
     # C = 2 ln(I / plasma) + 1 = 2.4126. I is set by the electronic structure,
     # identical for Li6 and Li7, so the PDG LiH value carries over.
     # Sternheimer parameters are reused from PDG LiH.
-    
     # TODO: Revisit Sternheimer corrections & other parameters at some point
     "lithium_hydride_MICE": Material(
         name="Lithium Hydride (MICE, 6Li-enriched)",

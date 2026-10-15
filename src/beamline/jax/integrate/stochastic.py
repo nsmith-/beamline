@@ -145,7 +145,8 @@ def apply_scattering[T: ParticleState](
     pmag = abs(p3)
     n = p3 * (1.0 / jnp.where(pmag > 0.0, pmag, 1.0))
     u, v = _perp_basis(n)
-    theta = jnp.sqrt(theta_x**2 + theta_y**2)
+    theta2 = theta_x**2 + theta_y**2
+    theta = jnp.where(theta2 > 0.0, jnp.sqrt(jnp.where(theta2 > 0.0, theta2, 1.0)), 0.0)
     axis_raw = v * theta_x - u * theta_y
     axis = Cartesian3(coords=jnp.where(theta > 0.0, axis_raw.coords, u.coords))
     rotation = Transform.make_axis_angle(axis, theta, Cartesian4.make())
@@ -376,7 +377,10 @@ def stochastic_solve[T: ParticleState](
         # when crossing a boundary: use signed_time_to_boundary
         # TODO: in both cases, assumes path length is displacement in a straight line
         # though in the boundary crossing case abs(sdf0) + abs(sdf1) >= abs(pos1 - pos0)
-        displacement = abs(ray1.p - ray0.p)
+        disp2 = jnp.sum((ray1.p.coords - ray0.p.coords) ** 2, axis=-1)
+        displacement = jnp.where(
+            disp2 > 0.0, jnp.sqrt(jnp.where(disp2 > 0.0, disp2, 1.0)), 0.0
+        )
         thickness = jnp.where(
             (sdf0 < 0.0) & (sdf1 < 0.0),
             displacement,
@@ -393,7 +397,8 @@ def stochastic_solve[T: ParticleState](
         )
         kick_applied = keep_step & (thickness > 0.0)
         thickness = jnp.where(thickness == 0.0, 1.0, thickness)
-        params = material.interaction_params(y_kept, thickness)
+        params_state = jax.tree.map(lambda a, b: jnp.where(sdf1 < 0.0, a, b), y_kept, y)
+        params = material.interaction_params(params_state, thickness)
 
         y_new = y_kept
         if kick is not None:

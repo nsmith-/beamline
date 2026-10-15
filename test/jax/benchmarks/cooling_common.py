@@ -12,7 +12,10 @@ import jax.random as jr
 import numpy as np
 from matplotlib import pyplot as plt
 
-from beamline.jax.absorber.scattering import highland_scattering_sampler
+from beamline.jax.absorber.scattering import (
+    highland_scattering_sampler,  # noqa: F401
+    mixture_scattering_sampler,
+)
 from beamline.jax.absorber.straggling import landau_energy_loss_sampler
 from beamline.jax.coordinates import Cartesian3, Cartesian4, Tangent, Transform
 from beamline.jax.emfield import EMTensorField, SumField, TransformEMField
@@ -35,7 +38,7 @@ SOLENOID = ThickSolenoid(
 
 # Swap these two lines to change straggling/scattering models
 STRAGGLING_SAMPLER = landau_energy_loss_sampler
-SCATTERING_SAMPLER = highland_scattering_sampler
+SCATTERING_SAMPLER = mixture_scattering_sampler  # or highland
 
 KICK = StochasticKick(
     straggling=energy_loss_kick(STRAGGLING_SAMPLER),
@@ -51,14 +54,15 @@ ABSORBER_HALF = 5.0 * u.mm  # half the Table 5 thickness, one at each end
 RF_PHASE_DEG = 20.0  # Table 4, relative to bunching mode
 REF_MOMENTUM = 200.0 * u.MeV
 
+
 def reference_muon() -> MuonStateDz:
-    """An on-axis 200 MeV/c muon at the origin.
-    """
+    """An on-axis 200 MeV/c muon at the origin."""
     return MuonStateDz.make(
         position=Cartesian4.make(),
         momentum=Cartesian3.make(z=REF_MOMENTUM),
         q=1,
     )
+
 
 class StackedField(EMTensorField):
     """Structurally identical field components, summed under vmap.
@@ -74,6 +78,7 @@ class StackedField(EMTensorField):
     summing fields), and because TransformEMField.field_strength deliberately
     raises.
     """
+
     stacked: EMTensorField
 
     def contains(self, point: Cartesian3) -> SBool:
@@ -92,11 +97,11 @@ class StackedField(EMTensorField):
 
 
 def stack_fields(fields: list[EMTensorField]) -> StackedField:
-    """Combine same-shaped fields into one pytree with a leading component axis.
-    """
+    """Combine same-shaped fields into one pytree with a leading component axis."""
     return StackedField(
         stacked=jax.tree.map(lambda *xs: jnp.stack(jnp.asarray(xs)), *fields)
     )
+
 
 def cooling_cell_field(phase_deg: float = RF_PHASE_DEG) -> EMTensorField:
     """Coils plus the three-cell RF cavity for the demonstrator cell.
@@ -223,9 +228,7 @@ def optics(track: MuonStateDz, mask, index: int, mass: float) -> dict[str, float
     eps_perp = float(np.linalg.det(np.cov(np.stack([x, px, y, py]))) ** 0.25) / mass
     p_mean = float(np.mean(np.sqrt(px**2 + py**2 + pz**2)))
     t_ms = ct / u.c_light / u.ns * 1e-6
-    eps_long = float(
-        np.sqrt(np.linalg.det(np.cov(np.stack([t_ms, E * 1e6]))))
-    )
+    eps_long = float(np.sqrt(np.linalg.det(np.cov(np.stack([t_ms, E * 1e6])))))
 
     return {
         "eps_perp_mm": eps_perp,

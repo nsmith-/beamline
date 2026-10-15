@@ -17,6 +17,7 @@ from abc import abstractmethod
 
 import equinox as eqx
 import hepunits as u
+import jax.numpy as jnp
 
 from beamline.jax.absorber.material import InteractionParams, Material
 from beamline.jax.coordinates import Cartesian3, Tangent, Transform
@@ -120,6 +121,7 @@ class AbsorberCylinder(MaterialVolume, CylinderVolume):
     ) -> InteractionParams:
         return self.material.interaction_params(state, thickness, self.length)
 
+
 class SumMaterialVolume(MaterialVolume):
     """Union of non-overlapping material volumes (mirrors ``SumField``)
 
@@ -130,9 +132,7 @@ class SumMaterialVolume(MaterialVolume):
     components: list[MaterialVolume]
 
     def characteristic_length(self) -> SFloat:
-        return jnp.min(
-            jnp.array([c.characteristic_length() for c in self.components])
-        )
+        return jnp.min(jnp.array([c.characteristic_length() for c in self.components]))
 
     def contains(self, point: Cartesian3) -> SBool:
         return jnp.any(jnp.array([c.contains(point) for c in self.components]))
