@@ -1,7 +1,6 @@
 from functools import partial
 from typing import Any
 
-import equinox as eqx
 import hepunits as u
 import jax
 import jax.numpy as jnp
@@ -18,12 +17,13 @@ from diffrax import (
 )
 from jax import Array
 
+from beamline.jax.absorber.volume import MaterialVolume
 from beamline.jax.coordinates import Tangent
 from beamline.jax.emfield import EMTensorField
 from beamline.jax.geometry import Volume
 from beamline.jax.integrate.stepsize import BoundaryAwareStepSizeController
-from beamline.jax.kinematics import ParticleState
-from beamline.jax.types import SFloat
+from beamline.jax.kinematics import ParticleState, TrackingStatus
+from beamline.jax.types import SFloat, SInt
 
 
 def particle_interaction[T: ParticleState](
@@ -50,18 +50,55 @@ def particle_interaction[T: ParticleState](
         t=dmomentum_dct.t * state.scale(),
     )
     dstate = state.build_tangent(dkin)
-    # lost particles are frozen in place
+    # particles that are no longer tracked are frozen in place
     alive = state.is_alive()
     return jax.tree.map(lambda d: jnp.where(alive, d, jnp.zeros_like(d)), dstate)
 
 
-def apply_aperture[T: ParticleState](state: T, ct: SFloat, aperture: Volume) -> T:
-    """Post-step processing: mark the particle lost at ``ct`` if outside ``aperture``
+def update_status[T: ParticleState](
+    state: T,
+    ct: SFloat,
+    *,
+    aperture: Volume | None = None,
+    material: MaterialVolume | None = None,
+) -> T:
+    """Post-step processing: stop tracking a particle that is lost at ``ct``
 
-    Particles that were already lost keep their original ``lost_at``.
+    Checks, in order of precedence, whether an alive particle has left
+    ``aperture`` (``HIT_APERTURE``), stopped in ``material``
+    (``STOPPED_IN_MATERIAL``), or has kinematics invalid for its independent
+    variable (``REVERSED``). If so, ``status`` and ``lost_at`` are set.
+    Particles that were already lost keep their original status.
     """
-    exited = state.is_alive() & ~aperture.contains(state.kin.p.to_cartesian3())
-    return eqx.tree_at(lambda s: s.lost_at, state, jnp.where(exited, ct, state.lost_at))
+    reason = jnp.where(
+        state.kinematics_valid(), TrackingStatus.ALIVE, TrackingStatus.REVERSED
+    )
+    if material is not None:
+        reason = jnp.where(
+            material.is_stopped(state), TrackingStatus.STOPPED_IN_MATERIAL, reason
+        )
+    if aperture is not None:
+        exited = ~aperture.contains(state.kin.p.to_cartesian3())
+        reason = jnp.where(exited, TrackingStatus.HIT_APERTURE, reason)
+    lost_now = state.is_alive() & (reason != TrackingStatus.ALIVE)
+    status = jnp.where(lost_now, reason, state.status).astype(state.status.dtype)
+    lost_at = jnp.where(lost_now, ct, state.lost_at)
+    return state.with_status(status, lost_at)
+
+
+def frozen_status_interaction[T: ParticleState](
+    ct: Any, state: T, args: tuple[EMTensorField, tuple[SInt, SFloat]]
+) -> T:
+    """``particle_interaction`` for a state stripped of its status
+
+    The solvers integrate ``state.without_status()``, and pass
+    ``(field, (status, lost_at))`` as ``args``, since status only changes
+    between steps. Lost particles are evaluated on a regularized state (see
+    ``ParticleState.regularized``) so the masked-out derivative stays finite.
+    """
+    field, (status, lost_at) = args
+    full = state.with_status(status, lost_at).regularized()
+    return particle_interaction(ct, full, field).without_status()
 
 
 def sdf(
@@ -98,9 +135,10 @@ def diffrax_solve[T: ParticleState](
         field: The electromagnetic field to propagate through
         start: The initial particle state
         cts: The positions along the beamline to solve at
-        aperture: If given, the particle is lost when it leaves this volume: the
-            solve terminates at the end of that step, ``lost_at`` is set, and the
-            state at loss is repeated for all later save points.
+        aperture: If given, the particle is lost when it leaves this volume.
+            When a particle is lost (see ``update_status``), the solve
+            terminates at the end of that step, ``status`` and ``lost_at`` are
+            set, and the state at loss is repeated for all later save points.
         forward_mode: Whether to use forward-mode AD for the adjoint method
             (more efficient when there are more outputs than inputs)
 
@@ -116,32 +154,30 @@ def diffrax_solve[T: ParticleState](
         max_step=max_step,
         debug=debug,
     )
-    # lost_at is inf while alive, which diffrax's dense interpolation would turn
-    # into NaN, so it is held fixed in args rather than integrated
+    status = (start.status, start.lost_at)
     sol = diffeqsolve(
-        terms=ODETerm(_interaction_fixed_lost_at),
+        terms=ODETerm(frozen_status_interaction),
         solver=Dopri5(),
         t0=cts[0],
         t1=cts[-1],
         dt0=initial_step,
-        y0=_strip_lost_at(start),
-        args=(field, start.lost_at),
-        saveat=SaveAt(ts=cts, t1=aperture is not None),
+        y0=start.without_status(),
+        args=(field, status),
+        saveat=SaveAt(ts=cts, t1=True),
         adjoint=ForwardMode() if forward_mode else RecursiveCheckpointAdjoint(),
         stepsize_controller=controller,
-        event=None if aperture is None else Event(partial(_exited, aperture)),
+        event=Event(partial(_lost, aperture)),
     )
-    lost_at = jnp.broadcast_to(start.lost_at, sol.ts.shape)
-    ys = _restore_lost_at(sol.ys, lost_at)
-    if aperture is None:
-        return ys, sol.stats
+    ys = sol.ys.with_status(
+        *(jnp.broadcast_to(x, sol.ts.shape + jnp.shape(x)) for x in status)
+    )
 
     # On termination, diffrax saves the final state right after the last reached
     # save point, and fills the remainder with inf. Without termination, the final
     # state is saved last (at t1).
     ilast = jnp.argmax(jnp.where(jnp.isfinite(sol.ts), sol.ts, -jnp.inf))
     ct_end = sol.ts[ilast]
-    end = apply_aperture(jax.tree.map(lambda x: x[ilast], ys), ct_end, aperture)
+    end = update_status(jax.tree.map(lambda x: x[ilast], ys), ct_end, aperture=aperture)
     reached = cts <= ct_end
 
     def fill(saved: Array, final: Array) -> Array:
@@ -153,31 +189,14 @@ def diffrax_solve[T: ParticleState](
     return ys, stats
 
 
-def _strip_lost_at[T: ParticleState](state: T) -> T:
-    return eqx.tree_at(lambda s: s.lost_at, state, None)
-
-
-def _restore_lost_at[T: ParticleState](state: T, lost_at: Array) -> T:
-    return eqx.tree_at(lambda s: s.lost_at, state, lost_at, is_leaf=lambda x: x is None)
-
-
-def _interaction_fixed_lost_at[T: ParticleState](
-    ct: Any, state: T, args: tuple[EMTensorField, SFloat]
-) -> T:
-    """particle_interaction for a state stripped of lost_at (see diffrax_solve)"""
-    field, lost_at = args
-    dstate = particle_interaction(ct, _restore_lost_at(state, lost_at), field)
-    return _strip_lost_at(dstate)
-
-
-def _exited(
-    aperture: Volume,
+def _lost(
+    aperture: Volume | None,
     t: Any,
     y: ParticleState,
-    args: tuple[EMTensorField, SFloat],
+    args: tuple[EMTensorField, tuple[SInt, SFloat]],
     **kwargs,
 ) -> Array:
-    """Event condition: an alive particle has left the aperture"""
-    _, lost_at = args
-    alive = jnp.isinf(lost_at)
-    return alive & ~aperture.contains(y.kin.p.to_cartesian3())
+    """Event condition: an alive particle is lost (see ``update_status``)"""
+    _, status = args
+    state = y.with_status(*status)
+    return state.is_alive() & ~update_status(state, t, aperture=aperture).is_alive()

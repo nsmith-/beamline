@@ -34,11 +34,12 @@ from beamline.jax.coordinates import Cartesian3, Cartesian4
 from beamline.jax.emfield import SimpleEMField
 from beamline.jax.integrate.stochastic import (
     StochasticKick,
-    stochastic_solve,
     energy_loss_kick,
-    scattering_kick
+    scattering_kick,
+    stochastic_solve,
 )
-from beamline.jax.kinematics import MuonStateDz
+from beamline.jax.kinematics import MuonStateDz, TrackingStatus
+from beamline.units import MUON_MASS
 
 # --- configuration -----------------------------------------------------------
 MATERIAL = "silicon_dioxide_SiO2"
@@ -59,8 +60,7 @@ THETA0_RTOL = 0.02  # empirical theta RMS vs Highland theta0
 
 
 def make_absorber(char_length: float = LENGTH) -> AbsorberCylinder:
-    """A SiO2 disk centred at the origin, axis along z; char_length caps the in-material step.
-    """
+    """A SiO2 disk centred at the origin, axis along z; char_length caps the in-material step."""
     return AbsorberCylinder(
         material=MATERIALS[MATERIAL],
         radius=RADIUS,
@@ -68,14 +68,15 @@ def make_absorber(char_length: float = LENGTH) -> AbsorberCylinder:
         char_length=char_length,
     )
 
+
 def make_muon() -> MuonStateDz:
-    """A +1 muon on-axis upstream of the absorber, travelling along +z.
-    """
+    """A +1 muon on-axis upstream of the absorber, travelling along +z."""
     return MuonStateDz.make(
         position=Cartesian4.make(z=START_Z),
         momentum=Cartesian3.make(z=BEAM_PC),
         q=1,
     )
+
 
 def run_beam(absorber, start):
     """Propagate an ensemble through ``absorber``; return the saved states.
@@ -85,20 +86,21 @@ def run_beam(absorber, start):
     """
     field = SimpleEMField(E0=Cartesian3.make(), B0=Cartesian3.make())
     zs = jnp.array([START_Z, END_Z])
-    kick=StochasticKick(
+    kick = StochasticKick(
         straggling=energy_loss_kick(landau_energy_loss_sampler),
         scattering=scattering_kick(highland_scattering_sampler),
     )
     run = jax.jit(
-        jax.vmap(lambda k: stochastic_solve(field, absorber, start, zs, k, kick=kick)[0])
+        jax.vmap(
+            lambda k: stochastic_solve(field, absorber, start, zs, k, kick=kick)[0]
+        )
     )
     return run(jr.split(jr.key(SEED), N_PARTICLES))
- 
+
 
 @pytest.fixture(scope="module")
 def simulation():
-    """Run the beam once and expose observables + predictions to all tests.
-    """
+    """Run the beam once and expose observables + predictions to all tests."""
     absorber = make_absorber()
     start = make_muon()
     params = absorber.interaction_params(start, LENGTH)
@@ -126,6 +128,7 @@ def simulation():
         "pc_out": pc_out,
         "dE": dE,
         "theta_x": theta_x,
+        "status": np.asarray(ys.status[:, -1]),
         "stats": stats,
         "hist_range": hr,
         "material_name": absorber.material.name,
@@ -133,8 +136,7 @@ def simulation():
 
 
 def test_energy_loss_mode(simulation):
-    """The fitted Landau peak matches the predicted most-probable energy loss.
-    """
+    """The fitted Landau peak matches the predicted most-probable energy loss."""
     fitted_mode = simulation["stats"]["mode"]
     predicted_mode = float(simulation["pp"].mode_energy_loss)
     assert fitted_mode == pytest.approx(predicted_mode, rel=MODE_RTOL)
@@ -156,14 +158,12 @@ def test_energy_loss_distribution(simulation):
 
 
 def test_momentum_is_degraded(simulation):
-    """Passing through the absorber reduces the beam momentum.
-    """
+    """Passing through the absorber reduces the beam momentum."""
     assert simulation["pc_out"].mean() < simulation["pc_in"]
 
 
 def _robust_sigma(a) -> float:
-    """Tail-insensitive sigma from the MAD (equals std for a Gaussian).
-    """
+    """Tail-insensitive sigma from the MAD (equals std for a Gaussian)."""
     a = np.asarray(a)
     return float(1.4826 * np.median(np.abs(a - np.median(a))))
 
@@ -182,18 +182,25 @@ def test_scattering_angle(simulation):
 
 
 def test_scattering_tail(simulation):
-    """The unbounded Landau tail inflates the raw std above the bulk width.
+    """Muons that range out are stopped, not scattered by a divergent angle.
 
-    Rare draws exceed the muon's kinetic energy; apply_energy_loss floors it at
-    the rest mass and Highland's 1/(beta*p) diverges. One-sided: assert the tail exists, not its size.
+    Rare Landau draws exceed the muon's kinetic energy. Before tracking status
+    existed, apply_energy_loss floored the energy at the rest mass and
+    Highland's 1/(beta*p) diverged, inflating the raw std of the angle well
+    above the bulk width. Now such muons are marked STOPPED_IN_MATERIAL and
+    frozen, so the surviving muons have no divergent tail.
     """
-    th = simulation["theta_x"]
-    assert float(np.std(th)) > 1.5 * _robust_sigma(th)
+    status = simulation["status"]
+    stopped = status == TrackingStatus.STOPPED_IN_MATERIAL
+    assert np.all(stopped | (status == TrackingStatus.ALIVE))
+    print(f"  stopped fraction = {stopped.mean():.4f}")  # noqa: T201
+    assert stopped.mean() < 0.01
+    th = simulation["theta_x"][~stopped]
+    assert float(np.std(th)) < 1.5 * _robust_sigma(th)
 
 
 def test_summary_figure(simulation, artifacts_dir):
-    """Render the three-panel validation figure into test_artifacts/.
-    """
+    """Render the three-panel validation figure into test_artifacts/."""
     s = simulation
     dE, pc_out, theta_x = s["dE"], s["pc_out"], s["theta_x"]
     theta0 = s["theta0"]
@@ -297,3 +304,29 @@ def test_summary_figure(simulation, artifacts_dir):
     fig.tight_layout(rect=(0, 0, 1, 0.94))
     fig.savefig(artifacts_dir / "absorber_simulation.png", dpi=130)
     plt.close(fig)
+
+
+@pytest.mark.parametrize(
+    ("pc", "pdg_range"),
+    # https://pdg.lbl.gov/2025/AtomicNuclearProperties/MUE/muE_lithium_hydride_LiH.txt
+    [
+        (47.04 * u.MeV, 6.960e-1 * u.g / u.cm2),
+        (85.09 * u.MeV, 4.811e0 * u.g / u.cm2),
+        (199.4 * u.MeV, 4.122e1 * u.g / u.cm2),
+    ],
+)
+def test_csda_range_vs_pdg(pc, pdg_range):
+    material = MATERIALS["lithium_hydride_LiH"]
+    mass = MUON_MASS * u.c_light_sq
+    R = material.csda_range(pc, mass, 1.0)
+    assert R == pytest.approx(pdg_range / material.density, rel=0.02)
+
+
+def test_stopping_momentum():
+    material = MATERIALS["lithium_hydride_LiH"]
+    mass = MUON_MASS * u.c_light_sq
+    p_stop = material.stopping_momentum(1.0 * u.mm, mass, 1.0)
+    assert material.csda_range(p_stop, mass, 1.0) == pytest.approx(1.0 * u.mm)
+    # a denser material stops the same range at higher momentum
+    p_stop_al = MATERIALS["aluminum_Al"].stopping_momentum(1.0 * u.mm, mass, 1.0)
+    assert p_stop_al > p_stop

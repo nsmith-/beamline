@@ -6,11 +6,14 @@ as described e.g. in https://pdg.lbl.gov/2025/reviews/rpp2024-rev-passage-partic
 The data values themselves are retrieved from https://pdg.lbl.gov/2025/AtomicNuclearProperties/
 """
 
+import functools
 from dataclasses import dataclass
 from typing import Protocol
 
 import hepunits as u
+import jax
 import jax.numpy as jnp
+import numpy as np
 
 from beamline.jax.types import SFloat
 from beamline.units import ELECTRON_MASS
@@ -146,16 +149,11 @@ class Material:
     """True if this is an atomic element (rather than a compound)"""
     density_correction: DensityCorrection
 
-    def interaction_params(
-        self, particle: IncidentParticle, thickness: SFloat
-    ) -> InteractionParams:
-        """Compute interaction parameters for a given particle and thickness"""
-
-        beta, gamma = particle.beta(), particle.gamma()
-        mass_ratio = ELECTRON_MASS * u.c_light_sq / particle.mass
-
-        # maximum energy transfer in a single collision with an electron
-        Wmax = (
+    @staticmethod
+    def _wmax(beta: SFloat, gamma: SFloat, mass: SFloat) -> SFloat:
+        """Maximum energy transfer in a single collision with an electron [MeV]"""
+        mass_ratio = ELECTRON_MASS * u.c_light_sq / mass
+        return (
             2
             * ELECTRON_MASS
             * u.c_light_sq
@@ -163,23 +161,107 @@ class Material:
             / (1 + 2 * gamma * mass_ratio + mass_ratio**2)
         )
 
+    def _mean_dedx(
+        self, beta: SFloat, gamma: SFloat, mass: SFloat, charge: SFloat
+    ) -> SFloat:
+        """Bethe-Bloch mean stopping power <-dE/dx> [MeV/mm] (PDG 34.5)"""
+        Wmax = self._wmax(beta, gamma, mass)
+        prefactor = DEDX_CONSTANT * (self.Z / self.mass) * charge**2 * self.density
+        return (
+            0.5
+            * prefactor
+            / beta**2
+            * (
+                jnp.log(
+                    2
+                    * ELECTRON_MASS
+                    * u.c_light_sq
+                    * (beta * gamma) ** 2
+                    * Wmax
+                    / self.mean_excitation**2
+                )
+                - 2 * beta**2
+                - self.density_correction(beta * gamma)
+            )
+        )
+
+    def stopping_power(self, pc: SFloat, mass: SFloat, charge: SFloat) -> SFloat:
+        """Mean stopping power <-dE/dx> [MeV/mm] for momentum ``pc`` [MeV]
+
+        Args:
+            pc: Momentum times c [MeV]
+            mass: Incident particle mass-energy [MeV]
+            charge: Incident particle charge [e]
+        """
+        E = jnp.hypot(mass, pc)
+        return self._mean_dedx(pc / E, E / mass, mass, charge)
+
+    def csda_range(
+        self,
+        pc: SFloat,
+        mass: SFloat,
+        charge: SFloat,
+        *,
+        bg_min: float = 0.05,
+        order: int = 64,
+    ) -> SFloat:
+        """Continuous-slowing-down-approximation range [mm] at momentum ``pc`` [MeV]
+
+        The path length over which the mean energy loss brings the particle to
+        rest. Since dE = beta dp, ``R(p) = int beta / <-dE/dx> dp``, computed by
+        Gauss-Legendre quadrature in log p (cf. the ODE solve in
+        ``notebook/straggling_exploration.ipynb``).
+
+        Bethe-Bloch is not valid at low velocity (and turns negative), so the
+        integral is cut off at ``beta * gamma = bg_min``; the range below that
+        is negligible (of order microns for muons). Compared to the PDG muon
+        tables (which include low-energy corrections), muons in LiH agree to
+        within 1% above 50 MeV/c, and the range is ~10% long at 25 MeV/c.
+
+        Args:
+            pc: Momentum times c [MeV] (any shape)
+            mass: Incident particle mass-energy [MeV]
+            charge: Incident particle charge [e]
+            bg_min: Lower cutoff of the integral in beta * gamma
+            order: Number of quadrature nodes
+        """
+        nodes, weights = np.polynomial.legendre.leggauss(order)
+        pc = jnp.asarray(pc)[..., None]
+        log_lo = jnp.log(bg_min * mass)
+        log_hi = jnp.maximum(jnp.log(pc), log_lo)
+        half = 0.5 * (log_hi - log_lo)
+        p = jnp.exp(log_lo + half * (nodes + 1.0))
+        beta = p / jnp.hypot(mass, p)
+        # dp = p dlog(p)
+        integrand = beta * p / self.stopping_power(p, mass, charge)
+        return jnp.sum(half * weights * integrand, axis=-1)
+
+    def stopping_momentum(self, min_range: float, mass: float, charge: float) -> float:
+        """Momentum [MeV] below which the CSDA range is less than ``min_range`` [mm]
+
+        A particle below this momentum will range out within ``min_range`` and
+        is considered stopped. The value is computed once per arguments (by
+        bisection on ``csda_range``) and cached, so this must be called with
+        concrete (static) arguments; it is safe to call while tracing.
+        """
+        return _stopping_momentum(self, min_range, mass, charge)
+
+    def interaction_params(
+        self, particle: IncidentParticle, thickness: SFloat
+    ) -> InteractionParams:
+        """Compute interaction parameters for a given particle and thickness"""
+
+        beta, gamma = particle.beta(), particle.gamma()
+        Wmax = self._wmax(beta, gamma, particle.mass)
+
         prefactor = (
             DEDX_CONSTANT * (self.Z / self.mass) * particle.charge**2 * self.density
         )
 
         xi = 0.5 * prefactor * thickness / beta**2
         kappa = xi / Wmax
-        mean_energy_loss = xi * (
-            jnp.log(
-                2
-                * ELECTRON_MASS
-                * u.c_light_sq
-                * (beta * gamma) ** 2
-                * Wmax
-                / self.mean_excitation**2
-            )
-            - 2 * beta**2
-            - self.density_correction(beta * gamma)
+        mean_energy_loss = (
+            self._mean_dedx(beta, gamma, particle.mass, particle.charge) * thickness
         )
         # (0.2 is with density correction, 0.37 is without, per Bichsel:1998if)
         mode_energy_loss = mean_energy_loss + xi * (
@@ -201,8 +283,26 @@ class Material:
             mean_energy_loss=mean_energy_loss,
             mode_energy_loss=mode_energy_loss,
             theta0=theta0,
-            thickness=thickness
+            thickness=thickness,
         )
+
+
+@functools.cache
+def _stopping_momentum(
+    material: Material, min_range: float, mass: float, charge: float
+) -> float:
+    """Cached implementation of ``Material.stopping_momentum``"""
+    with jax.ensure_compile_time_eval():
+        lo, hi = jnp.log(0.05 * mass), jnp.log(1e6 * mass)
+
+        def body(_, bounds):
+            lo, hi = bounds
+            mid = 0.5 * (lo + hi)
+            short = material.csda_range(jnp.exp(mid), mass, charge) < min_range
+            return jnp.where(short, mid, lo), jnp.where(short, hi, mid)
+
+        lo, hi = jax.lax.fori_loop(0, 60, body, (lo, hi))
+        return float(jnp.exp(0.5 * (lo + hi)))
 
 
 # TODO: build these programmatically from https://pdg.lbl.gov/2025/AtomicNuclearProperties/expert.html
