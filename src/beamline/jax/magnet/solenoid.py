@@ -4,6 +4,7 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.experimental.jet import jet
 from jax.scipy.special import gamma
 from quadax import quadgk
@@ -203,28 +204,62 @@ class ThickSolenoid(EMTensorField):
     L: SFloat
     """Length of the solenoid [mm]"""
 
-    def B_shells(
-        self, rho: SFloat, z: SFloat, num_shells: int = 200, vmap: bool = False
-    ) -> tuple[SFloat, SFloat]:
-        dR = (self.Rout - self.Rin) / num_shells
+    def Bz_onaxis(self, z: SFloat) -> SFloat:
+        """Magnetic field on-axis (rho=0), in closed form
 
-        def shell_contrib_R(R: SFloat) -> tuple[SFloat, SFloat]:
+        Integrates the thin shell on-axis field over the winding radius:
+        Bz = mu0 j / 2 [zeta ln((Rout + hypot(Rout, zeta)) / (Rin + hypot(Rin, zeta)))]
+        evaluated between zeta = z - L/2 and zeta = z + L/2.
+        """
+
+        def edge(zeta: SFloat) -> SFloat:
+            return zeta * jnp.log(
+                (self.Rout + jnp.hypot(self.Rout, zeta))
+                / (self.Rin + jnp.hypot(self.Rin, zeta))
+            )
+
+        halfL = self.L / 2
+        return MU0 * self.jphi / 2 * (edge(z + halfL) - edge(z - halfL))
+
+    def B_shells(
+        self, rho: SFloat, z: SFloat, num_shells: int = 8, vmap: bool = True
+    ) -> tuple[SFloat, SFloat]:
+        """Return the rho and z component of the magnetic field
+
+        Integrates thin shells over the winding radius with Gauss-Legendre quadrature.
+        Outside the winding (rho < Rin or rho > Rout) the integrand is smooth in R
+        and the quadrature converges exponentially: at the 3.2 benchmark coil, 8
+        shells reach ~1e-13 relative accuracy. Inside the winding the integrand has
+        a kink at R = rho and convergence is only algebraic.
+
+        Args:
+            rho, z: Field point in the solenoid frame [mm]
+            num_shells: Number of quadrature nodes (thin shells)
+            vmap: Evaluate shells with vmap (default; faster) instead of scan
+        """
+        nodes, weights = np.polynomial.legendre.leggauss(num_shells)
+        half_width = (self.Rout - self.Rin) / 2
+        shell_radii = (self.Rout + self.Rin) / 2 + half_width * nodes
+        shell_widths = half_width * weights
+
+        def shell_contrib_R(R: SFloat, dR: SFloat) -> tuple[SFloat, SFloat]:
             thin_solenoid = ThinShellSolenoid(R=R, jphi=self.jphi * dR, L=self.L)
             return thin_solenoid.B_elliptic(rho, z)
 
         def shell_contrib_body(
-            carry: tuple[SFloat, SFloat], R: SFloat
+            carry: tuple[SFloat, SFloat], shell: tuple[SFloat, SFloat]
         ) -> tuple[tuple[SFloat, SFloat], None]:
-            Brho, Bz = shell_contrib_R(R)
+            Brho, Bz = shell_contrib_R(*shell)
             return (carry[0] + Brho, carry[1] + Bz), None
 
-        shell_radii = jnp.linspace(self.Rin, self.Rout, num_shells)
         if vmap:
-            Brho, Bz = jax.vmap(shell_contrib_R)(shell_radii)
+            Brho, Bz = jax.vmap(shell_contrib_R)(shell_radii, shell_widths)
             return jnp.sum(Brho), jnp.sum(Bz)
 
         zero = jnp.zeros_like(rho)
-        out, _ = jax.lax.scan(shell_contrib_body, (zero, zero), shell_radii)
+        out, _ = jax.lax.scan(
+            shell_contrib_body, (zero, zero), (shell_radii, shell_widths)
+        )
         return out
 
     def contains(self, point: Cartesian3) -> SBool:
