@@ -179,3 +179,19 @@ class CylinderVolume(Volume):
         t_forward = jnp.min(jnp.where(ts >= 0, ts, jnp.inf))
         inside = ((tcyl <= 0.0) | ~jnp.isfinite(tcyl)) & (t1 * t2 <= 0.0)
         return jnp.where(inside, -t_forward, t_forward)
+
+
+class BeamPipe(Volume):
+    """Infinitely long cylinder along the z axis, e.g. as a tracking aperture"""
+
+    radius: SFloat
+    """Inner radius of the pipe [mm]"""
+
+    def contains(self, point: Cartesian3) -> SBool:
+        return point.to_cylindric().rho <= self.radius
+
+    def signed_time_to_boundary(self, ray: Tangent[Cartesian3]) -> SFloat:
+        t, _ = line_cylinder_intersection(
+            ray, Cartesian3.make(), Cartesian3.make(z=self.radius)
+        )
+        return t

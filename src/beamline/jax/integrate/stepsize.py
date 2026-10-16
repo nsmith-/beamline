@@ -94,9 +94,11 @@ class BoundaryAwareStepSizeController[ControllerState, DT0: SFloat, Y: ParticleS
         to prevent it from completely jumping over a volume.
         """
         # pass inf through, but clip large finite values
+        finite = jnp.isfinite(sdf)
+        safe_sdf = jnp.where(finite, sdf, 0.0)  # avoid inf/inf in the unused branch
         return jnp.where(
-            jnp.isfinite(sdf),
-            self.max_step * sdf / jnp.hypot(self.max_step, sdf),
+            finite,
+            self.max_step * safe_sdf / jnp.hypot(self.max_step, safe_sdf),
             sdf,
         )
 
@@ -115,7 +117,8 @@ class BoundaryAwareStepSizeController[ControllerState, DT0: SFloat, Y: ParticleS
             terms, t0, t1, y0, dt0, args, func, error_order
         )
         sdf = self.sdf(y0)
-        max_next_step = self._softclip_sdf(sdf)
+        # sdf is negative when starting inside a volume
+        max_next_step = self._softclip_sdf(jnp.abs(sdf))
         t1 = jnp.minimum(t1, t0 + max_next_step)
         return t1, (sdf, dt0, inner_state)
 
