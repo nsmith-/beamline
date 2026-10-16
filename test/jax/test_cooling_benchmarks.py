@@ -23,6 +23,7 @@ from beamline.jax.kinematics import MuonStateDz
 from beamline.jax.magnet.solenoid import ThickSolenoid
 from beamline.jax.rfcavity.pillbox import PillboxCavity
 from beamline.jax.types import SFloat
+from beamline.jax.util.state_io import write_states_csv
 
 SOLENOID = ThickSolenoid(
     Rin=250.0 * u.mm,
@@ -71,20 +72,7 @@ def test_benchmark_3p2_solenoid(artifacts_dir):
     grad_jphi = extract(grad, lambda f: f.jphi)
     grad_L = extract(grad, lambda f: f.L)
 
-    with open(artifacts_dir / "benchmark_3p2_solenoid_data.csv", "w") as f:
-        f.write("xf,yf,zf,tf,pxf,pyf,pzf,Ef\n")
-        cols = [
-            end.kin.p.x / u.mm,
-            end.kin.p.y / u.mm,
-            end.kin.p.z / u.mm,
-            end.kin.p.ct / u.mm,
-            end.kin.t.x / u.MeV,
-            end.kin.t.y / u.MeV,
-            end.kin.t.z / u.MeV,
-            end.kin.t.ct / u.MeV,
-        ]
-        for row in zip(*cols, strict=True):
-            f.write(",".join(f"{val:.6f}" for val in row) + "\n")
+    write_states_csv(artifacts_dir / "benchmark_3p2_solenoid_data.csv", end, suffix="f")
 
     # Plot results
     fig, ax = plt.subplots(figsize=(8, 8))

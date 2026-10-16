@@ -804,6 +804,8 @@ def add_volume(
       radius ``Rout``, height ``L``) — a hollow tube, not a solid cylinder
     - Any other ``CylinderVolume`` (e.g. ``PillboxCavity``, ``AbsorberCylinder``)
       → ``Mesh`` cylinder (``radius``, ``length``, per the ABC)
+    - ``StackedField`` → recurse into its unstacked batch members, named
+      the same way as ``SumField`` components
     - ``SumField`` → recurse into ``components``, naming each child prim
       ``<snake_case_type_name>_<index>`` (e.g. two summed ``PillboxCavity``
       instances become ``pillbox_cavity_0`` and ``pillbox_cavity_1``); the
@@ -841,7 +843,7 @@ def add_volume(
     _require_pxr()
 
     from beamline.jax.absorber.volume import AbsorberCylinder, TransformMaterialVolume
-    from beamline.jax.emfield import SumField, TransformEMField
+    from beamline.jax.emfield import StackedField, SumField, TransformEMField
     from beamline.jax.geometry import CylinderVolume
     from beamline.jax.magnet.solenoid import ThickSolenoid, ThinShellSolenoid
     from beamline.jax.rfcavity.pillbox import PillboxCavity
@@ -855,8 +857,9 @@ def add_volume(
         AbsorberCylinder: _COLOR_ABSORBER,
     }
 
-    if isinstance(vol, SumField):
-        for i, comp in enumerate(vol.components):
+    if isinstance(vol, SumField | StackedField):
+        comps = vol.components if isinstance(vol, SumField) else vol.unstack()
+        for i, comp in enumerate(comps):
             name = _snake_case(_innermost_type(comp).__name__)
             add_volume(stage, f"{prim_path}/{name}_{i}", comp, transform=transform)
 
