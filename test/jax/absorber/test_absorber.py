@@ -165,17 +165,6 @@ def test_momentum_is_degraded(simulation):
     assert simulation["pc_out"].mean() < simulation["pc_in"]
 
 
-def _robust_sigma(a) -> float:
-    """Tail-insensitive estimate of a Gaussian core's standard deviation
-
-    The median absolute deviation (MAD) from the median, scaled to equal the
-    standard deviation for a normal distribution: ``scale="normal"`` divides by
-    ``Phi^-1(3/4) = 0.6745`` (i.e. multiplies by 1.4826). Unlike ``np.std`` it
-    ignores a heavy tail, so comparing the two detects one.
-    """
-    return float(sps.median_abs_deviation(np.asarray(a), scale="normal"))
-
-
 def test_scattering_angle(simulation):
     """Bulk theta_x width vs single-application Highland theta_0 (10 mm).
 
@@ -184,7 +173,11 @@ def test_scattering_angle(simulation):
     widths combine in quadrature systematically low relative to one application
     over the full thickness.
     """
-    ratio = _robust_sigma(simulation["theta_x"]) / simulation["theta0"]
+    # Bulk width: the median absolute deviation, scaled to equal the standard
+    # deviation for a Gaussian (scale="normal" multiplies by 1/Phi^-1(3/4) =
+    # 1.4826). Insensitive to the single-scattering tail Highland ignores.
+    width = sps.median_abs_deviation(simulation["theta_x"], scale="normal")
+    ratio = float(width) / simulation["theta0"]
     print(f"  bulk theta_x width / theta0(10mm) = {ratio:.4f}")  # noqa: T201
     lo, hi = THETA_RATIO_RANGE
     assert lo < ratio < hi, f"bulk width / theta0(10mm) = {ratio:.4f}"
