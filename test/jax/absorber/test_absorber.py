@@ -57,6 +57,9 @@ N_BINS_MCS = 200  # histogram bins for the scattering observables
 # --- tolerances (tuned against real runs) ------------------------------------
 MODE_RTOL = 0.02  # fitted Landau mode vs predicted MPV
 THETA0_RTOL = 0.02  # empirical theta RMS vs Highland theta0
+# theta_x width / theta0(10 mm): low because the crossing is segmented into
+# sub-steps whose Highland kicks add in quadrature (see test_scattering_angle)
+THETA_RATIO_RANGE = (0.88, 1.02)
 
 
 def make_absorber(char_length: float = LENGTH) -> AbsorberCylinder:
@@ -163,9 +166,14 @@ def test_momentum_is_degraded(simulation):
 
 
 def _robust_sigma(a) -> float:
-    """Tail-insensitive sigma from the MAD (equals std for a Gaussian)."""
-    a = np.asarray(a)
-    return float(1.4826 * np.median(np.abs(a - np.median(a))))
+    """Tail-insensitive estimate of a Gaussian core's standard deviation
+
+    The median absolute deviation (MAD) from the median, scaled to equal the
+    standard deviation for a normal distribution: ``scale="normal"`` divides by
+    ``Phi^-1(3/4) = 0.6745`` (i.e. multiplies by 1.4826). Unlike ``np.std`` it
+    ignores a heavy tail, so comparing the two detects one.
+    """
+    return float(sps.median_abs_deviation(np.asarray(a), scale="normal"))
 
 
 def test_scattering_angle(simulation):
@@ -178,7 +186,8 @@ def test_scattering_angle(simulation):
     """
     ratio = _robust_sigma(simulation["theta_x"]) / simulation["theta0"]
     print(f"  bulk theta_x width / theta0(10mm) = {ratio:.4f}")  # noqa: T201
-    assert 0.88 < ratio < 1.02, f"bulk width / theta0(10mm) = {ratio:.4f}"
+    lo, hi = THETA_RATIO_RANGE
+    assert lo < ratio < hi, f"bulk width / theta0(10mm) = {ratio:.4f}"
 
 
 def test_scattering_tail(simulation):
@@ -188,15 +197,19 @@ def test_scattering_tail(simulation):
     existed, apply_energy_loss floored the energy at the rest mass and
     Highland's 1/(beta*p) diverged, inflating the raw std of the angle well
     above the bulk width. Now such muons are marked STOPPED_IN_MATERIAL and
-    frozen, so the surviving muons have no divergent tail.
+    frozen, so the surviving muons have no divergent tail: their raw RMS
+    (not just the tail-insensitive bulk width) matches Highland's theta0 to
+    the same tolerance as test_scattering_angle.
     """
     status = simulation["status"]
     stopped = status == TrackingStatus.STOPPED_IN_MATERIAL
     assert np.all(stopped | (status == TrackingStatus.ALIVE))
     print(f"  stopped fraction = {stopped.mean():.4f}")  # noqa: T201
     assert stopped.mean() < 0.01
-    th = simulation["theta_x"][~stopped]
-    assert float(np.std(th)) < 1.5 * _robust_sigma(th)
+    ratio = float(np.std(simulation["theta_x"][~stopped])) / simulation["theta0"]
+    print(f"  surviving theta_x RMS / theta0(10mm) = {ratio:.4f}")  # noqa: T201
+    lo, hi = THETA_RATIO_RANGE
+    assert lo < ratio < hi, f"surviving RMS / theta0(10mm) = {ratio:.4f}"
 
 
 def test_summary_figure(simulation, artifacts_dir):

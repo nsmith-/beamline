@@ -16,7 +16,6 @@ from abc import abstractmethod
 
 import equinox as eqx
 import hepunits as u
-import jax.numpy as jnp
 
 from beamline.jax.absorber.material import InteractionParams, Material
 from beamline.jax.coordinates import Cartesian3, Tangent, Transform
@@ -142,5 +141,5 @@ class AbsorberCylinder(MaterialVolume, CylinderVolume):
         p_stop = self.material.stopping_momentum(
             self.min_range, float(state.mass), abs(float(state.charge))
         )
-        pmag = jnp.sqrt(jnp.sum(state.kin.t.coords[..., :3] ** 2, axis=-1))
+        pmag = abs(state.kin.t.to_cartesian3())
         return self.contains(state.kin.p.to_cartesian3()) & (pmag < p_stop)

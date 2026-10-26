@@ -123,6 +123,7 @@ class ParticleState(eqx.Module):
             is_leaf=lambda x: x is None,
         )
 
+    @abstractmethod
     def regularized(self) -> Self:
         """Replace the momentum of non-alive particles with a benign placeholder
 
@@ -131,10 +132,20 @@ class ParticleState(eqx.Module):
         contribution is masked out with ``jnp.where``, but the masked branch
         must still be finite or its gradient (and ``jax_debug_nans``) yields
         NaN. Evaluate on ``state.regularized()`` instead (the "double where"
-        trick). The placeholder is ``p = m`` along ``+z``.
+        trick).
+
+        Which placeholder is benign depends on the independent variable (it
+        must keep ``scale()`` finite), so each subclass chooses one; see
+        ``_with_lost_momentum``. Alive particles must be returned unchanged.
         """
-        m = self.mass
-        placeholder = jnp.array([0.0, 0.0, m, jnp.sqrt(2.0) * m])
+
+    def _with_lost_momentum(self, p3: Cartesian3) -> Self:
+        """Helper for ``regularized``: set non-alive particles' momentum to ``p3``
+
+        The energy is set on shell.
+        """
+        energy = jnp.sqrt(abs(p3) ** 2 + self.mass**2)
+        placeholder = jnp.concatenate([p3.coords, energy[..., None]], axis=-1)
         coords = jnp.where(self.is_alive()[..., None], self.kin.t.coords, placeholder)
         return eqx.tree_at(lambda s: s.kin.t, self, Cartesian4(coords=coords))
 
@@ -219,6 +230,14 @@ class MuonStateDct(MuonState):
     def scale(self) -> SFloat:
         return 1.0
 
+    def regularized(self) -> MuonStateDct:
+        """Placeholder ``p = m`` along ``+z``
+
+        ``scale()`` is constant, so only ``|p| > 0`` matters (for e.g.
+        Highland's ``1 / (beta p)`` in the material interaction parameters).
+        """
+        return self._with_lost_momentum(Cartesian3.make(z=self.mass))
+
     def build_tangent(self, dkin: Tangent[Cartesian4]) -> MuonStateDct:
         """Derivative of log_weight is zero; it changes only at kicks.
 
@@ -250,8 +269,15 @@ class MuonStateDz(MuonState):
         return self.kin.t.ct / self.kin.t.z
 
     def kinematics_valid(self) -> SBool:
-        pmag = jnp.sqrt(jnp.sum(self.kin.t.coords[..., :3] ** 2, axis=-1))
-        return self.kin.t.z > MIN_PZ_FRACTION * pmag
+        return self.kin.t.z > MIN_PZ_FRACTION * abs(self.kin.t.to_cartesian3())
+
+    def regularized(self) -> MuonStateDz:
+        """Placeholder ``p = m`` along ``+z``
+
+        Besides ``|p| > 0``, ``scale() = E / p_z`` needs ``p_z`` bounded away
+        from zero, so the placeholder points along the integration axis.
+        """
+        return self._with_lost_momentum(Cartesian3.make(z=self.mass))
 
     def build_tangent(self, dkin: Tangent[Cartesian4]) -> MuonStateDz:
         """Derivative of log_weight is zero; it changes only at kicks.
