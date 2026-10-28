@@ -70,7 +70,8 @@ from beamline.jax.absorber.material import InteractionParams
 from beamline.jax.absorber.volume import MaterialVolume
 from beamline.jax.coordinates import Cartesian3, Cartesian4, Tangent, Transform
 from beamline.jax.emfield import EMTensorField
-from beamline.jax.integrate.propagate import particle_interaction
+from beamline.jax.geometry import Volume
+from beamline.jax.integrate.propagate import frozen_status_interaction, update_status
 from beamline.jax.integrate.stepsize import BoundaryAwareStepSizeController
 from beamline.jax.kinematics import ParticleState
 from beamline.jax.types import SFloat
@@ -249,6 +250,7 @@ def stochastic_solve[T: ParticleState](
     key: Array,
     *,
     kick: StochasticKick | None = None,
+    aperture: Volume | None = None,
     forward_mode: bool = False,
     rtol: float = 1e-5,
     atol: float = 1e-7,
@@ -271,6 +273,12 @@ def stochastic_solve[T: ParticleState](
             container owns the state update and log_weight accumulation. Gating
             to real in-material accepted steps happens in the solver. ``None``
             (default) is deterministic propagation only.
+        aperture: If given, the particle is marked ``HIT_APERTURE`` after the
+            first accepted step that ends outside this volume. Independently of
+            this, a particle is marked ``STOPPED_IN_MATERIAL`` once
+            ``material.is_stopped`` (checked right after each kick, before the
+            next RHS evaluation), or ``REVERSED`` if its kinematics become
+            invalid (see ``update_status``). Lost particles are frozen in place.
         forward_mode: If True, configure the solver for forward-mode autodiff
             (``jax.jvp`` / ``jax.jacfwd``); otherwise (default) reverse-mode
             (``jax.grad`` / ``jax.jacrev``). See the module docstring.
@@ -289,7 +297,9 @@ def stochastic_solve[T: ParticleState](
     Returns:
         The saved states (batched along ``cts``) and a dict of solver stats.
     """
-    term = ODETerm(particle_interaction)
+    # status is bookkeeping, not integrated: the solver sees y.without_status()
+    # and the status rides in args (see frozen_status_interaction)
+    term = ODETerm(frozen_status_interaction)
     # Both loops (inner substep while_loop and inner RK stage loop) need to be
     # configured for the same AD direction; forward_mode wires them together.
     kind = "lax" if forward_mode else "checkpointed"
@@ -305,13 +315,18 @@ def stochastic_solve[T: ParticleState](
     )
 
     t0, t1 = cts[0], cts[-1]
+
+    def ode_args(state: ParticleState):
+        return (field, (state.status, state.lost_at))
+
+    start_ode = start.without_status()
     tnext0, controller_state = controller.init(
-        term, t0, t1, start, initial_step, field, solver.func, error_order
+        term, t0, t1, start_ode, initial_step, ode_args(start), solver.func, error_order
     )
     # Step-size control is a discretization choice, not physics (see below).
     tnext0 = lax.stop_gradient(jnp.minimum(tnext0, t1))
     controller_state = lax.stop_gradient(controller_state)
-    solver_state = solver.init(term, t0, tnext0, start, field)
+    solver_state = solver.init(term, t0, tnext0, start_ode, ode_args(start))
 
     def in_material(state: ParticleState) -> Array:
         return material.contains(state.kin.p.to_cartesian3())
@@ -337,20 +352,23 @@ def stochastic_solve[T: ParticleState](
         tnext_eff = jnp.where(
             in_material(y), jnp.minimum(tnext_eff, tprev + char_len), tnext_eff
         )
+        # lost particles are frozen (zero derivative): skip to the interval end
+        tnext_eff = jnp.where(y.is_alive(), tnext_eff, bound)
 
-        y_cand, y_error, _dense, solver_state_cand, _ = solver.step(
-            term, tprev, tnext_eff, y, field, solver_state, made_jump
+        y_ode, args = y.without_status(), ode_args(y)
+        y_cand_ode, y_error, _dense, solver_state_cand, _ = solver.step(
+            term, tprev, tnext_eff, y_ode, args, solver_state, made_jump
         )
-        y_cand = cast(ParticleState, y_cand)
+        y_cand = cast(ParticleState, y_cand_ode).with_status(y.status, y.lost_at)
         y_error = jax.tree.map(lambda x: jnp.where(jnp.isnan(x), jnp.inf, x), y_error)
 
         keep_step, tprev_next, tnext_next, ctrl_jump, controller_state, _ = (
             controller.adapt_step_size(
                 tprev,
                 tnext_eff,
-                y,
-                y_cand,
-                field,
+                y_ode,
+                y_cand_ode,
+                args,
                 y_error,
                 error_order,
                 controller_state,
@@ -377,10 +395,10 @@ def stochastic_solve[T: ParticleState](
         # when crossing a boundary: use signed_time_to_boundary
         # TODO: in both cases, assumes path length is displacement in a straight line
         # though in the boundary crossing case abs(sdf0) + abs(sdf1) >= abs(pos1 - pos0)
-        disp2 = jnp.sum((ray1.p.coords - ray0.p.coords) ** 2, axis=-1)
-        displacement = jnp.where(
-            disp2 > 0.0, jnp.sqrt(jnp.where(disp2 > 0.0, disp2, 1.0)), 0.0
-        )
+        # (guarded norm: a frozen particle has zero displacement, where the
+        # gradient of sqrt is NaN)
+        d2 = jnp.sum((ray1.p - ray0.p).coords ** 2, axis=-1)
+        displacement = jnp.where(d2 > 0.0, jnp.sqrt(jnp.where(d2 > 0.0, d2, 1.0)), 0.0)
         thickness = jnp.where(
             (sdf0 < 0.0) & (sdf1 < 0.0),
             displacement,
@@ -395,15 +413,21 @@ def stochastic_solve[T: ParticleState](
                 ),
             ),
         )
-        kick_applied = keep_step & (thickness > 0.0)
+        kick_applied = keep_step & (thickness > 0.0) & y.is_alive()
         thickness = jnp.where(thickness == 0.0, 1.0, thickness)
-        params_state = jax.tree.map(lambda a, b: jnp.where(sdf1 < 0.0, a, b), y_kept, y)
-        params = material.interaction_params(params_state, thickness)
+        # Evaluate the interaction parameters at whichever end of the step is
+        # inside the material (for a SumMaterialVolume, the params outside every
+        # component are zero). Lost particles are evaluated on a placeholder
+        # (and masked out below) so that e.g. Highland's 1/(beta p) stays
+        # finite at p ~ 0.
+        y_inside = jax.tree.map(lambda a, b: jnp.where(sdf1 < 0.0, a, b), y_kept, y)
+        y_reg = y_kept.regularized()
+        params = material.interaction_params(y_inside.regularized(), thickness)
 
         y_new = y_kept
         if kick is not None:
             key, subkey = jr.split(key)
-            y_new = kick(y_new, params, subkey)
+            y_new = kick(y_reg, params, subkey)
 
         # Gate the whole kick on a real, accepted, in-material step (kick_applied
         # already includes keep_step, so rejected steps revert here too). This
@@ -418,6 +442,14 @@ def stochastic_solve[T: ParticleState](
         # tnext_next; we must take it, or the same step is retried forever.
         tprev_out = tprev_next
         tnext_out = tnext_next
+
+        # Post-step processing, right after the kick so that a particle which
+        # ranged out is frozen before the RHS is evaluated on it again (on
+        # rejection y_new is y, which was already checked)
+        was_alive = y_new.is_alive()
+        y_new = update_status(y_new, tprev_out, aperture=aperture, material=material)
+        # the cached (FSAL) derivative is stale once the particle is frozen
+        made_jump = made_jump | (was_alive & ~y_new.is_alive())
 
         if debug:
             # _probe_tangent prints the JVP tangent in forward-mode AD, to verify
@@ -467,7 +499,14 @@ def stochastic_solve[T: ParticleState](
         )
         y = carry[2]
         finished = carry[0] >= bound
-        return carry, (y.kin.p.coords, y.kin.t.coords, y.log_weight, finished)
+        return carry, (
+            y.kin.p.coords,
+            y.kin.t.coords,
+            y.log_weight,
+            y.status,
+            y.lost_at,
+            finished,
+        )
 
     init_carry = (
         t0,
@@ -480,14 +519,16 @@ def stochastic_solve[T: ParticleState](
         jnp.array(0),
         jnp.array(0),
     )
-    final_carry, (saved_p, saved_t, saved_w, finished) = lax.scan(
-        integrate_interval, init_carry, cts[1:]
+    final_carry, (saved_p, saved_t, saved_w, saved_status, saved_lost, finished) = (
+        lax.scan(integrate_interval, init_carry, cts[1:])
     )
 
     # Prepend the start state (at cts[0]) to the per-interval endpoints.
     save_p = jnp.concatenate([start.kin.p.coords[None], saved_p], axis=0)
     save_t = jnp.concatenate([start.kin.t.coords[None], saved_t], axis=0)
     save_w = jnp.concatenate([jnp.asarray(start.log_weight)[None], saved_w], axis=0)
+    save_status = jnp.concatenate([jnp.asarray(start.status)[None], saved_status])
+    save_lost = jnp.concatenate([jnp.asarray(start.lost_at)[None], saved_lost])
     if throw:
         save_p = eqx.error_if(
             save_p,
@@ -499,6 +540,8 @@ def stochastic_solve[T: ParticleState](
         kin=Tangent(p=Cartesian4(coords=save_p), t=Cartesian4(coords=save_t)),
         q=start.q,
         log_weight=save_w,
+        status=save_status,
+        lost_at=save_lost,
     )
     stats = {
         "num_steps": final_carry[7],

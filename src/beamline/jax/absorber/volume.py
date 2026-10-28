@@ -64,6 +64,13 @@ class MaterialVolume(Volume):
             future ``MultipleScatteringParams`` can be returned alongside.
         """
 
+    @abstractmethod
+    def is_stopped(self, state: ParticleState) -> SBool:
+        """Whether ``state`` is in this material and should be considered stopped
+
+        Used by the solvers to mark a particle ``STOPPED_IN_MATERIAL``.
+        """
+
 
 class TransformMaterialVolume(MaterialVolume):
     """A MaterialVolume placed in the world via a rigid-body Transform
@@ -87,6 +94,12 @@ class TransformMaterialVolume(MaterialVolume):
             lambda x: x.kin, state, self.transform.tangent_to_local(state.kin)
         )
         return self.material.interaction_params(local_state, thickness)
+
+    def is_stopped(self, state: ParticleState) -> SBool:
+        local_state = eqx.tree_at(
+            lambda x: x.kin, state, self.transform.tangent_to_local(state.kin)
+        )
+        return self.material.is_stopped(local_state)
 
     def contains(self, point: Cartesian3) -> SBool:
         return self.material.contains(self.transform.to_local(point))
@@ -112,6 +125,11 @@ class AbsorberCylinder(MaterialVolume, CylinderVolume):
     """Cylinder length along z [mm]"""
     char_length: SFloat = 5.0 * u.mm
     """Characteristic segment length for stochastic subdivision [mm]"""
+    min_range: float = eqx.field(static=True, default=1.0 * u.mm)
+    """A particle whose CSDA range is below this is considered stopped [mm]
+
+    See ``Material.stopping_momentum``.
+    """
 
     def characteristic_length(self) -> SFloat:
         return self.char_length
@@ -120,6 +138,13 @@ class AbsorberCylinder(MaterialVolume, CylinderVolume):
         self, state: ParticleState, thickness: SFloat
     ) -> InteractionParams:
         return self.material.interaction_params(state, thickness, self.length)
+
+    def is_stopped(self, state: ParticleState) -> SBool:
+        p_stop = self.material.stopping_momentum(
+            self.min_range, float(state.mass), abs(float(state.charge))
+        )
+        pmag = abs(state.kin.t.to_cartesian3())
+        return self.contains(state.kin.p.to_cartesian3()) & (pmag < p_stop)
 
 
 class SumMaterialVolume(MaterialVolume):
@@ -159,3 +184,6 @@ class SumMaterialVolume(MaterialVolume):
                 for f in dataclasses.fields(InteractionParams)
             }
         )
+
+    def is_stopped(self, state: ParticleState) -> SBool:
+        return jnp.any(jnp.array([c.is_stopped(state) for c in self.components]))
