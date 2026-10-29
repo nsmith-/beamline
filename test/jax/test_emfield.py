@@ -89,11 +89,13 @@ def test_larmor_orbit(artifacts_dir, request, Bz: float, pxc: float, pzc: float)
     assert z == pytest.approx(z_exp, rel=1e-10)
     assert res_cyl.ct == pytest.approx(cts, rel=1e-10)
 
+
 def test_sumfield_superposition():
-    full = ThickSolenoid(Rin=250.0*u.mm, Rout=419.3*u.mm,
-                         jphi=500.0*u.A/u.mm**2, L=140.0*u.mm)
-    half = eqx.tree_at(lambda s: s.jphi, full, 250.0*u.A/u.mm**2)
-    pt = Cartesian4.make(x=50.0*u.mm, y=20.0*u.mm, z=30.0*u.mm)
+    full = ThickSolenoid(
+        Rin=250.0 * u.mm, Rout=419.3 * u.mm, jphi=500.0 * u.A / u.mm**2, L=140.0 * u.mm
+    )
+    half = eqx.tree_at(lambda s: s.jphi, full, 250.0 * u.A / u.mm**2)
+    pt = Cartesian4.make(x=50.0 * u.mm, y=20.0 * u.mm, z=30.0 * u.mm)
     _, B1 = full.field_strength(pt)
     _, B2 = (half + half).field_strength(pt)
     assert jnp.allclose(B1.t.coords, B2.t.coords, rtol=1e-10)
@@ -231,5 +233,3 @@ def test_diff_solve(artifacts_dir, request):
 
     fig.tight_layout()
     fig.savefig(artifacts_dir / f"{request.node.name}.png")
-
-

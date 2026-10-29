@@ -67,8 +67,13 @@ def test_benchmark_4_cooling_cell_no_absorber(artifacts_dir):
         f"aperture_mm={cc.APERTURE / u.mm}",
     ]
     cc.write_cell_artifacts(
-        artifacts_dir, "benchmark_4_cell_no_absorber", zs, track,
-        survived, mass, header,
+        artifacts_dir,
+        "benchmark_4_cell_no_absorber",
+        zs,
+        track,
+        survived,
+        mass,
+        header,
     )
 
     # Generator and diagnostics agree with Table 4.

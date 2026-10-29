@@ -17,7 +17,7 @@ from beamline.jax.absorber.volume import AbsorberCylinder
 from beamline.jax.coordinates import Cartesian3, Cartesian4
 from beamline.jax.emfield import SimpleEMField
 from beamline.jax.integrate.stochastic import stochastic_solve
-from beamline.jax.kinematics import MuonStateDz
+from beamline.jax.kinematics import MuonStateDz, TrackingStatus
 
 # (material key, thickness, momentum, max stopped fraction).
 ABSORBERS = [
@@ -38,7 +38,29 @@ N_PROFILE = 100_000
 N_S = 21  # depth points through the absorber
 STEP_COUNTS = [1, 10, 100]
 N_STEPS_PARTICLES = 1_000_000
-THETA_EDGES = np.linspace(-200.0e-3, 200.0e-3, 33)
+THETA_EDGES = np.linspace(-200e-3, 200e-3, 161)
+CHAR_LENGTH = 5.0 * u.mm  # in-material segment length (AbsorberCylinder default)
+MIN_T_OUT = 0.01 * u.MeV  # see _arrived
+
+
+def _arrived(status, T, xp, z, z_want, thickness):
+    """Mask of muons that reached ``z_want`` alive and still moving
+
+    Muons that range out in the absorber are marked STOPPED_IN_MATERIAL and
+    frozen short of ``z_want``. The exception is the step that leaves the
+    absorber: its kick is applied at the step end, which is already outside the
+    material, so ``is_stopped`` does not flag a muon that the last energy-loss
+    draw brings to rest (``apply_energy_loss`` floors it at the rest mass). Such
+    muons stay ALIVE and are excluded by ``MIN_T_OUT`` instead (about 12% of all
+    muons in the 30 MeV/c, 10 mm LH2 case).
+    """
+    return (
+        (status == TrackingStatus.ALIVE)
+        & np.isfinite(T)
+        & np.isfinite(xp)
+        & (np.abs(z - z_want) < 1e-3 * thickness)
+        & (T > MIN_T_OUT)
+    )
 
 
 @pytest.mark.extended
@@ -59,6 +81,7 @@ def test_benchmark_3p1_absorber(
         material=MATERIALS[material_key],
         radius=250.0 * u.mm,
         length=thickness,
+        char_length=CHAR_LENGTH,
     )
     start = MuonStateDz.make(
         position=Cartesian4.make(z=-thickness),
@@ -81,7 +104,12 @@ def test_benchmark_3p1_absorber(
         # to conserve memory.
         ys, _ = stochastic_solve(field, absorber, start, zs, key, kick=cc.KICK)
         end = jax.tree.map(lambda a: a[-1], ys)
-        return end.kin.t.ct - start.mass, end.kin.t.x / end.kin.t.z, end.kin.p.z
+        return (
+            end.kin.t.ct - start.mass,
+            end.kin.t.x / end.kin.t.z,
+            end.kin.p.z,
+            end.status,
+        )
 
     # Clamp at zero: 3*mean_dE exceeds the kinetic energy when the absorber is
     # comparable to the muon range.
@@ -94,16 +122,8 @@ def test_benchmark_3p1_absorber(
 
     keys = jr.split(jr.key(SEED), N_PARTICLES)
     for i in range(0, N_PARTICLES, CHUNK):
-        T_out, xp, z_end = run(keys[i : i + CHUNK])
-        z_end, T_out, xp = np.asarray(z_end), np.asarray(T_out), np.asarray(xp)
-        # Particles floored at the rest mass by apply_energy_loss have pz -> 0; 
-        # Count, exclude, and report them.
-        arrived = (
-            np.isfinite(z_end)
-            & np.isfinite(T_out)
-            & np.isfinite(xp)
-            & (np.abs(z_end - thickness) < 1e-3 * thickness)
-        )
+        T_out, xp, z_end, status = (np.asarray(a) for a in run(keys[i : i + CHUNK]))
+        arrived = _arrived(status, T_out, xp, z_end, thickness, thickness)
         n_stopped += int((~arrived).sum())
         T_out, xp = T_out[arrived], xp[arrived]
         T_counts += np.histogram(T_out, bins=T_edges)[0]
@@ -124,13 +144,10 @@ def test_benchmark_3p1_absorber(
     with open(artifacts_dir / f"{stem}.csv", "w") as f:
         f.write(f"# material={mat.name}\n")
         f.write(f"# density_g_cm3={mat.density / (u.g / u.cm3):.5f}\n")
-        f.write(f"# radiation_length_g_cm2={mat.radiation_length / (u.g / u.cm2):.3f}\n")
+        f.write(
+            f"# radiation_length_g_cm2={mat.radiation_length / (u.g / u.cm2):.3f}\n"
+        )
         f.write(f"# mean_excitation_eV={mat.mean_excitation / u.eV:.2f}\n")
-        if material_key == "lithium_hydride_MICE":
-            f.write(
-                "# NOTE density is the PDG tabulated 0.82 g/cm3; benchmark PDF "
-                "Table 1 specifies 0.69 for LiH (+17.9% dE, +9.8% theta0)\n"
-            )
         f.write(f"# thickness_mm={thickness / u.mm:.3f}\n")
         f.write(f"# momentum_MeV={momentum / u.MeV:.3f}\n")
         f.write(f"# n_particles={N_PARTICLES}\n")
@@ -144,13 +161,13 @@ def test_benchmark_3p1_absorber(
         f.write(f"# n_stopped_in_absorber={n_stopped}\n")
         f.write(f"# stopped_fraction={stopped_frac:.6f}\n")
         f.write("T_lo_MeV,T_hi_MeV,T_count,xprime_lo,xprime_hi,xprime_count\n")
-        for j in range(N_BINS):
-            f.write(
-                f"{T_edges[j]:.6f},{T_edges[j + 1]:.6f},{T_counts[j]},"
-                f"{xp_edges[j]:.9f},{xp_edges[j + 1]:.9f},{xp_counts[j]}\n"
-            )
+        f.writelines(
+            f"{T_edges[j]:.6f},{T_edges[j + 1]:.6f},{T_counts[j]},"
+            f"{xp_edges[j]:.9f},{xp_edges[j + 1]:.9f},{xp_counts[j]}\n"
+            for j in range(N_BINS)
+        )
 
-    # Plot results  
+    # Plot results
     T_mid = 0.5 * (T_edges[:-1] + T_edges[1:])
     xp_mid = 0.5 * (xp_edges[:-1] + xp_edges[1:])
 
@@ -199,21 +216,23 @@ def test_benchmark_3p1_absorber(
     fig.savefig(artifacts_dir / f"{stem}.png", dpi=130)
     plt.close(fig)
 
+
 SLIDE_PANELS = [
-    ("s8",  "lithium_hydride_MICE", 65.37 * u.mm,  95.8, 0.02),
-    ("s8",  "lithium_hydride_MICE", 65.37 * u.mm, 120.5, 0.02),
-    ("s8",  "lithium_hydride_MICE", 65.37 * u.mm, 156.4, 0.02),
-    ("s12", "lithium_hydride_MICE", 65.37 * u.mm,  96.0, 0.02),
+    ("s8", "lithium_hydride_MICE", 65.37 * u.mm, 95.8, 0.02),
+    ("s8", "lithium_hydride_MICE", 65.37 * u.mm, 120.5, 0.02),
+    ("s8", "lithium_hydride_MICE", 65.37 * u.mm, 156.4, 0.02),
+    ("s12", "lithium_hydride_MICE", 65.37 * u.mm, 96.0, 0.02),
     ("s12", "lithium_hydride_MICE", 65.37 * u.mm, 156.0, 0.02),
-    ("s6",  "liquid_hydrogen_H2", 349.6 * u.mm,  90.2, 0.02),
-    ("s6",  "liquid_hydrogen_H2", 349.6 * u.mm, 120.4, 0.02),
-    ("s6",  "liquid_hydrogen_H2", 349.6 * u.mm, 153.9, 0.02),
-    ("s12", "liquid_hydrogen_H2", 349.6 * u.mm,  90.0, 0.02),
+    ("s6", "liquid_hydrogen_H2", 349.6 * u.mm, 90.2, 0.02),
+    ("s6", "liquid_hydrogen_H2", 349.6 * u.mm, 120.4, 0.02),
+    ("s6", "liquid_hydrogen_H2", 349.6 * u.mm, 153.9, 0.02),
+    ("s12", "liquid_hydrogen_H2", 349.6 * u.mm, 90.0, 0.02),
     ("s12", "liquid_hydrogen_H2", 349.6 * u.mm, 120.0, 0.02),
     ("s12", "liquid_hydrogen_H2", 349.6 * u.mm, 156.0, 0.02),
-    ("s6",  "liquid_hydrogen_H2",  10.0 * u.mm,   4.2, 1.0),
-    ("s12", "liquid_hydrogen_H2",  10.0 * u.mm,   4.0, 1.0),
+    ("s6", "liquid_hydrogen_H2", 10.0 * u.mm, 4.2, 1.0),
+    ("s12", "liquid_hydrogen_H2", 10.0 * u.mm, 4.0, 1.0),
 ]
+
 
 @pytest.mark.extended
 @pytest.mark.parametrize(
@@ -258,24 +277,19 @@ def test_benchmark_3p1_profiles(
         ys, _ = stochastic_solve(field, absorber, start, zs, key, kick=cc.KICK)
         T = ys.kin.t.ct - start.mass
         thx = ys.kin.t.x / ys.kin.t.z
-        return T[1:], thx[1:], ys.kin.p.z[1:]
+        return T[1:], thx[1:], ys.kin.p.z[1:], ys.status[1:]
 
-    n = np.zeros(N_S)
-    sT = np.zeros(N_S)
-    sT2 = np.zeros(N_S)
-    sth2 = np.zeros(N_S)
     z_want = np.asarray(zs[1:])
 
     T_all, th_all, ok_all = [], [], []
     keys = jr.split(jr.key(SEED + 1 + int(T_in * 10)), N_PROFILE)
     for i in range(0, N_PROFILE, CHUNK):
-        T, thx, z = (np.asarray(a) for a in run(keys[i : i + CHUNK]))
-        ok = (
-            np.isfinite(T) & np.isfinite(thx)
-            & (np.abs(z - z_want) < 1e-3 * thickness)
-        )
-        T_all.append(T); th_all.append(thx); ok_all.append(ok)
-    T = np.concatenate(T_all); thx = np.concatenate(th_all)
+        T, thx, z, status = (np.asarray(a) for a in run(keys[i : i + CHUNK]))
+        T_all.append(T)
+        th_all.append(thx)
+        ok_all.append(_arrived(status, T, thx, z, z_want, thickness))
+    T = np.concatenate(T_all)
+    thx = np.concatenate(th_all)
     ok = np.concatenate(ok_all)
 
     n = ok.sum(axis=0)
@@ -296,20 +310,25 @@ def test_benchmark_3p1_profiles(
         f.write(f"# slide={slide}\n")
         f.write(f"# material={mat.name}\n")
         f.write(f"# density_g_cm3={mat.density / (u.g / u.cm3):.5f}\n")
-        f.write(f"# radiation_length_g_cm2={mat.radiation_length / (u.g / u.cm2):.3f}\n")
+        f.write(
+            f"# radiation_length_g_cm2={mat.radiation_length / (u.g / u.cm2):.3f}\n"
+        )
         f.write(f"# thickness_mm={thickness / u.mm:.3f}\n")
         f.write(f"# momentum_MeV={momentum / u.MeV:.3f}\n")
         f.write(f"# T_in_MeV={float(start.kin.t.ct) - float(start.mass):.4f}\n")
         f.write(f"# n_particles={N_PROFILE}\n")
         f.write(f"# straggling_sampler={cc.STRAGGLING_SAMPLER.__name__}\n")
         f.write(f"# scattering_sampler={cc.SCATTERING_SAMPLER.__name__}\n")
-        f.write("s_mm,n_alive,mean_T_MeV,median_T_MeV,mode_T_MeV,sigma_T_MeV,rms_thetax_mrad\n")
+        f.write(
+            "s_mm,n_alive,mean_T_MeV,median_T_MeV,mode_T_MeV,sigma_T_MeV,rms_thetax_mrad\n"
+        )
         for j in range(N_S):
             f.write(
                 f"{float(s_grid[j]) / u.mm:.4f},{int(n[j])},"
                 f"{mean_T[j]:.6f},{med_T[j]:.6f},{mode_T[j]:.6f},"
                 f"{sigma_T[j]:.6f},{rms_thx[j] * 1e3:.6f}\n"
             )
+
 
 @pytest.mark.extended
 @pytest.mark.parametrize("n_steps", STEP_COUNTS)
@@ -340,14 +359,19 @@ def test_benchmark_3p1_step_scan(artifacts_dir, n_steps):
     def run(key):
         ys, _ = stochastic_solve(field, absorber, start, zs, key, kick=cc.KICK)
         end = jax.tree.map(lambda a: a[-1], ys)
-        return end.kin.t.x / end.kin.t.z, end.kin.p.z
+        return (
+            end.kin.t.ct - start.mass,
+            end.kin.t.x / end.kin.t.z,
+            end.kin.p.z,
+            end.status,
+        )
 
     counts = np.zeros(len(THETA_EDGES) - 1, dtype=np.int64)
     n_stopped = 0
     keys = jr.split(jr.key(SEED + 2), N_STEPS_PARTICLES)
     for i in range(0, N_STEPS_PARTICLES, CHUNK):
-        thx, z_end = (np.asarray(a) for a in run(keys[i : i + CHUNK]))
-        ok = np.isfinite(thx) & (np.abs(z_end - thickness) < 1e-3 * thickness)
+        T, thx, z_end, status = (np.asarray(a) for a in run(keys[i : i + CHUNK]))
+        ok = _arrived(status, T, thx, z_end, thickness, thickness)
         n_stopped += int((~ok).sum())
         counts += np.histogram(thx[ok], bins=THETA_EDGES)[0]
 
@@ -360,8 +384,7 @@ def test_benchmark_3p1_step_scan(artifacts_dir, n_steps):
         f.write(f"# predicted_theta0_mrad={float(params.theta0) * 1e3:.5f}\n")
         f.write(f"# scattering_sampler={cc.SCATTERING_SAMPLER.__name__}\n")
         f.write("theta_lo_mrad,theta_hi_mrad,count\n")
-        for j in range(len(counts)):
-            f.write(
-                f"{THETA_EDGES[j] * 1e3:.4f},{THETA_EDGES[j + 1] * 1e3:.4f},"
-                f"{counts[j]}\n"
-            )
+        f.writelines(
+            f"{THETA_EDGES[j] * 1e3:.4f},{THETA_EDGES[j + 1] * 1e3:.4f},{counts[j]}\n"
+            for j in range(len(counts))
+        )

@@ -254,13 +254,12 @@ def write_cell_artifacts(artifacts_dir, stem, zs, track, survived, mass, header)
 
     # Optics along the cell: one row per save point.
     with open(artifacts_dir / f"{stem}_optics.csv", "w") as f:
-        for line in header:
-            f.write(f"# {line}\n")
+        f.writelines(f"# {line}\n" for line in header)
         f.write("z_mm," + ",".join(keys) + "\n")
-        for i, r in enumerate(rows):
-            f.write(
-                f"{zs[i] / u.mm:.4f}," + ",".join(f"{r[k]:.8g}" for k in keys) + "\n"
-            )
+        f.writelines(
+            f"{zs[i] / u.mm:.4f}," + ",".join(f"{r[k]:.8g}" for k in keys) + "\n"
+            for i, r in enumerate(rows)
+        )
 
     # End-plane profiles, one row per surviving particle. The PDF asks for
     # x, px, y, py, t and kinetic energy.

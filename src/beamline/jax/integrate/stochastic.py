@@ -104,13 +104,18 @@ def apply_energy_loss[T: ParticleState](state: T, dE: SFloat) -> T:
     momentum is rescaled to that magnitude (its direction unchanged). The
     position is untouched. This is a state update (cf. ``build_tangent``, which
     builds derivatives).
+
+    ``dE`` is clamped at zero: collisions cannot add energy. A negative sample
+    only comes from an energy-loss model used outside its validity (e.g. the
+    Bethe formula at beta -> 0, where its logarithm turns negative and
+    xi ~ 1/beta^2 diverges), and would otherwise accelerate a stopped particle.
     """
     coords = state.kin.t.coords
     p3 = coords[..., :3]
     energy = coords[..., 3]
     mass = state.mass
     pmag = jnp.sqrt(jnp.sum(p3**2, axis=-1))
-    energy_new = jnp.maximum(energy - dE, mass)
+    energy_new = jnp.maximum(energy - jnp.maximum(dE, 0.0), mass)
     # floor keeps the sqrt (and its derivative) finite under jax_debug_nans
     pmag_new = jnp.sqrt(jnp.maximum(energy_new**2 - mass**2, 0.0) + 1e-12)
     safe_pmag = jnp.where(pmag > 0.0, pmag, 1.0)
@@ -399,16 +404,26 @@ def stochastic_solve[T: ParticleState](
         # gradient of sqrt is NaN)
         d2 = jnp.sum((ray1.p - ray0.p).coords ** 2, axis=-1)
         displacement = jnp.where(d2 > 0.0, jnp.sqrt(jnp.where(d2 > 0.0, d2, 1.0)), 0.0)
+        # signed_time_to_boundary is measured in the ray parameter (the
+        # integration variable, e.g. z for MuonStateDz), along the tangent
+        # ray.t; |ray.t| converts it to a spatial path length, so a boundary-
+        # crossing step is measured like an in-material one (displacement).
+        tnorm2 = jnp.sum(ray0.t.coords**2, axis=-1)
+        tnorm = jnp.sqrt(jnp.where(tnorm2 > 0.0, tnorm2, 1.0))
+        # sdf0 is inf when the ray never meets the surface; make it finite
+        # before scaling so the unselected branches stay NaN-free under grad.
+        sdf0_finite = jnp.where(jnp.isfinite(sdf0), sdf0, 0.0)
+        path0 = sdf0_finite * tnorm
         thickness = jnp.where(
             (sdf0 < 0.0) & (sdf1 < 0.0),
             displacement,
             jnp.where(
                 # pick whichever is inside
                 sdf0 < 0.0,
-                -sdf0,
+                jnp.minimum(-path0, displacement),
                 jnp.where(
                     sdf1 < 0.0,
-                    displacement - sdf0,
+                    jnp.maximum(displacement - path0, 0.0),
                     0.0,  # not in material
                 ),
             ),

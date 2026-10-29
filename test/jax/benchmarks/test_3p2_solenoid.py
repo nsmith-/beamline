@@ -72,25 +72,27 @@ def test_benchmark_3p2_solenoid(artifacts_dir):
             end.kin.t.z / u.MeV,
             end.kin.t.ct / u.MeV,
         ]
-        for row in zip(*cols, strict=True):
-            f.write(",".join(f"{val:.6f}" for val in row) + "\n")
+        f.writelines(
+            ",".join(f"{val:.6f}" for val in row) + "\n"
+            for row in zip(*cols, strict=True)
+        )
 
     # Full trajectories
     with open(artifacts_dir / "benchmark_3p2_solenoid_tracks.csv", "w") as f:
         f.write("particle,x0_mm,z_mm,x_mm,y_mm,ct_mm,px_MeV,py_MeV,pz_MeV,E_MeV\n")
         for ip in range(len(xpos)):
-            for iz in range(len(zs)):
-                f.write(
-                    f"{ip},{xpos[ip] / u.mm:.4f},"
-                    f"{track.kin.p.z[ip, iz] / u.mm:.6f},"
-                    f"{track.kin.p.x[ip, iz] / u.mm:.6f},"
-                    f"{track.kin.p.y[ip, iz] / u.mm:.6f},"
-                    f"{track.kin.p.ct[ip, iz] / u.mm:.6f},"
-                    f"{track.kin.t.x[ip, iz] / u.MeV:.6f},"
-                    f"{track.kin.t.y[ip, iz] / u.MeV:.6f},"
-                    f"{track.kin.t.z[ip, iz] / u.MeV:.6f},"
-                    f"{track.kin.t.ct[ip, iz] / u.MeV:.6f}\n"
-                )
+            f.writelines(
+                f"{ip},{xpos[ip] / u.mm:.4f},"
+                f"{track.kin.p.z[ip, iz] / u.mm:.6f},"
+                f"{track.kin.p.x[ip, iz] / u.mm:.6f},"
+                f"{track.kin.p.y[ip, iz] / u.mm:.6f},"
+                f"{track.kin.p.ct[ip, iz] / u.mm:.6f},"
+                f"{track.kin.t.x[ip, iz] / u.MeV:.6f},"
+                f"{track.kin.t.y[ip, iz] / u.MeV:.6f},"
+                f"{track.kin.t.z[ip, iz] / u.MeV:.6f},"
+                f"{track.kin.t.ct[ip, iz] / u.MeV:.6f}\n"
+                for iz in range(len(zs))
+            )
 
     # Every second particle for a readable figure
     fig, (axx, axy) = plt.subplots(2, 1, figsize=(8, 8), sharex=True)

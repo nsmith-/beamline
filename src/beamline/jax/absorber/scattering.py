@@ -32,10 +32,38 @@ of single scatters ``N`` ([FL] Eq. 4) and the reduced thickness
     GAUSSIAN (d' > 10):                         One Gaussian ([FL] 234; CLT
                                                 takeover with negligible tails)
 
-All four share the total projected standard deviation ([FL] Eq. 5)
+Normalization:
 
-    sigma_T = 15 MeV * |z| / (beta p) * sqrt(d / X0),
+The mixture describes nuclear scattering
+only, as in the single-scattering model it was fitted to ([FR] Eq. 1, Z^2), with
+the total projected width from the nuclear scattering length X_s ([FR] Eq. 40)
 
+    sigma_T = 15 MeV * |z| / (beta p) * sqrt(d / X_s),   X_s = h(Z) X0,
+
+and the Gaussian-mixture fits in terms of d / (beta^2 X_s) ([FR] Eqs. 64-65).
+Scattering on atomic electrons is added as an independent Gaussian. Each
+electron scatter is limited to theta_e = m_e / m (RF-Track, Stechauner et al.,
+IPAC'24 WEPR31, Eqs. 5-6), so with the same screening angle a the electron
+variance relative to the nuclear one is
+
+    sigma_e^2 / sigma_T^2 = r_e [ln(theta_e / a) - 0.5] / [ln(b / a) - 0.5],
+
+r_e = sum n_i Z_i / sum n_i Z_i^2 (1/Z for an element).
+
+The published model ([FL] Eq. 5) normalizes to X0 instead, with no separate
+electron term. That implicitly gives atomic electrons the nuclear (large-angle)
+tail and overestimates the width at low Z: h(Z) = X_s/X0 is 2.2 for hydrogen,
+1.5 for LiH and 1.1 for aluminium.
+
+Regime boundaries are as published (in d/(beta^2 X0)).
+
+``screening=`` ("moliere" default, "jackson"): the single-scatter screening
+angle. The published fits used Jackson's rough
+Thomas-Fermi screening (radius 1.4 a_0 Z^-1/3); Moliere's chi_a is ~1.7 times
+larger, giving fewer, larger single scatters (same total variance) and a narrower
+core. Against Geant4 (G4beamline 3.08) this takes the LH2 core width from +5% to
++2% and LiH from +8% to +4%. It acts in the FEW and SEMI_GAUSSIAN regimes only;
+the GAUSSIAN_MIXTURE fits ([FR] Eqs. 64-65) depend on thickness alone.
 [FL] Sec. 4 shows empirically that the convolution property holds.
 """
 
@@ -51,6 +79,7 @@ from jax import Array
 
 from beamline.jax.absorber.material import InteractionParams
 from beamline.jax.types import SFloat
+from beamline.units import ELECTRON_MASS
 
 
 def highland_scattering_sampler(
@@ -98,6 +127,11 @@ GAUSSIAN_THRESHOLD: float = 10.0
 """Above this d/(beta^2 X0) the tail is negligible"""
 
 
+SCREENINGS: tuple[str, ...] = ("jackson", "moliere")
+DEFAULT_SCREENING: str = "moliere"
+FINE_STRUCTURE: float = 1.0 / 137.035999
+
+
 class Regime(IntEnum):
     """Which mixture model a segment uses (see module docstring)"""
 
@@ -141,6 +175,10 @@ class MixtureParams(typing.NamedTuple):
     """Gaussian mixture: core RMS [rad]"""
     gmix_sigma2: SFloat
     """Gaussian mixture: tail RMS [rad]"""
+    sigma_electron: SFloat
+    """Per-plane RMS of the independent atomic-electron Gaussian [rad].
+    The total projected variance is
+    ``sigma_total**2 + sigma_electron**2``."""
 
 
 def _scatters_per_radiation_length(Z: SFloat, beta: SFloat, charge: SFloat) -> SFloat:
@@ -165,28 +203,46 @@ def _semi_gaussian_shape(N: SFloat, Z: SFloat, rho: SFloat):
     return eps, var, a, b
 
 
-def _gaussian_mixture_shape(d_red: SFloat, Z: SFloat):
-    """Standard-measure (eps, sigma1^2, sigma2^2) of the Gaussian mixture"""
-    L1 = jnp.log(d_red)
-    var1 = 8.471e-1 + 3.347e-2 * L1 - 1.843e-3 * L1**2
-    L2 = jnp.log(Z ** (2.0 / 3.0) * d_red)
+def _gaussian_mixture_shape_xs(d_red_s: SFloat, Z: SFloat):
+    """Standard-measure (eps, sigma1^2, sigma2^2) of the Gaussian mixture with the
+    fits in terms of d' = d/(beta^2 X_s) ([FR] Eqs. 64-65)"""
+    L1 = jnp.log(d_red_s)
+    var1 = 0.8510 + 0.03314 * L1 - 0.001825 * L1**2
+    L2 = jnp.log(Z ** (2.0 / 3.0) * d_red_s)
     eps = jnp.where(
         L2 < 0.5,
-        4.841e-2 + 6.348e-3 * L2 + 6.096e-4 * L2**2,
-        -1.908e-2 + 1.106e-1 * L2 - 5.729e-3 * L2**2,
+        0.05283 + 0.0077 * L2 + 0.00069 * L2**2,
+        -0.01517 + 0.1151 * L2 - 0.00653 * L2**2,
     )
     var2 = (1.0 - (1.0 - eps) * var1) / eps
     return eps, var1, var2
 
 
-def mixture_parameters(params: InteractionParams) -> MixtureParams:
-    """Derive the regime and all mixture parameters for one segment"""
+def mixture_parameters(
+    params: InteractionParams,
+    screening: str = DEFAULT_SCREENING,
+) -> MixtureParams:
+    """Derive the regime and all mixture parameters for one segment
+
+    ``screening`` selects the single-scatter screening angle:
+
+    ``"jackson"``: a = alpha Z^1/3 m_e c / (1.4 p), screening radius
+    1.4 a_0 Z^-1/3 ([FR] Eqs. 5-6), as used for the published fits.
+    ``"moliere"``: Moliere's chi_a = chi_0 sqrt(1.13 + 3.76 (alpha Z/beta)^2),
+    chi_0 = hbar/(p 0.885 a_0 Z^-1/3), about 1.7 times larger. The nuclear cutoff
+    b and the total nuclear variance are kept, so there are fewer, larger
+    scatters (N a^2 (ln(b/a) - 0.5) fixed) and a heavier tail.
+    """
+    if screening not in SCREENINGS:
+        msg = f"screening must be one of {SCREENINGS}, not {screening!r}"
+        raise ValueError(msg)
     Z = jnp.asarray(params.Z, dtype=float)
     beta = params.beta
     x0 = params.radiation_lengths
-    sigma_total = (
-        MCS_SCALE * jnp.abs(params.charge) / (beta * params.momentum) * jnp.sqrt(x0)
-    )
+    # h = X_s / X0; with h = 1 the nuclear part reduces to the published model
+    h = params.scattering_length_ratio
+    scale = MCS_SCALE * jnp.abs(params.charge) / (beta * params.momentum)
+    sigma_total = scale * jnp.sqrt(x0 / h)
     N0 = _scatters_per_radiation_length(Z, beta, params.charge)
     N = x0 * N0
     d_red = x0 / beta**2
@@ -194,11 +250,18 @@ def mixture_parameters(params: InteractionParams) -> MixtureParams:
 
     # Few scatters: standardized screening angle 1/sqrt(N (ln rho - 0.5)) times
     # sigma_T, so that N single scatters carry exactly sigma_T^2. Written in the
-    # d-independent form sigma_T^2 / N = (15 MeV z/(beta p))^2 / N0, which stays
-    # finite as d -> 0.
-    few_a = (MCS_SCALE * jnp.abs(params.charge) / (beta * params.momentum)) / jnp.sqrt(
-        N0 * (jnp.log(rho) - 0.5)
-    )
+    # d-independent form sigma_T^2 / N = scale^2 / (h N0), which stays finite as
+    # d -> 0. With h = X_s/X0 this is the physical screening angle of [FR] Eq. 6.
+    few_a = scale / jnp.sqrt(h * N0 * (jnp.log(rho) - 0.5))
+
+    if screening == "moliere":
+        # keep b = rho a and N a^2 (ln rho - 0.5) (the nuclear variance) fixed
+        f = (1.4 / 0.885) * jnp.sqrt(1.13 + 3.76 * (FINE_STRUCTURE * Z / beta) ** 2)
+        rho_m = rho / f
+        N0 = N0 * (jnp.log(rho) - 0.5) / (f**2 * (jnp.log(rho_m) - 0.5))
+        N = x0 * N0
+        few_a = few_a * f
+        rho = rho_m
 
     # Clamp each regime's input to its domain so unselected branches are finite
     crossover = 0.6 / Z**0.6
@@ -206,8 +269,16 @@ def mixture_parameters(params: InteractionParams) -> MixtureParams:
     semi_eps, semi_var, semi_a, semi_b = _semi_gaussian_shape(
         jnp.clip(N, FEW_SCATTER_THRESHOLD, N_crossover), Z, rho
     )
-    gmix_eps, gmix_var1, gmix_var2 = _gaussian_mixture_shape(
-        jnp.clip(d_red, crossover, GAUSSIAN_THRESHOLD), Z
+    gmix_eps, gmix_var1, gmix_var2 = _gaussian_mixture_shape_xs(
+        jnp.clip(d_red, crossover, GAUSSIAN_THRESHOLD) / h, Z
+    )
+
+    # Atomic electrons: same screening angle a, cut off at theta_e = m_e/m
+    mass = params.momentum * jnp.sqrt(1.0 - beta**2) / beta  # m c^2 [MeV]
+    theta_e = ELECTRON_MASS * u.c_light_sq / mass
+    log_e = jnp.maximum(jnp.log(theta_e / few_a) - 0.5, 0.0)
+    sigma_electron = sigma_total * jnp.sqrt(
+        params.electron_ratio * log_e / (jnp.log(rho) - 0.5)
     )
 
     regime = jnp.where(
@@ -235,6 +306,7 @@ def mixture_parameters(params: InteractionParams) -> MixtureParams:
         gmix_eps=gmix_eps,
         gmix_sigma1=sigma_total * jnp.sqrt(gmix_var1),
         gmix_sigma2=sigma_total * jnp.sqrt(gmix_var2),
+        sigma_electron=sigma_electron,
     )
 
 
@@ -298,8 +370,17 @@ def _select(cond: Array, a: _Draw, b: _Draw) -> _Draw:
     return tuple(jnp.where(cond, ai, bi) for ai, bi in zip(a, b, strict=True))  # type: ignore[return-value]
 
 
+def _add_electrons(draw: _Draw, key: Array, mp: MixtureParams, x: SFloat) -> _Draw:
+    """Add the independent atomic-electron Gaussian (angles and offsets)"""
+    # fold_in: the electron draw does not change the nuclear draws
+    e = _gaussian_draw(jr.fold_in(key, 0x5E), mp.sigma_electron, x)
+    return tuple(d + ei for d, ei in zip(draw, e, strict=True))  # type: ignore[return-value]
+
+
 def mixture_scattering_sampler(
-    params: InteractionParams, key: Array
+    params: InteractionParams,
+    key: Array,
+    screening: str = DEFAULT_SCREENING,
 ) -> tuple[SFloat, SFloat, SFloat, SFloat]:
     """Fruhwirth mixture-model scattering with automatic regime selection
 
@@ -309,7 +390,7 @@ def mixture_scattering_sampler(
     Returns:
         (theta_x, theta_y, y_x, y_y).
     """
-    mp = mixture_parameters(params)
+    mp = mixture_parameters(params, screening)
     x = params.thickness
     k_pick, k_core, k_tail, k_semi_tail, k_few, k_gauss = jr.split(key, 6)
     pick = jr.uniform(k_pick)
@@ -330,36 +411,5 @@ def mixture_scattering_sampler(
     out = gauss
     out = _select(mp.regime == Regime.GAUSSIAN_MIXTURE, gmix, out)
     out = _select(mp.regime == Regime.SEMI_GAUSSIAN, semi, out)
-    return _select(mp.regime == Regime.FEW, few, out)
-
-
-def gaussian_mixture_scattering_sampler(
-    params: InteractionParams, key: Array
-) -> tuple[SFloat, SFloat, SFloat, SFloat]:
-    """Two-component Gaussian mixture only ([FL] 2.3), at any thickness
-
-    The purely Gaussian mixture is the one usable in a Gaussian-sum filter and
-    is smooth in the beam parameters apart from the component choice. Below the
-    semi-Gaussian crossover it underestimates the far tails ([FL] Figs. 3-4);
-    the parameterisation is evaluated at ``max(d', 1e-6)`` so very thin
-    segments remain well defined. This is for reconstruction/comparisons.
-
-    Warning: below the crossover this model does not have the convolution
-    property. Both components have finite variance, so summing many thin
-    segments drives the result to a Gaussian and the tails disappear (slicing a
-    35 cm LH2 absorber into 100 segments removes nearly all events beyond 3
-    sigma_T). Use ``mixture_scattering_sampler`` with ``stochastic_solve``
-    unless segments are thicker than ``0.6 / Z^0.6`` radiation lengths.
-    """
-    mp = mixture_parameters(params)
-    Z = jnp.asarray(params.Z, dtype=float)
-    eps, var1, var2 = _gaussian_mixture_shape(
-        jnp.clip(mp.reduced_thickness, 1e-6, GAUSSIAN_THRESHOLD), Z
-    )
-    k_pick, k_core, k_tail = jr.split(key, 3)
-    s = mp.sigma_total
-    return _select(
-        jr.uniform(k_pick) < eps,
-        _gaussian_draw(k_tail, s * jnp.sqrt(var2), params.thickness),
-        _gaussian_draw(k_core, s * jnp.sqrt(var1), params.thickness),
-    )
+    out = _select(mp.regime == Regime.FEW, few, out)
+    return _add_electrons(out, key, mp, x)

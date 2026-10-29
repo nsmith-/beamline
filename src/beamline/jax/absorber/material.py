@@ -7,6 +7,7 @@ The data values themselves are retrieved from https://pdg.lbl.gov/2025/AtomicNuc
 """
 
 import functools
+import math
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -89,9 +90,8 @@ class InteractionParams:
     The two projected planes are independent and identically distributed
     (PDG 34.18); the space angle is sqrt(2) * theta0 (PDG 34.15).
     """
-    # NOTE: the following are needed by the new sampler, which only recieves
-    # InteractionParams. I figured the duplication was sensible since they are
-    # real interaction parameters in this case, but let me know!
+    # The fields below are used by the mixture scattering samplers
+    # (``absorber.scattering``), which receive only InteractionParams.
     radiation_lengths: SFloat
     """Segment thickness in radiation lengths, d/X0 (dimensionless)
     Used by the mixture scattering models, where the variance is proportional to
@@ -105,6 +105,14 @@ class InteractionParams:
     """Incident particle charge [e]"""
     Z: SFloat
     """(Average) nuclear charge of the material"""
+    scattering_length_ratio: SFloat
+    """h = X_s / X0, the nuclear scattering length over the radiation length
+    ([FR] Eqs. 36-37). The nuclear-only multiple-scattering variance is
+    (15 MeV/(beta p))^2 d/X_s ([FR] Eq. 40). For compounds X_s is combined over
+    elements like X0 (1/X_s = sum_i w_i/X_s,i). Material constant."""
+    electron_ratio: SFloat
+    """Strength of scattering on atomic electrons relative to nuclei,
+    sum_i n_i Z_i / sum_i n_i Z_i^2 (= 1/Z for an element). Material constant."""
 
 
 class IncidentParticle(Protocol):
@@ -141,6 +149,35 @@ $m_e$ is the electron mass, and $N_A$ is Avogadro's number.
 """
 
 
+SCATTERING_LENGTH_CONSTANT: float = 716.4 * u.g / u.cm2
+r"""$(4 \alpha r_e^2 N_A)^{-1}$, the numerator of the radiation length and of
+the nuclear scattering length X_s ([FR] Eq. 36)"""
+
+
+@dataclass(frozen=True)
+class Element:
+    """One element of a material's composition"""
+
+    Z: int
+    """Atomic number"""
+    A: float
+    """Atomic mass [MeV/c^2/mol] (i.e. in hepunits g/mol)"""
+    mass_fraction: float
+    """Fraction of the material's mass"""
+
+    @property
+    def scattering_length(self) -> float:
+        """Nuclear scattering length X_s [MeV/c^2/mm^2] ([FR] Eq. 36)
+
+        X_s = 716.4 g/cm^2 * A / (Z^2 ln(159 Z^-1/3)), with A in g/mol.
+        """
+        return (
+            SCATTERING_LENGTH_CONSTANT
+            * (self.A / (u.g / u.mol))
+            / (self.Z**2 * math.log(159.0 * self.Z ** (-1.0 / 3.0)))
+        )
+
+
 @dataclass(frozen=True)
 class Material:
     """A material that particles may pass through"""
@@ -164,6 +201,36 @@ class Material:
     is_atomic: bool
     """True if this is an atomic element (rather than a compound)"""
     density_correction: DensityCorrection
+    composition: tuple[Element, ...] | None = None
+    """Elements by mass fraction. Required for compounds; atomic materials
+    default to a single element (Z, mass)."""
+
+    def elements(self) -> tuple[Element, ...]:
+        """The composition, defaulting to a single element for atomic materials"""
+        if self.composition is not None:
+            return self.composition
+        if not self.is_atomic:
+            msg = f"compound material {self.name!r} needs a composition"
+            raise ValueError(msg)
+        return (Element(Z=self.Z, A=self.mass, mass_fraction=1.0),)
+
+    @property
+    def scattering_length(self) -> float:
+        """Nuclear scattering length X_s [MeV/c^2/mm^2], 1/X_s = sum w_i/X_s,i"""
+        return 1.0 / sum(e.mass_fraction / e.scattering_length for e in self.elements())
+
+    @property
+    def scattering_length_ratio(self) -> float:
+        """h = X_s / X0 ([FR] Eq. 37); 2.2 for hydrogen, ~1 near Z = 53"""
+        return self.scattering_length / self.radiation_length
+
+    @property
+    def electron_ratio(self) -> float:
+        """sum_i n_i Z_i / sum_i n_i Z_i^2 with n_i ~ w_i / A_i (1/Z for an element)"""
+        els = self.elements()
+        nz = sum(e.mass_fraction / e.A * e.Z for e in els)
+        nz2 = sum(e.mass_fraction / e.A * e.Z**2 for e in els)
+        return nz / nz2
 
     @staticmethod
     def _wmax(beta: SFloat, gamma: SFloat, mass: SFloat) -> SFloat:
@@ -314,6 +381,8 @@ class Material:
             momentum=momentum,
             charge=z,
             Z=float(self.Z),
+            scattering_length_ratio=self.scattering_length_ratio,
+            electron_ratio=self.electron_ratio,
         )
 
 
@@ -379,6 +448,11 @@ MATERIALS: dict[str, Material] = {
         density_correction=DensityCorrection(
             C=2.3580, x0=-0.0988, x1=1.4515, a=0.9057, k=2.5849, delta0=0.0
         ),
+        # natural Li (6.94) and H (1.008), 1:1 by atoms
+        composition=(
+            Element(Z=3, A=6.94 * u.g / u.mol, mass_fraction=0.87318),
+            Element(Z=1, A=1.008 * u.g / u.mol, mass_fraction=0.12682),
+        ),
     ),
     # MICE 6Li-enriched LiH absorber. Composition and thickness from the
     # benchmark note Table 1; radiation length calculated in arXiv:2209.10251.
@@ -399,6 +473,12 @@ MATERIALS: dict[str, Material] = {
         is_atomic=False,
         density_correction=DensityCorrection(
             C=2.4126, x0=-0.0988, x1=1.4515, a=0.9057, k=2.5849, delta0=0.0
+        ),
+        # benchmark note Table 1, by mass
+        composition=(
+            Element(Z=3, A=6.0151 * u.g / u.mol, mass_fraction=0.814),
+            Element(Z=3, A=7.0160 * u.g / u.mol, mass_fraction=0.043),
+            Element(Z=1, A=1.008 * u.g / u.mol, mass_fraction=0.143),
         ),
     ),
     # https://indico.cern.ch/event/1446644/attachments/2918391/5121897/Cooling_Code_Benchmarking-1.pdf
@@ -427,6 +507,10 @@ MATERIALS: dict[str, Material] = {
         is_atomic=False,
         density_correction=DensityCorrection(
             C=4.0560, x0=0.1500, x1=3.0140, a=0.08408, k=3.5064, delta0=0.0
+        ),
+        composition=(
+            Element(Z=14, A=28.0855 * u.g / u.mol, mass_fraction=0.46743),
+            Element(Z=8, A=15.999 * u.g / u.mol, mass_fraction=0.53257),
         ),
     ),
 }

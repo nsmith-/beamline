@@ -18,6 +18,7 @@ from beamline.jax.absorber.volume import (
     TransformMaterialVolume,
 )
 from beamline.jax.coordinates import Transform
+from beamline.jax.geometry import BeamPipe
 from beamline.jax.integrate.stochastic import stochastic_solve
 from beamline.jax.kinematics import MuonStateDz
 
@@ -73,15 +74,22 @@ def test_benchmark_4_cooling_cell_absorber(artifacts_dir):
     @jax.jit
     @jax.vmap
     def run(start: MuonStateDz, key) -> MuonStateDz:
-        ys, _ = stochastic_solve(field, absorbers, start, zs, key, kick=cc.KICK)
+        ys, _ = stochastic_solve(
+            field,
+            absorbers,
+            start,
+            zs,
+            key,
+            kick=cc.KICK,
+            aperture=BeamPipe(radius=cc.APERTURE),
+        )
         return ys
 
     track = run(beam, keys)
 
-    # Exclude both aperture losses and particles stopped by the Landau tail
-    rho = jnp.hypot(track.kin.p.x, track.kin.p.y)
-    finite = jnp.all(jnp.isfinite(track.kin.t.z), axis=-1)
-    survived = np.asarray(jnp.all(rho <= cc.APERTURE, axis=-1) & finite)
+    # Aperture losses (checked every step) and muons that ranged out in an
+    # absorber are no longer ALIVE; lost muons are frozen where they were lost.
+    survived = np.asarray(track.is_alive()[:, -1])
     transmission = float(survived.mean())
 
     entry = cc.optics(track, survived, 0, mass)
@@ -92,8 +100,10 @@ def test_benchmark_4_cooling_cell_absorber(artifacts_dir):
         "benchmark 4, Table 5 (nominal emittance), 5 mm LiH at each end",
         f"material={lih.name}",
         f"density_g_cm3={lih.density / (u.g / u.cm3):.5f}",
-        "NOTE density is the PDG tabulated 0.82 g/cm3; benchmark PDF Table 1 "
-        "specifies 0.69 for LiH",
+        (
+            "NOTE density is the PDG tabulated 0.82 g/cm3; benchmark PDF Table 1 "
+            "specifies 0.69 for LiH"
+        ),
         f"absorber_half_thickness_mm={cc.ABSORBER_HALF / u.mm}",
         f"n_particles={N_BEAM}",
         f"transmission={transmission:.6f}",
@@ -104,14 +114,18 @@ def test_benchmark_4_cooling_cell_absorber(artifacts_dir):
         f"eps_long_out={exit_['eps_long_eV_ms']:.6f}",
     ]
     cc.write_cell_artifacts(
-        artifacts_dir, "benchmark_4_cell_absorber", zs, track,
-        survived, mass, header,
+        artifacts_dir,
+        "benchmark_4_cell_absorber",
+        zs,
+        track,
+        survived,
+        mass,
+        header,
     )
 
     # Table 5 sigma_x is 11.9 mm, so the aperture is only 6.9 sigma away and
     # some loss is expected; anything drastic means the optics are wrong.
     assert transmission > 0.5, f"transmission {transmission:.3f} implausibly low"
     assert exit_["eps_perp_mm"] < entry["eps_perp_mm"], (
-        "transverse emittance did not cool; check absorber placement and "
-        "RF phase sign"
+        "transverse emittance did not cool; check absorber placement and RF phase sign"
     )

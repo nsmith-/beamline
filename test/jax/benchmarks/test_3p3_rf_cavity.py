@@ -2,8 +2,8 @@
 
 Table 3 of the cooling code benchmarking note.
 
-The time grid now has 11 points rather than 21 (Table 3 specifies a step 
-of 0.1/0.704 ns up to 1/0.704 ns), and the trajectory dump the PDF 
+The time grid now has 11 points rather than 21 (Table 3 specifies a step
+of 0.1/0.704 ns up to 1/0.704 ns), and the trajectory dump the PDF
 checklist asks for has been added.
 """
 
@@ -109,18 +109,18 @@ def test_benchmark_3p3_rf_cavity(artifacts_dir, benchmark):
             "particle,x0_mm,ct0_ns,z_mm,x_mm,y_mm,ct_mm,px_MeV,py_MeV,pz_MeV,E_MeV\n"
         )
         for ip in range(len(x)):
-            for iz in range(len(ztrack)):
-                f.write(
-                    f"{ip},{x[ip] / u.mm:.4f},{ct[ip] / (u.c_light * u.ns):.6f},"
-                    f"{tracks.kin.p.z[ip, iz] / u.mm:.6f},"
-                    f"{tracks.kin.p.x[ip, iz] / u.mm:.6f},"
-                    f"{tracks.kin.p.y[ip, iz] / u.mm:.6f},"
-                    f"{tracks.kin.p.ct[ip, iz] / u.mm:.6f},"
-                    f"{tracks.kin.t.x[ip, iz] / u.MeV:.6f},"
-                    f"{tracks.kin.t.y[ip, iz] / u.MeV:.6f},"
-                    f"{tracks.kin.t.z[ip, iz] / u.MeV:.6f},"
-                    f"{tracks.kin.t.ct[ip, iz] / u.MeV:.6f}\n"
-                )
+            f.writelines(
+                f"{ip},{x[ip] / u.mm:.4f},{ct[ip] / (u.c_light * u.ns):.6f},"
+                f"{tracks.kin.p.z[ip, iz] / u.mm:.6f},"
+                f"{tracks.kin.p.x[ip, iz] / u.mm:.6f},"
+                f"{tracks.kin.p.y[ip, iz] / u.mm:.6f},"
+                f"{tracks.kin.p.ct[ip, iz] / u.mm:.6f},"
+                f"{tracks.kin.t.x[ip, iz] / u.MeV:.6f},"
+                f"{tracks.kin.t.y[ip, iz] / u.MeV:.6f},"
+                f"{tracks.kin.t.z[ip, iz] / u.MeV:.6f},"
+                f"{tracks.kin.t.ct[ip, iz] / u.MeV:.6f}\n"
+                for iz in range(len(ztrack))
+            )
 
     # X and CT were built with indexing="ij" then flattened, so the particle
     # at radial index ix and time index it is at ip = ix * nt + it.
