@@ -7,6 +7,7 @@ The data values themselves are retrieved from https://pdg.lbl.gov/2025/AtomicNuc
 """
 
 import functools
+import math
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -89,6 +90,29 @@ class InteractionParams:
     The two projected planes are independent and identically distributed
     (PDG 34.18); the space angle is sqrt(2) * theta0 (PDG 34.15).
     """
+    # The fields below are used by the mixture scattering samplers
+    # (``absorber.scattering``), which receive only InteractionParams.
+    radiation_lengths: SFloat
+    """Segment thickness in radiation lengths, d/X0 (dimensionless)
+    Used by the mixture scattering models, where the variance is proportional to
+    d/X0 and additive over segments.
+    """
+    beta: SFloat
+    """Incident particle velocity v/c"""
+    momentum: SFloat
+    """Incident particle momentum |p| [MeV]"""
+    charge: SFloat
+    """Incident particle charge [e]"""
+    Z: SFloat
+    """(Average) nuclear charge of the material"""
+    scattering_length_ratio: SFloat
+    """h = X_s / X0, the nuclear scattering length over the radiation length
+    ([FR] Eqs. 36-37). The nuclear-only multiple-scattering variance is
+    (15 MeV/(beta p))^2 d/X_s ([FR] Eq. 40). For compounds X_s is combined over
+    elements like X0 (1/X_s = sum_i w_i/X_s,i). Material constant."""
+    electron_ratio: SFloat
+    """Strength of scattering on atomic electrons relative to nuclei,
+    sum_i n_i Z_i / sum_i n_i Z_i^2 (= 1/Z for an element). Material constant."""
 
 
 class IncidentParticle(Protocol):
@@ -125,6 +149,35 @@ $m_e$ is the electron mass, and $N_A$ is Avogadro's number.
 """
 
 
+SCATTERING_LENGTH_CONSTANT: float = 716.4 * u.g / u.cm2
+r"""$(4 \alpha r_e^2 N_A)^{-1}$, the numerator of the radiation length and of
+the nuclear scattering length X_s ([FR] Eq. 36)"""
+
+
+@dataclass(frozen=True)
+class Element:
+    """One element of a material's composition"""
+
+    Z: int
+    """Atomic number"""
+    A: float
+    """Atomic mass [MeV/c^2/mol] (i.e. in hepunits g/mol)"""
+    mass_fraction: float
+    """Fraction of the material's mass"""
+
+    @property
+    def scattering_length(self) -> float:
+        """Nuclear scattering length X_s [MeV/c^2/mm^2] ([FR] Eq. 36)
+
+        X_s = 716.4 g/cm^2 * A / (Z^2 ln(159 Z^-1/3)), with A in g/mol.
+        """
+        return (
+            SCATTERING_LENGTH_CONSTANT
+            * (self.A / (u.g / u.mol))
+            / (self.Z**2 * math.log(159.0 * self.Z ** (-1.0 / 3.0)))
+        )
+
+
 @dataclass(frozen=True)
 class Material:
     """A material that particles may pass through"""
@@ -148,6 +201,36 @@ class Material:
     is_atomic: bool
     """True if this is an atomic element (rather than a compound)"""
     density_correction: DensityCorrection
+    composition: tuple[Element, ...] | None = None
+    """Elements by mass fraction. Required for compounds; atomic materials
+    default to a single element (Z, mass)."""
+
+    def elements(self) -> tuple[Element, ...]:
+        """The composition, defaulting to a single element for atomic materials"""
+        if self.composition is not None:
+            return self.composition
+        if not self.is_atomic:
+            msg = f"compound material {self.name!r} needs a composition"
+            raise ValueError(msg)
+        return (Element(Z=self.Z, A=self.mass, mass_fraction=1.0),)
+
+    @property
+    def scattering_length(self) -> float:
+        """Nuclear scattering length X_s [MeV/c^2/mm^2], 1/X_s = sum w_i/X_s,i"""
+        return 1.0 / sum(e.mass_fraction / e.scattering_length for e in self.elements())
+
+    @property
+    def scattering_length_ratio(self) -> float:
+        """h = X_s / X0 ([FR] Eq. 37); 2.2 for hydrogen, ~1 near Z = 53"""
+        return self.scattering_length / self.radiation_length
+
+    @property
+    def electron_ratio(self) -> float:
+        """sum_i n_i Z_i / sum_i n_i Z_i^2 with n_i ~ w_i / A_i (1/Z for an element)"""
+        els = self.elements()
+        nz = sum(e.mass_fraction / e.A * e.Z for e in els)
+        nz2 = sum(e.mass_fraction / e.A * e.Z**2 for e in els)
+        return nz / nz2
 
     @staticmethod
     def _wmax(beta: SFloat, gamma: SFloat, mass: SFloat) -> SFloat:
@@ -247,7 +330,10 @@ class Material:
         return _stopping_momentum(self, min_range, mass, charge)
 
     def interaction_params(
-        self, particle: IncidentParticle, thickness: SFloat
+        self,
+        particle: IncidentParticle,
+        thickness: SFloat,
+        reference_thickness: SFloat | None = None,
     ) -> InteractionParams:
         """Compute interaction parameters for a given particle and thickness"""
 
@@ -270,13 +356,19 @@ class Material:
         # protocol-safe momentum: p = beta * gamma * m
         momentum = beta * gamma * particle.mass
         z = particle.charge
-        x_over_X0 = thickness * self.density / self.radiation_length
-        theta0 = (
+        x_ref = (
+            (thickness if reference_thickness is None else reference_thickness)
+            * self.density
+            / self.radiation_length
+        )
+        x_seg = thickness * self.density / self.radiation_length
+        theta0_ref = (
             (13.6 * u.MeV / (beta * momentum))
             * z
-            * jnp.sqrt(x_over_X0)
-            * (1.0 + 0.038 * jnp.log(x_over_X0 * z**2 / beta**2))
+            * jnp.sqrt(x_ref)
+            * (1.0 + 0.038 * jnp.log(x_ref * z**2 / beta**2))
         )
+        theta0 = theta0_ref * jnp.sqrt(x_seg / x_ref)
         return InteractionParams(
             xi=xi,
             kappa=kappa,
@@ -284,6 +376,13 @@ class Material:
             mode_energy_loss=mode_energy_loss,
             theta0=theta0,
             thickness=thickness,
+            radiation_lengths=x_seg,
+            beta=beta,
+            momentum=momentum,
+            charge=z,
+            Z=float(self.Z),
+            scattering_length_ratio=self.scattering_length_ratio,
+            electron_ratio=self.electron_ratio,
         )
 
 
@@ -349,6 +448,52 @@ MATERIALS: dict[str, Material] = {
         density_correction=DensityCorrection(
             C=2.3580, x0=-0.0988, x1=1.4515, a=0.9057, k=2.5849, delta0=0.0
         ),
+        # natural Li (6.94) and H (1.008), 1:1 by atoms
+        composition=(
+            Element(Z=3, A=6.94 * u.g / u.mol, mass_fraction=0.87318),
+            Element(Z=1, A=1.008 * u.g / u.mol, mass_fraction=0.12682),
+        ),
+    ),
+    # MICE 6Li-enriched LiH absorber. Composition and thickness from the
+    # benchmark note Table 1; radiation length calculated in arXiv:2209.10251.
+    # <Z/A> = 0.56624 from Li6 0.814 / Li7 0.043 / H 0.143 by mass.
+    # plasma = 28.816 sqrt(rho <Z/A>) = 18.012 eV.
+    # C = 2 ln(I / plasma) + 1 = 2.4126. I is set by the electronic structure,
+    # identical for Li6 and Li7, so the PDG LiH value carries over.
+    # Sternheimer parameters are reused from PDG LiH.
+    # TODO: Revisit Sternheimer corrections & other parameters at some point
+    "lithium_hydride_MICE": Material(
+        name="Lithium Hydride (MICE, 6Li-enriched)",
+        Z=2,
+        mass=(2 / 0.56624) * u.g / u.mol,
+        density=0.69 * u.g / u.cm3,
+        mean_excitation=36.5 * u.eV,
+        plasma_energy=18.012 * u.eV,
+        radiation_length=70.38 * u.g / u.cm2,
+        is_atomic=False,
+        density_correction=DensityCorrection(
+            C=2.4126, x0=-0.0988, x1=1.4515, a=0.9057, k=2.5849, delta0=0.0
+        ),
+        # benchmark note Table 1, by mass
+        composition=(
+            Element(Z=3, A=6.0151 * u.g / u.mol, mass_fraction=0.814),
+            Element(Z=3, A=7.0160 * u.g / u.mol, mass_fraction=0.043),
+            Element(Z=1, A=1.008 * u.g / u.mol, mass_fraction=0.143),
+        ),
+    ),
+    # https://indico.cern.ch/event/1446644/attachments/2918391/5121897/Cooling_Code_Benchmarking-1.pdf
+    "liquid_hydrogen_H2": Material(
+        name="Liquid Hydrogen",
+        Z=1,
+        mass=1.008 * u.g / u.mol,
+        density=0.07080 * u.g / u.cm3,
+        mean_excitation=21.8 * u.eV,
+        plasma_energy=7.64 * u.eV,
+        radiation_length=63.04 * u.g / u.cm2,
+        is_atomic=True,
+        density_correction=DensityCorrection(
+            C=3.0977, x0=0.4400, x1=1.8856, a=0.13483, k=5.6249, delta0=0.0
+        ),
     ),
     # https://pdg.lbl.gov/2025/AtomicNuclearProperties/HTML/silicon_dioxide_fused_quartz.html
     "silicon_dioxide_SiO2": Material(
@@ -362,6 +507,10 @@ MATERIALS: dict[str, Material] = {
         is_atomic=False,
         density_correction=DensityCorrection(
             C=4.0560, x0=0.1500, x1=3.0140, a=0.08408, k=3.5064, delta0=0.0
+        ),
+        composition=(
+            Element(Z=14, A=28.0855 * u.g / u.mol, mass_fraction=0.46743),
+            Element(Z=8, A=15.999 * u.g / u.mol, mass_fraction=0.53257),
         ),
     ),
 }

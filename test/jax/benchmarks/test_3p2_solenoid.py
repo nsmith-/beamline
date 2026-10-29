@@ -1,35 +1,24 @@
-"""Cooling code benchmark tests.
+"""Benchmark 3.2: muon trajectories through a solenoid.
 
-As described in:
-https://indico.cern.ch/event/1446644/attachments/2918391/5121897/Cooling_Code_Benchmarking-1.pdf
-
+Table 2 of the cooling code benchmarking note.
 """
 
 from collections.abc import Callable
 
 import diffrax
-import equinox as eqx
 import hepunits as u
 import jax
 import jax.numpy as jnp
 import pytest
+from cooling_common import SOLENOID
 from matplotlib import pyplot as plt
 from matplotlib.animation import FuncAnimation
 
-from beamline.jax.coordinates import Cartesian3, Cartesian4, Transform
-from beamline.jax.emfield import EMTensorField, TransformEMField
+from beamline.jax.coordinates import Cartesian3, Cartesian4
 from beamline.jax.integrate.propagate import diffrax_solve, particle_interaction
 from beamline.jax.kinematics import MuonStateDz
 from beamline.jax.magnet.solenoid import ThickSolenoid
-from beamline.jax.rfcavity.pillbox import PillboxCavity
 from beamline.jax.types import SFloat
-
-SOLENOID = ThickSolenoid(
-    Rin=250.0 * u.mm,
-    Rout=419.3 * u.mm,
-    jphi=500.0 * u.A / u.mm**2,
-    L=140.0 * u.mm,
-)
 
 
 def test_benchmark_3p2_solenoid(artifacts_dir):
@@ -83,8 +72,42 @@ def test_benchmark_3p2_solenoid(artifacts_dir):
             end.kin.t.z / u.MeV,
             end.kin.t.ct / u.MeV,
         ]
-        for row in zip(*cols, strict=True):
-            f.write(",".join(f"{val:.6f}" for val in row) + "\n")
+        f.writelines(
+            ",".join(f"{val:.6f}" for val in row) + "\n"
+            for row in zip(*cols, strict=True)
+        )
+
+    # Full trajectories
+    with open(artifacts_dir / "benchmark_3p2_solenoid_tracks.csv", "w") as f:
+        f.write("particle,x0_mm,z_mm,x_mm,y_mm,ct_mm,px_MeV,py_MeV,pz_MeV,E_MeV\n")
+        for ip in range(len(xpos)):
+            f.writelines(
+                f"{ip},{xpos[ip] / u.mm:.4f},"
+                f"{track.kin.p.z[ip, iz] / u.mm:.6f},"
+                f"{track.kin.p.x[ip, iz] / u.mm:.6f},"
+                f"{track.kin.p.y[ip, iz] / u.mm:.6f},"
+                f"{track.kin.p.ct[ip, iz] / u.mm:.6f},"
+                f"{track.kin.t.x[ip, iz] / u.MeV:.6f},"
+                f"{track.kin.t.y[ip, iz] / u.MeV:.6f},"
+                f"{track.kin.t.z[ip, iz] / u.MeV:.6f},"
+                f"{track.kin.t.ct[ip, iz] / u.MeV:.6f}\n"
+                for iz in range(len(zs))
+            )
+
+    # Every second particle for a readable figure
+    fig, (axx, axy) = plt.subplots(2, 1, figsize=(8, 8), sharex=True)
+    for ip in range(0, len(xpos), 2):
+        axx.plot(track.kin.p.z[ip] / u.mm, track.kin.p.x[ip] / u.mm, lw=0.8)
+        axy.plot(track.kin.p.z[ip] / u.mm, track.kin.p.y[ip] / u.mm, lw=0.8)
+    axx.set_ylabel("x [mm]")
+    axy.set_ylabel("y [mm]")
+    axy.set_xlabel("z [mm]")
+    axx.set_title("Benchmark 3.2: trajectories vs radial offset")
+    for a in (axx, axy):
+        a.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(artifacts_dir / "benchmark_3p2_solenoid_tracks.png", dpi=150)
+    plt.close(fig)
 
     # Plot results
     fig, ax = plt.subplots(figsize=(8, 8))
@@ -277,8 +300,6 @@ def test_benchmark_3p2_solenoid_perf(
         "heun": diffrax.Heun(),
     }
     solver = nsolvers[nsolver]
-    # initial step doesn't matter much for adaptive solvers, 1 mm is a reasonable default
-    # (setting to None lets diffrax pick its own but only adds a tiny overhead)
     nstepsizes = {
         "pid_rtol1em3": (1 * u.mm, diffrax.PIDController(rtol=1e-3, atol=1e-6)),
         "pid_rtol1em5": (1 * u.mm, diffrax.PIDController(rtol=1e-5, atol=1e-7)),
@@ -362,228 +383,3 @@ def test_benchmark_3p2_solenoid_perf(
         ),
     }
     benchmark(runbench)
-
-
-def test_benchmark_3p3_rf_cavity(artifacts_dir, benchmark):
-    """Benchmark 3.3: Muon through RF cavity
-
-    Parameters from Table 3
-    """
-    frequency = 704.0 * u.MHz
-    # time to get to 0 position is 500mm / beta*c
-    ref_muon = MuonStateDz.make(
-        position=Cartesian4.make(),
-        momentum=Cartesian3.make(z=200.0 * u.MeV),
-        q=1,
-    )
-    t0 = 500 * u.mm / (ref_muon.beta() * u.c_light)
-    # advance by pi/2 so we are in bunching mode
-    # i.e. refence particle momentum is unchanged
-    phase = -2 * u.pi * ((t0 * frequency - 0.25) % 1.0)
-
-    cavity = PillboxCavity(
-        length=183.6 * u.mm,
-        frequency=frequency,
-        E0=30.0 * u.MV / u.m,
-        mode="TM",
-        m=0,
-        n=1,
-        p=0,
-        phase=phase,
-    )
-
-    X, CT = jnp.meshgrid(
-        # TODO: fix singularity at origin
-        jnp.linspace(0.0 * u.mm, 200.0 * u.mm, 21).at[0].set(1e-8 * u.mm),
-        jnp.linspace(0.0 * u.mm, 1.0 / 0.704 * u.ns * u.c_light, 21),
-        indexing="ij",
-    )
-    x, ct = X.flatten(), CT.flatten()
-    starts = MuonStateDz.make(
-        position=Cartesian4.make(x=x, z=-500.0 * u.mm, ct=ct),
-        momentum=Cartesian3.make(z=200.0 * u.MeV),
-        q=1,
-    )
-    saveat = jnp.array([-500.0 * u.mm, 500.0 * u.mm])
-
-    @jax.jit
-    def run_one(start: MuonStateDz) -> tuple[MuonStateDz, dict]:
-        ys, stats = diffrax_solve(
-            field=cavity,
-            start=start,
-            cts=saveat,
-            rtol=1e-7,
-            atol=1e-9,
-        )
-        return jax.tree.map(lambda x: x[-1], ys), stats
-
-    # start1 = jax.tree.map(lambda x: x[0], starts)
-    # end = run_one(start1)
-    # return
-
-    def run_all(starts: MuonStateDz) -> tuple[MuonStateDz, dict]:
-        # vmap seems faster by about 20%, this might be more dramatic when there are many volumes
-        # _, (ends, stats) = jax.lax.scan(lambda _, s: (None, run_one(s)), None, starts)
-        ends, stats = jax.vmap(run_one)(starts)
-        ends = jax.tree.map(lambda x: x.reshape((*X.shape, -1)), ends)
-        return ends, stats
-
-    ends, stats = run_all(starts)
-
-    # histogram of number of steps taken
-    fig, ax = plt.subplots()
-    ax.hist(stats["num_steps"], bins=20, label="total steps")
-    ax.hist(stats["num_rejected_steps"], bins=20, alpha=0.5, label="rejected steps")
-    ax.set_ylabel("Count")
-    ax.legend()
-    fig.savefig(artifacts_dir / "benchmark_3p3_rf_steps.png")
-
-    # Plot results
-    fig, ax = plt.subplots()
-
-    for ix in [0, 10, 16, 20]:
-        xstart = X[ix, 0]
-        ctvals = CT[ix, :]
-        Evals = ends.kin.t.ct[ix, :] - ref_muon.kin.t.ct
-
-        ax.plot(
-            (ctvals - ctvals.min()) / (u.c_light * u.ns),
-            Evals / u.MeV,
-            marker="^",
-            color="green",
-            ls="none",
-            label=f"x={xstart} mm",
-        )
-        ax.set_xlabel("t-t0 [ns]")
-        ax.set_ylabel("Delta E [MeV]")
-        ax.set_title("Benchmark 3.3: Muon through RF cell")
-        ax.legend()
-
-        # ax.set_facecolor("none")
-        # fig.set_facecolor("none")
-        fig.savefig(artifacts_dir / f"benchmark_3p3_rf_x{ix:02d}.png")
-        ax.clear()
-
-    def bench_func():
-        f = jax.jit(run_all)
-        return jax.block_until_ready(f(starts))
-
-    bench_func()
-    benchmark(bench_func)
-
-
-@pytest.mark.parametrize("forward", [True, False])
-def test_benchmark_3p3_rf_tune(artifacts_dir, forward: bool):
-    """Derivative with respect to cavity phase and z position
-
-    Both should be able to accomplish the same thing if gradients are working
-
-    Test that forward and reverse mode autodiff work (TODO: and give the same result)
-    """
-    frequency = 704.0 * u.MHz
-    # time to get to 0 position is 500mm / beta*c
-    ref_muon = MuonStateDz.make(
-        position=Cartesian4.make(),
-        momentum=Cartesian3.make(z=200.0 * u.MeV),
-        q=1,
-    )
-    t0 = 500 * u.mm / (ref_muon.beta() * u.c_light)
-    # advance by pi/2 so we are in bunching mode
-    # i.e. refence particle momentum is unchanged
-    phase = -2 * u.pi * ((t0 * frequency - 0.25) % 1.0)
-
-    def build_cavity(phase_shift: SFloat, z_shift: SFloat) -> EMTensorField:
-        cavity = PillboxCavity(
-            length=183.6 * u.mm,
-            frequency=frequency,
-            E0=30.0 * u.MV / u.m,
-            mode="TM",
-            m=0,
-            n=1,
-            p=0,
-            phase=phase + phase_shift,
-        )
-        return TransformEMField(
-            transform=Transform.make_translation(z=z_shift),
-            field=cavity,
-        )
-
-    def track_ref(field: EMTensorField) -> MuonStateDz:
-        start = MuonStateDz.make(
-            position=Cartesian4.make(x=1e-8 * u.mm, z=-500.0 * u.mm),
-            momentum=Cartesian3.make(z=200.0 * u.MeV),
-            q=1,
-        )
-        saveat = jnp.array([-500.0 * u.mm, 500.0 * u.mm])
-        ys, _ = diffrax_solve(
-            field=field,
-            start=start,
-            cts=saveat,
-            rtol=1e-7,
-            atol=1e-9,
-            forward_mode=forward,
-        )
-        return jax.tree.map(lambda x: x[-1], ys)
-
-    @eqx.filter_jit
-    def objective(phase_shift: SFloat, z_shift: SFloat) -> SFloat:
-        field = build_cavity(phase_shift, z_shift)
-        end = track_ref(field)
-        return end.kin.t.ct
-
-    jacobian = jax.jacfwd if forward else jax.jacrev
-
-    phase_vals = jnp.linspace(-1.5, 1.5, 9)
-    E_vals = []
-    dEdphase_vals = []
-    for phase_shift in phase_vals:
-        Efinal = objective(phase_shift, 0.0)
-        dEdphase = jacobian(objective, argnums=0)(phase_shift, 0.0)
-        E_vals.append(Efinal)
-        dEdphase_vals.append(dEdphase)
-
-    fig, ax = plt.subplots()
-
-    ax.plot(
-        phase_vals,
-        E_vals,
-        marker="o",
-        color="green",
-        lw=1,
-    )
-    for phase_shift, Efinal, dEdphase in zip(
-        phase_vals, E_vals, dEdphase_vals, strict=True
-    ):
-        p = jnp.linspace(phase_shift - 0.05, phase_shift + 0.05, 3)
-        ax.plot(p, Efinal + dEdphase * (p - phase_shift), color="black")
-
-    ax.set_xlabel("Phase shift [rad]")
-    ax.set_ylabel("Final energy [MeV]")
-    fwdlabel = "fwd" if forward else "rev"
-    fig.savefig(artifacts_dir / f"benchmark_3p3_rf_phase_tune_{fwdlabel}.png")
-
-    z_vals = jnp.linspace(-150, 150, 9)
-    E_vals = []
-    dEdz_vals = []
-    for z_shift in z_vals:
-        Efinal = objective(0.0, z_shift)
-        dEdz = jacobian(objective, argnums=1)(0.0, z_shift)
-        E_vals.append(Efinal)
-        dEdz_vals.append(dEdz)
-
-    fig, ax = plt.subplots()
-
-    ax.plot(
-        z_vals,
-        E_vals,
-        marker="o",
-        color="green",
-        lw=1,
-    )
-    for z_shift, Efinal, dEdz in zip(z_vals, E_vals, dEdz_vals, strict=True):
-        p = jnp.linspace(z_shift - 5, z_shift + 5, 3)
-        ax.plot(p, Efinal + dEdz * (p - z_shift), color="black")
-
-    ax.set_xlabel("z shift [mm]")
-    ax.set_ylabel("Final energy [MeV]")
-    fig.savefig(artifacts_dir / f"benchmark_3p3_rf_z_tune_{fwdlabel}.png")

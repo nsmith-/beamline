@@ -12,10 +12,12 @@ volumes to decide where and how to apply stochastic kicks.
 
 from __future__ import annotations
 
+import dataclasses
 from abc import abstractmethod
 
 import equinox as eqx
 import hepunits as u
+import jax.numpy as jnp
 
 from beamline.jax.absorber.material import InteractionParams, Material
 from beamline.jax.coordinates import Cartesian3, Tangent, Transform
@@ -135,7 +137,7 @@ class AbsorberCylinder(MaterialVolume, CylinderVolume):
     def interaction_params(
         self, state: ParticleState, thickness: SFloat
     ) -> InteractionParams:
-        return self.material.interaction_params(state, thickness)
+        return self.material.interaction_params(state, thickness, self.length)
 
     def is_stopped(self, state: ParticleState) -> SBool:
         p_stop = self.material.stopping_momentum(
@@ -143,3 +145,45 @@ class AbsorberCylinder(MaterialVolume, CylinderVolume):
         )
         pmag = abs(state.kin.t.to_cartesian3())
         return self.contains(state.kin.p.to_cartesian3()) & (pmag < p_stop)
+
+
+class SumMaterialVolume(MaterialVolume):
+    """Union of non-overlapping material volumes (mirrors ``SumField``)
+
+    Interaction parameters come from whichever component contains the point.
+    The result is undefined if two components overlap.
+    """
+
+    components: list[MaterialVolume]
+
+    def characteristic_length(self) -> SFloat:
+        return jnp.min(jnp.array([c.characteristic_length() for c in self.components]))
+
+    def contains(self, point: Cartesian3) -> SBool:
+        return jnp.any(jnp.array([c.contains(point) for c in self.components]))
+
+    def signed_time_to_boundary(self, ray: Tangent[Cartesian3]) -> SFloat:
+        ds = jnp.array([c.signed_time_to_boundary(ray) for c in self.components])
+        return ds[jnp.argmin(jnp.abs(ds))]
+
+    def interaction_params(
+        self, state: ParticleState, thickness: SFloat
+    ) -> InteractionParams:
+        point = state.kin.p.to_cartesian3()
+        inside = jnp.array([c.contains(point) for c in self.components])
+        per = [c.interaction_params(state, thickness) for c in self.components]
+        return InteractionParams(
+            **{
+                f.name: jnp.sum(
+                    jnp.where(
+                        inside,
+                        jnp.array([getattr(pp, f.name) for pp in per]),
+                        0.0,
+                    )
+                )
+                for f in dataclasses.fields(InteractionParams)
+            }
+        )
+
+    def is_stopped(self, state: ParticleState) -> SBool:
+        return jnp.any(jnp.array([c.is_stopped(state) for c in self.components]))
