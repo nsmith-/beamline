@@ -12,7 +12,7 @@ from beamline.jax.emfield import EMTensorField
 from beamline.jax.magnet.axial_expansion import (
     AXIS_SERIES_RADIUS,
     B_rhoexpansion,
-    axisymmetric_field_strength,
+    axisymmetric_magnet_field_strength,
 )
 from beamline.jax.types import SBool, SFloat
 from beamline.units import MU0
@@ -108,6 +108,6 @@ class WireLoop(EMTensorField):
     def field_strength(
         self, point: Cartesian4
     ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
-        return axisymmetric_field_strength(
+        return axisymmetric_magnet_field_strength(
             self.B, self.Bz_onaxis, point, AXIS_SERIES_RADIUS * self.R
         )
