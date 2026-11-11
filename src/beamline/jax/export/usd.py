@@ -51,6 +51,7 @@ _COLOR_THIN_SHELL_SOLENOID = (0.2, 0.5, 0.9)  # blue
 _COLOR_THICK_SOLENOID = (0.1, 0.8, 0.8)  # cyan
 _COLOR_CAVITY = (0.9, 0.5, 0.1)  # orange
 _COLOR_ABSORBER = (0.4, 0.7, 0.4)  # green
+_COLOR_WIRE_LOOP = (0.9, 0.2, 0.3)  # red
 _COLOR_TRAJECTORY = (1.0, 0.8, 0.0)  # yellow
 _COLOR_UNKNOWN = (
     0.6,
@@ -61,6 +62,10 @@ _COLOR_UNKNOWN = (
 # Slightly translucent so a marker/light traveling through the interior of a
 # solenoid/cavity/absorber is still visible from outside.
 _VOLUME_OPACITY = 0.85
+
+# A WireLoop has no physical wire thickness; draw it as a torus whose tube
+# radius is this fraction of the loop radius so it stays visible at any scale.
+_WIRE_LOOP_TUBE_FRACTION = 0.03
 
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<!^)(?=[A-Z])")
 
@@ -611,6 +616,65 @@ def _add_tube_prim(
     return mesh
 
 
+def _add_torus_prim(
+    stage: Usd.Stage,
+    prim_path: str,
+    major_radius: float,
+    minor_radius: float,
+    color: tuple[float, float, float],
+    n_major: int = 64,
+    n_minor: int = 12,
+    transform: Transform3 | None = None,
+) -> object:
+    """Define a UsdGeom.Mesh torus (ring in the xy-plane, axis along Z).
+
+    ``major_radius`` is the distance from the axis to the tube center and
+    ``minor_radius`` the radius of the tube cross-section. Quads are wound so
+    normals point outward. If ``transform`` is given it is baked into the
+    vertex positions, as in :func:`_add_tube_prim`.
+    """
+    from pxr import Gf, UsdGeom, Vt
+
+    phi = np.linspace(0.0, 2.0 * np.pi, n_major, endpoint=False)
+    theta = np.linspace(0.0, 2.0 * np.pi, n_minor, endpoint=False)
+    rho = major_radius + minor_radius * np.cos(theta)  # (n_minor,)
+    x = rho[None, :] * np.cos(phi)[:, None]
+    y = rho[None, :] * np.sin(phi)[:, None]
+    z = np.broadcast_to(minor_radius * np.sin(theta), x.shape)
+    points = np.stack([x, y, z], axis=-1).reshape(-1, 3)
+    points = _apply_transform(points, transform)
+
+    def idx(i: int, j: int) -> int:
+        return (i % n_major) * n_minor + (j % n_minor)
+
+    face_vertex_indices = []
+    for i in range(n_major):
+        for j in range(n_minor):
+            face_vertex_indices.extend(
+                [idx(i, j), idx(i + 1, j), idx(i + 1, j + 1), idx(i, j + 1)]
+            )
+
+    mesh = UsdGeom.Mesh.Define(stage, prim_path)
+    mesh.GetPointsAttr().Set(
+        Vt.Vec3fArray([Gf.Vec3f(*(float(v) for v in p)) for p in points])
+    )
+    mesh.GetFaceVertexCountsAttr().Set(Vt.IntArray([4] * (n_major * n_minor)))
+    mesh.GetFaceVertexIndicesAttr().Set(Vt.IntArray(face_vertex_indices))
+    mesh.CreateDoubleSidedAttr().Set(True)
+    mesh.GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*color)]))
+    mesh.CreateDisplayOpacityAttr().Set(Vt.FloatArray([_VOLUME_OPACITY]))
+    # Authored extent: see the note in _add_curve_prim.
+    mesh.CreateExtentAttr().Set(
+        Vt.Vec3fArray(
+            [
+                Gf.Vec3f(*(float(v) for v in points.min(axis=0))),
+                Gf.Vec3f(*(float(v) for v in points.max(axis=0))),
+            ]
+        )
+    )
+    return mesh
+
+
 def _add_curve_prim(
     stage: Usd.Stage,
     prim_path: str,
@@ -802,6 +866,8 @@ def add_volume(
     - ``ThinShellSolenoid`` → ``Mesh`` cylinder (radius ``R``, height ``L``)
     - ``ThickSolenoid`` → ``Mesh`` annular tube (inner radius ``Rin``, outer
       radius ``Rout``, height ``L``) — a hollow tube, not a solid cylinder
+    - ``WireLoop`` → ``Mesh`` torus (major radius ``R``, tube radius a fixed
+      fraction of ``R``, since the loop has no physical wire thickness)
     - Any other ``CylinderVolume`` (e.g. ``PillboxCavity``, ``AbsorberCylinder``)
       → ``Mesh`` cylinder (``radius``, ``length``, per the ABC)
     - ``StackedField`` → recurse into its unstacked batch members, named
@@ -845,6 +911,7 @@ def add_volume(
     from beamline.jax.absorber.volume import AbsorberCylinder, TransformMaterialVolume
     from beamline.jax.emfield import StackedField, SumField, TransformEMField
     from beamline.jax.geometry import CylinderVolume
+    from beamline.jax.magnet.loop import WireLoop
     from beamline.jax.magnet.solenoid import ThickSolenoid, ThinShellSolenoid
     from beamline.jax.rfcavity.pillbox import PillboxCavity
 
@@ -891,6 +958,17 @@ def add_volume(
             vol.L,
             type_colors[ThickSolenoid],
             _snake_case(ThickSolenoid.__name__),
+            transform=transform,
+        )
+
+    elif isinstance(vol, WireLoop):
+        radius = _to_float(vol.R)
+        _add_torus_prim(
+            stage,
+            prim_path,
+            radius,
+            _WIRE_LOOP_TUBE_FRACTION * radius,
+            _COLOR_WIRE_LOOP,
             transform=transform,
         )
 
