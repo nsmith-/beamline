@@ -214,7 +214,21 @@ class TransformEMField(EMTensorField):
     def field_strength(
         self, point: Cartesian4
     ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
-        raise RuntimeError("This method should not be used, use __call__ instead")
+        """E and B of the transformed field at a global point
+
+        Evaluates the local field at the local image of ``point`` (including the
+        time shift), then rotates E and B back to global coordinates. This is
+        valid for rotations and translations in space and time, which is all
+        that :class:`Transform` constructs today; under a Lorentz boost E and B
+        would mix and this would need to go through the full field tensor
+        (as :meth:`__call__` effectively does). Rotations must be proper
+        (determinant +1), since B is a pseudovector.
+
+        :meth:`__call__` is cheaper when the field is only needed contracted
+        with a four-momentum.
+        """
+        E, B = self.field.field_strength(self.transform.to_local(point))
+        return self.transform.tangent_to_global(E), self.transform.tangent_to_global(B)
 
     def __call__(self, vec: Tangent[Cartesian4]) -> Tangent[Cartesian4]:
         in_local = self.transform.tangent_to_local(vec)

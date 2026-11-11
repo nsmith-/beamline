@@ -32,6 +32,7 @@ from beamline.jax.emfield import SimpleEMField, StackedField, TransformEMField
 from beamline.jax.export.usd import add_trajectories, add_volume, make_stage, save_usdz
 from beamline.jax.integrate.propagate import diffrax_solve
 from beamline.jax.kinematics import MuonStateDct
+from beamline.jax.magnet.loop import WireLoop
 from beamline.jax.magnet.solenoid import ThickSolenoid, ThinShellSolenoid
 from beamline.jax.rfcavity.pillbox import PillboxCavity
 
@@ -64,6 +65,22 @@ def test_add_thin_shell_solenoid(stage):
     radius, height = _mesh_radius_height(prim)
     assert radius == pytest.approx(100.0 * u.mm, rel=1e-5)
     assert height == pytest.approx(500.0 * u.mm, rel=1e-5)
+
+
+def test_add_wire_loop(stage):
+    loop = WireLoop(R=250.0 * u.mm, I=50.0 * u.A)
+    add_volume(stage, "/beamline/loop", loop)
+
+    prim = stage.GetPrimAtPath("/beamline/loop")
+    assert prim.IsValid()
+    pts = np.array(UsdGeom.Mesh(prim).GetPointsAttr().Get())
+    tube = 0.03 * 250.0 * u.mm
+    # Outer horizontal extent is R + tube radius; z spans the tube diameter.
+    assert np.max(np.linalg.norm(pts[:, :2], axis=-1)) == pytest.approx(
+        250.0 * u.mm + tube, rel=1e-5
+    )
+    assert np.ptp(pts[:, 2]) == pytest.approx(2 * tube, rel=1e-2)
+    assert UsdGeom.Mesh(prim).GetExtentAttr().Get() is not None
 
 
 def _working_texture_dir(stage) -> Path:

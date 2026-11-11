@@ -5,11 +5,9 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.experimental.jet import jet
-from jax.scipy.special import gamma
 from quadax import quadgk
 
-from beamline.jax.coordinates import Cartesian3, Cartesian4, Cylindric3, Tangent
+from beamline.jax.coordinates import Cartesian3, Cartesian4, Tangent
 from beamline.jax.elliptic import (
     elliprd_one_zero,
     elliprf_one_zero,
@@ -17,15 +15,30 @@ from beamline.jax.elliptic import (
     elliptic_kepi,
 )
 from beamline.jax.emfield import EMTensorField
+from beamline.jax.magnet.axial_expansion import (
+    AXIS_SERIES_RADIUS,
+    B_rhoexpansion,
+    axisymmetric_magnet_field_strength,
+)
 from beamline.jax.magnet.loop import WireLoop
 from beamline.jax.types import SBool, SFloat
 from beamline.units import MU0
 
 
+def _hypot(x: SFloat, y: SFloat) -> SFloat:
+    """sqrt(x**2 + y**2)
+
+    Not jnp.hypot: its second and higher derivatives are wrong where |x| == |y|
+    (e.g. d2/dx2 hypot(x, 1) is 0 instead of 1/2**1.5 at x = 1), which breaks
+    the jet-based rho expansion and Hessians at e.g. |z +- L/2| == R.
+    Overflow is not a concern at the scales used here.
+    """
+    return jnp.sqrt(x * x + y * y)
+
+
 def _hypot_ratio(x: SFloat, y: SFloat) -> SFloat:
     """Calculate x/sqrt(x**2+y**2)"""
-    hypot = jnp.hypot(x, y)
-    return x / hypot
+    return x / _hypot(x, y)
 
 
 def _auxp12(k2: SFloat, gamma: SFloat) -> tuple[SFloat, SFloat]:
@@ -84,25 +97,7 @@ class ThinShellSolenoid(EMTensorField):
         Uses a series expansion in rho around the on-axis value
         McDonald model, expanding in powers of rho around the on-axis field
         """
-        Bz0, dnBz = jet(
-            self.Bz_onaxis,
-            primals=(z,),
-            series=(jnp.zeros(2 * order + 1).at[0].set(1.0),),
-        )
-        hrho = rho / 2
-        Bz = Bz0 + sum(
-            (-1) ** n / gamma(n + 1) ** 2 * hrho ** (2 * n) * dnBz[2 * n - 1]
-            for n in range(1, order + 1)
-        )
-        Brho = sum(
-            (-1) ** (n + 1)
-            / (n + 1)
-            / gamma(n + 1) ** 2
-            * hrho ** (2 * n + 1)
-            * dnBz[2 * n]
-            for n in range(order + 1)
-        )
-        return Brho, Bz
+        return B_rhoexpansion(self.Bz_onaxis, rho, z, order)
 
     def A(self, rho: SFloat, z: SFloat) -> SFloat:
         """Vector potential A_phi at (rho, z)
@@ -117,7 +112,7 @@ class ThinShellSolenoid(EMTensorField):
             fourRrho / (xip**2 + rhopR**2),
             fourRrho / (xim**2 + rhopR**2),
         )
-        ap, am = xip / jnp.hypot(xip, rhopR), xim / jnp.hypot(xim, rhopR)
+        ap, am = xip / _hypot(xip, rhopR), xim / _hypot(xim, rhopR)
         Kp, Ep, Pip = elliptic_kepi(n=n, k=jnp.sqrt(mp))
         Km, Em, Pim = elliptic_kepi(n=n, k=jnp.sqrt(mm))
         termp = ap * ((mp + n - mp * n) / (mp * n) * Kp - Ep / mp + (n + 1) / n * Pip)
@@ -153,7 +148,7 @@ class ThinShellSolenoid(EMTensorField):
         )
         xip, xim = z + self.L / 2, z - self.L / 2
         rhopR, rhomR = rho + self.R, rho - self.R
-        alphap, alpham = 1 / jnp.hypot(xip, rhopR), 1 / jnp.hypot(xim, rhopR)
+        alphap, alpham = 1 / _hypot(xip, rhopR), 1 / _hypot(xim, rhopR)
         betap, betam = xip * alphap, xim * alpham
         gamma = rhomR / rhopR
         k2p, k2m = (
@@ -186,12 +181,9 @@ class ThinShellSolenoid(EMTensorField):
     def field_strength(
         self, point: Cartesian4
     ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
-        xcyl = point.to_cylindric3()
-        Brho, Bz = self.B_elliptic(xcyl.rho, xcyl.z)
-        Bphi = jnp.zeros_like(Brho)
-        E = Tangent(p=point.to_cartesian3(), t=Cartesian3.make())
-        B = Tangent(p=xcyl, t=Cylindric3.make(rho=Brho, phi=Bphi, z=Bz))
-        return E, B.to_cartesian()
+        return axisymmetric_magnet_field_strength(
+            self.B_elliptic, self.Bz_onaxis, point, AXIS_SERIES_RADIUS * self.R
+        )
 
 
 class ThickSolenoid(EMTensorField):
@@ -214,8 +206,8 @@ class ThickSolenoid(EMTensorField):
 
         def edge(zeta: SFloat) -> SFloat:
             return zeta * jnp.log(
-                (self.Rout + jnp.hypot(self.Rout, zeta))
-                / (self.Rin + jnp.hypot(self.Rin, zeta))
+                (self.Rout + _hypot(self.Rout, zeta))
+                / (self.Rin + _hypot(self.Rin, zeta))
             )
 
         halfL = self.L / 2
@@ -272,9 +264,6 @@ class ThickSolenoid(EMTensorField):
     def field_strength(
         self, point: Cartesian4
     ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
-        xcyl = point.to_cylindric3()
-        Brho, Bz = self.B_shells(xcyl.rho, xcyl.z)
-        Bphi = jnp.zeros_like(Brho)
-        E = Tangent(p=point.to_cartesian3(), t=Cartesian3.make())
-        B = Tangent(p=xcyl, t=Cylindric3.make(rho=Brho, phi=Bphi, z=Bz))
-        return E, B.to_cartesian()
+        return axisymmetric_magnet_field_strength(
+            self.B_shells, self.Bz_onaxis, point, AXIS_SERIES_RADIUS * self.Rin
+        )
