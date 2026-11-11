@@ -21,10 +21,20 @@ from beamline.jax.types import SBool, SFloat
 from beamline.units import MU0
 
 
+def _hypot(x: SFloat, y: SFloat) -> SFloat:
+    """sqrt(x**2 + y**2)
+
+    Not jnp.hypot: its second and higher derivatives are wrong where |x| == |y|
+    (e.g. d2/dx2 hypot(x, 1) is 0 instead of 1/2**1.5 at x = 1), which breaks
+    the jet-based rho expansion and Hessians at e.g. |z +- L/2| == R.
+    Overflow is not a concern at the scales used here.
+    """
+    return jnp.sqrt(x * x + y * y)
+
+
 def _hypot_ratio(x: SFloat, y: SFloat) -> SFloat:
     """Calculate x/sqrt(x**2+y**2)"""
-    hypot = jnp.hypot(x, y)
-    return x / hypot
+    return x / _hypot(x, y)
 
 
 def _auxp12(k2: SFloat, gamma: SFloat) -> tuple[SFloat, SFloat]:
@@ -98,7 +108,7 @@ class ThinShellSolenoid(EMTensorField):
             fourRrho / (xip**2 + rhopR**2),
             fourRrho / (xim**2 + rhopR**2),
         )
-        ap, am = xip / jnp.hypot(xip, rhopR), xim / jnp.hypot(xim, rhopR)
+        ap, am = xip / _hypot(xip, rhopR), xim / _hypot(xim, rhopR)
         Kp, Ep, Pip = elliptic_kepi(n=n, k=jnp.sqrt(mp))
         Km, Em, Pim = elliptic_kepi(n=n, k=jnp.sqrt(mm))
         termp = ap * ((mp + n - mp * n) / (mp * n) * Kp - Ep / mp + (n + 1) / n * Pip)
@@ -134,7 +144,7 @@ class ThinShellSolenoid(EMTensorField):
         )
         xip, xim = z + self.L / 2, z - self.L / 2
         rhopR, rhomR = rho + self.R, rho - self.R
-        alphap, alpham = 1 / jnp.hypot(xip, rhopR), 1 / jnp.hypot(xim, rhopR)
+        alphap, alpham = 1 / _hypot(xip, rhopR), 1 / _hypot(xim, rhopR)
         betap, betam = xip * alphap, xim * alpham
         gamma = rhomR / rhopR
         k2p, k2m = (
@@ -195,8 +205,8 @@ class ThickSolenoid(EMTensorField):
 
         def edge(zeta: SFloat) -> SFloat:
             return zeta * jnp.log(
-                (self.Rout + jnp.hypot(self.Rout, zeta))
-                / (self.Rin + jnp.hypot(self.Rin, zeta))
+                (self.Rout + _hypot(self.Rout, zeta))
+                / (self.Rin + _hypot(self.Rin, zeta))
             )
 
         halfL = self.L / 2
