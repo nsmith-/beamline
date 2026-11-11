@@ -5,12 +5,15 @@ import jax.numpy as jnp
 from beamline.jax.coordinates import (
     Cartesian3,
     Cartesian4,
-    Cylindric3,
     Tangent,
 )
 from beamline.jax.elliptic import elliprd_one_zero, elliprf_one_zero
 from beamline.jax.emfield import EMTensorField
-from beamline.jax.magnet.axial_expansion import B_rhoexpansion
+from beamline.jax.magnet.axial_expansion import (
+    AXIS_SERIES_RADIUS,
+    B_rhoexpansion,
+    axisymmetric_field_strength,
+)
 from beamline.jax.types import SBool, SFloat
 from beamline.units import MU0
 
@@ -105,9 +108,6 @@ class WireLoop(EMTensorField):
     def field_strength(
         self, point: Cartesian4
     ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
-        xcyl = point.to_cylindric3()
-        Brho, Bz = self.B(xcyl.rho, xcyl.z)
-        Bphi = jnp.zeros_like(Brho)
-        E = Tangent(point.to_cartesian3(), t=Cartesian3.make())
-        B = Tangent(p=xcyl, t=Cylindric3.make(rho=Brho, phi=Bphi, z=Bz))
-        return E, B.to_cartesian()
+        return axisymmetric_field_strength(
+            self.B, self.Bz_onaxis, point, AXIS_SERIES_RADIUS * self.R
+        )
