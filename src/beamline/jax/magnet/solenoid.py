@@ -5,8 +5,6 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.experimental.jet import jet
-from jax.scipy.special import gamma
 from quadax import quadgk
 
 from beamline.jax.coordinates import Cartesian3, Cartesian4, Cylindric3, Tangent
@@ -17,6 +15,7 @@ from beamline.jax.elliptic import (
     elliptic_kepi,
 )
 from beamline.jax.emfield import EMTensorField
+from beamline.jax.magnet.axial_expansion import B_rhoexpansion
 from beamline.jax.magnet.loop import WireLoop
 from beamline.jax.types import SBool, SFloat
 from beamline.units import MU0
@@ -84,25 +83,7 @@ class ThinShellSolenoid(EMTensorField):
         Uses a series expansion in rho around the on-axis value
         McDonald model, expanding in powers of rho around the on-axis field
         """
-        Bz0, dnBz = jet(
-            self.Bz_onaxis,
-            primals=(z,),
-            series=(jnp.zeros(2 * order + 1).at[0].set(1.0),),
-        )
-        hrho = rho / 2
-        Bz = Bz0 + sum(
-            (-1) ** n / gamma(n + 1) ** 2 * hrho ** (2 * n) * dnBz[2 * n - 1]
-            for n in range(1, order + 1)
-        )
-        Brho = sum(
-            (-1) ** (n + 1)
-            / (n + 1)
-            / gamma(n + 1) ** 2
-            * hrho ** (2 * n + 1)
-            * dnBz[2 * n]
-            for n in range(order + 1)
-        )
-        return Brho, Bz
+        return B_rhoexpansion(self.Bz_onaxis, rho, z, order)
 
     def A(self, rho: SFloat, z: SFloat) -> SFloat:
         """Vector potential A_phi at (rho, z)
