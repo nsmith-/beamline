@@ -28,7 +28,7 @@ from pxr import Usd, UsdGeom, UsdLux, UsdShade
 from beamline.jax.absorber.material import MATERIALS
 from beamline.jax.absorber.volume import AbsorberCylinder, TransformMaterialVolume
 from beamline.jax.coordinates import Cartesian3, Cartesian4, Transform
-from beamline.jax.emfield import SimpleEMField, TransformEMField
+from beamline.jax.emfield import SimpleEMField, StackedField, TransformEMField
 from beamline.jax.export.usd import add_trajectories, add_volume, make_stage, save_usdz
 from beamline.jax.integrate.propagate import diffrax_solve
 from beamline.jax.kinematics import MuonStateDct
@@ -543,3 +543,20 @@ def test_full_scene(artifacts_dir: Path):
     assert loaded.GetPrimAtPath("/trajectories/particle_0_marker").IsValid()
     assert loaded.GetPrimAtPath("/trajectories/particle_0_marker/core").IsValid()
     assert loaded.GetEndTimeCode() == 99
+
+
+def test_add_stacked_field(stage):
+    def placed(z0: float) -> TransformEMField:
+        return TransformEMField(
+            transform=Transform.make_translation(z=z0),
+            field=ThinShellSolenoid(R=100.0 * u.mm, jphi=1.0, L=200.0 * u.mm),
+        )
+
+    stacked = StackedField.stack([placed(z) for z in (0.0, 300.0, 600.0)])
+    add_volume(stage, "/beamline/stack", stacked)
+
+    for i, z in enumerate((0.0, 300.0, 600.0)):
+        prim = stage.GetPrimAtPath(f"/beamline/stack/thin_shell_solenoid_{i}")
+        assert prim.IsValid()
+        pts = np.array(UsdGeom.Mesh(prim).GetPointsAttr().Get())
+        assert pts[:, 2].mean() == pytest.approx(z, abs=1e-3)
