@@ -145,11 +145,11 @@ class CylinderVolume(Volume):
     length: eqx.AbstractVar[SFloat]
 
     def contains(self, point: Cartesian3) -> SBool:
-        pcyl = point.to_cylindric()
+        # compare rho^2: to_cylindric() has NaN derivatives on the axis
         return (
-            (pcyl.z >= -self.length / 2)
-            & (pcyl.z <= self.length / 2)
-            & (pcyl.rho <= self.radius)
+            (point.z >= -self.length / 2)
+            & (point.z <= self.length / 2)
+            & (point.x**2 + point.y**2 <= self.radius**2)
         )
 
     def signed_time_to_boundary(self, ray: Tangent[Cartesian3]) -> SFloat:
@@ -188,7 +188,8 @@ class BeamPipe(Volume):
     """Inner radius of the pipe [mm]"""
 
     def contains(self, point: Cartesian3) -> SBool:
-        return point.to_cylindric().rho <= self.radius
+        # compare rho^2: to_cylindric() has NaN derivatives on the axis
+        return point.x**2 + point.y**2 <= self.radius**2
 
     def signed_time_to_boundary(self, ray: Tangent[Cartesian3]) -> SFloat:
         t, _ = line_cylinder_intersection(

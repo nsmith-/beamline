@@ -9,6 +9,7 @@ import jax.numpy as jnp
 from scipy.special import jn_zeros, jnp_zeros
 
 from beamline.jax import bessel
+from beamline.jax.axisymmetric import ReducedComponents, axisymmetric_field_strength
 from beamline.jax.coordinates import Cartesian3, Cartesian4, Cylindric3, Tangent
 from beamline.jax.emfield import EMTensorField
 from beamline.jax.geometry import (
@@ -100,6 +101,22 @@ class PillboxCavity(EMTensorField, CylinderVolume):
         self, point: Cartesian4
     ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
         """Field strength at a given position"""
+        if self.m == 0:
+            # axisymmetric: assemble Cartesian components directly, smooth through the axis
+            def outside(point: Cartesian4):
+                zero = Tangent(p=point.to_cartesian3(), t=Cartesian3.make())
+                return zero, zero
+
+            return jax.lax.cond(
+                self.contains(point.to_cartesian3()),
+                lambda point: axisymmetric_field_strength(
+                    point, self._reduced_field_m0
+                ),
+                outside,
+                point,
+            )
+        # TODO: m >= 1 modes are not axisymmetric, and still go through the
+        # cylindrical basis change, which is singular on the axis
         E, B = jax.lax.cond(
             self.contains(point.to_cartesian3()),
             lambda p, ct: self._cylindric_field(p, ct),
@@ -111,6 +128,44 @@ class PillboxCavity(EMTensorField, CylinderVolume):
             point.ct,
         )
         return E.to_cartesian(), B.to_cartesian()
+
+    def _reduced_field_m0(
+        self, rho2: SFloat, z: SFloat, ct: SFloat
+    ) -> tuple[ReducedComponents, ReducedComponents]:
+        """Reduced components (see ReducedComponents) of an m = 0 mode
+
+        Same fields as _cylindric_field with m = 0, where J_0' = -J_1, written
+        with J_0(kr) and J_1(kr) / kr as smooth functions of rho^2.
+        """
+        zrel = z / self.length + 0.5
+        kp = self.p * jnp.pi / self.length
+        coskz = jnp.cos(self.p * jnp.pi * zrel)
+        sinkz = jnp.sin(self.p * jnp.pi * zrel)
+        kmn = self.vmn / self.radius
+        j0, j1x = bessel.j0_j1x(kmn**2 * rho2)
+        # (J_m' = -J_1) / rho = -kmn * J_1(kr) / kr
+        jmp_over_rho = -kmn * j1x
+        omega = self.frequency * 2 * jnp.pi
+        Et = self.E0 * kp / kmn
+        Bt = self.E0 * omega / (u.c_light_sq * kmn)
+        zero = jnp.zeros_like(j0)
+
+        if self.mode == "TM":
+            E = ReducedComponents(
+                rho=-Et * jmp_over_rho * sinkz, phi=zero, z=self.E0 * j0 * coskz
+            )
+            B = ReducedComponents(rho=zero, phi=Bt * jmp_over_rho * coskz, z=zero)
+        else:  # TE mode
+            Et, Bt = Bt * u.c_light, Et / u.c_light
+            B0 = self.E0 / u.c_light
+            E = ReducedComponents(rho=zero, phi=Et * jmp_over_rho * sinkz, z=zero)
+            B = ReducedComponents(
+                rho=Bt * jmp_over_rho * coskz, phi=zero, z=B0 * j0 * sinkz
+            )
+        tRe = jnp.cos(omega * ct / u.c_light + self.phase)
+        tIm = jnp.sin(omega * ct / u.c_light + self.phase)
+        scale = lambda F, t: ReducedComponents(F.rho * t, F.phi * t, F.z * t)  # noqa: E731
+        return scale(E, tRe), scale(B, tIm)
 
     def _cylindric_field(
         self, pcyl: Cylindric3, ct: SFloat

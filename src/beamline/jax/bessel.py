@@ -404,3 +404,31 @@ def _jv_jvp_fwd(v: SInt, primals, tangents):
     y = jv(v, x)
     dydx = (jv(v - 1, x) - jv(v + 1, x)) / 2
     return y, dx * dydx
+
+
+_SMALL_X2 = 1e-2
+"""x^2 below which j0_j1x uses its Taylor series (x < 0.1)"""
+
+
+def j0_j1x(x2: SFloat) -> tuple[SFloat, SFloat]:
+    """J_0(x) and J_1(x) / x as smooth functions of x^2
+
+    Both are even in x, and computing them from x = sqrt(x^2) is singular in
+    derivatives at x = 0. Below x = 0.1 use their Taylor series in q = x^2 / 4
+    (truncated after q^4, error < 1e-17), and jv otherwise.
+
+    Args:
+        x2: Square of the (real) argument, x2 >= 0
+
+    Returns:
+        (J_0(x), J_1(x) / x)
+    """
+    small = x2 < _SMALL_X2
+    q = x2 / 4
+    j0_series = 1 - q * (1 - q / 4 * (1 - q / 9 * (1 - q / 16)))
+    j1x_series = (1 - q / 2 * (1 - q / 6 * (1 - q / 12 * (1 - q / 20)))) / 2
+    # double-where: keep the jv branch (and its gradient) away from x = 0
+    x = jnp.sqrt(jnp.where(small, _SMALL_X2, x2))
+    j0 = jv(0, x)
+    j1x = jv(1, x) / x
+    return jnp.where(small, j0_series, j0), jnp.where(small, j1x_series, j1x)
