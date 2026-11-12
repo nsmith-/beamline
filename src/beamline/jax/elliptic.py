@@ -20,6 +20,19 @@ from jax import lax
 
 from beamline.jax.types import SFloat, eps_of
 
+
+def _sqrt0(x: SFloat) -> SFloat:
+    """``sqrt(x)`` for ``x >= 0`` whose derivative at ``x == 0`` is zero instead of NaN
+
+    Used for terms such as ``sqrt(x * y * z)`` that vanish identically when one
+    argument is exactly zero. ``jnp.sqrt`` would give a ``0 / 0`` derivative there
+    (e.g. ``d/dy sqrt(0 * y)``), which poisons higher derivatives of the
+    ``custom_jvp`` rules below even when multiplied by a zero tangent.
+    """
+    pos = x > 0
+    return jnp.where(pos, jnp.sqrt(jnp.where(pos, x, 1.0)), 0.0)
+
+
 type _RFState = tuple[SFloat, SFloat, SFloat, SFloat, SFloat, SFloat]
 """x, y, z, A, Q, f"""
 
@@ -240,9 +253,7 @@ def _elliprd_general_iter(x: SFloat, y: SFloat, z: SFloat) -> SFloat:
 
 def _drd_dx_term1(x, y):
     xmy = lax.select(x == y, 1e-16, x - y)
-    return (
-        3 / (16 * xmy**2) * (jnp.sqrt(y) * (5 * x - 2 * y) / x**2 - 3 * elliprc(y, x))
-    )
+    return 3 / (16 * xmy**2) * (_sqrt0(y) * (5 * x - 2 * y) / x**2 - 3 * elliprc(y, x))
 
 
 def _drd_dx_term2(x, y, z, rd):
@@ -260,7 +271,7 @@ def _drd_dx_switch(x, y, z, rd):
 
 def _drd_dz_xeqz(x, y, z, rd):
     ymz = lax.select(y == z, 1e-16, y - z)
-    return -9 / 16 / ymz**2 * (3 * elliprc(y, z) + jnp.sqrt(y) * (2 * y - 5 * z) / z**2)
+    return -9 / 16 / ymz**2 * (3 * elliprc(y, z) + _sqrt0(y) * (2 * y - 5 * z) / z**2)
 
 
 def _drd_dz_else(x, y, z, rd):
@@ -269,7 +280,7 @@ def _drd_dz_else(x, y, z, rd):
     return (
         (x + y - 2 * z) * rd
         + 3 / 2 * elliprf(x, y, z)
-        - 3 / 2 * jnp.sqrt(x * y) / z / jnp.sqrt(z)
+        - 3 / 2 * _sqrt0(x * y) / z / jnp.sqrt(z)
     ) / (xmz * ymz)
 
 
@@ -622,12 +633,12 @@ def elliprg(x: SFloat, y: SFloat, z: SFloat) -> SFloat:
     return 0.5 * (
         z * elliprf(x, y, z)
         - (x - z) * (y - z) / 3 * elliprd(x, y, z)
-        + jnp.sqrt(x * y / z)
+        + _sqrt0(x * y / z)
     )
 
 
 def _drj_dx_term_xyp(x, y, z):
-    num = 3 * jnp.sqrt(z) * (5 * x - 2 * z) - 9 * x**2 * elliprc(z, x)
+    num = 3 * _sqrt0(z) * (5 * x - 2 * z) - 9 * x**2 * elliprc(z, x)
     den = 16 * (x - z) ** 2 * x**2
     return num / lax.select(x == z, 1.0, den)
 
@@ -636,7 +647,7 @@ def _drj_dx_term_xp(x, y, z):
     num = (
         2 / 3 * (y + z - 2 * x) * elliprd(y, z, x)
         + elliprf(x, y, z)
-        - jnp.sqrt(y * z / x**3)
+        - _sqrt0(y * z / x**3)
     )
     den = 2 * (x - y) * (x - z)
     return num / lax.select((x == y) | (x == z), 1.0, den)
@@ -672,7 +683,7 @@ def _drj_dx_switch(x, y, z, p, rj):
 
 def _drj_dp_term_2eq(p, x):
     "p=y=z case"
-    num = -3 * (jnp.sqrt(x) * (-5 * p + 2 * x) / p**2 + 3 * elliprc(x, p))
+    num = -3 * (_sqrt0(x) * (-5 * p + 2 * x) / p**2 + 3 * elliprc(x, p))
     den = 8 * (p - x) ** 2
     return num / lax.select(p == x, 1.0, den)
 
@@ -680,7 +691,7 @@ def _drj_dp_term_2eq(p, x):
 def _drj_dp_term_1eq(p, y, z):
     "p=x (or p=y or p=z) case"
     num = (
-        -(jnp.sqrt(y * z) / p ** (3 / 2))
+        -(_sqrt0(y * z) / p ** (3 / 2))
         + (2 * (-2 * p + y + z) * elliprd(y, z, p)) / 3
         + elliprf(p, y, z)
     )
@@ -690,7 +701,7 @@ def _drj_dp_term_1eq(p, y, z):
 
 def _drj_dp_term_else(x, y, z, p, rj):
     term1_num = 3 * (
-        jnp.sqrt(x * y * z) / p + p * elliprf(x, y, z) - 2 * elliprg(x, y, z)
+        _sqrt0(x * y * z) / p + p * elliprf(x, y, z) - 2 * elliprg(x, y, z)
     )
     pmx, pmy, pmz = p - x, p - y, p - z
     term2_num = -(pmy * pmz + pmz * pmx + pmx * pmy) * rj

@@ -385,3 +385,46 @@ def test_twiddling():
     assert twiddling(3.0, 2.3, 1.2, 3.0) == (1, 2.3, 1.2)
 
     assert twiddling(1.2, 2.3, 3.4, 3.0) == (0, 0.0, 1.0)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "general",
+        "x0",
+        "x0_yeqz",
+        pytest.param(
+            "zeqp",
+            marks=pytest.mark.xfail(
+                reason="the z == p branch of the R_J derivative rule is a closed form "
+                "valid only on z == p, so its derivative off that manifold is wrong",
+                strict=True,
+            ),
+        ),
+    ],
+)
+def test_elliprj_second_deriv(case: str):
+    """Hessian of R_J is finite and matches a numerical derivative of the gradient
+
+    With ``x == 0`` (as in ``ThinShellSolenoid``) the derivative in ``x`` is
+    singular, so only ``(y, z, p)`` are differentiated there.
+    """
+    x, y, z, p = _gen_samples(case, n=NSAMP_DERIV)
+    argnums = (1, 2, 3) if case.startswith("x0") else (0, 1, 2, 3)
+
+    def grad(*args):
+        return jnp.stack(jax.grad(jell.elliprj, argnums=argnums)(*args))
+
+    hess = jax.jit(jax.vmap(jax.jacfwd(grad, argnums=argnums)))(x, y, z, p)
+    hess = np.stack(hess, axis=-1)  # (n, row, col)
+    assert np.all(np.isfinite(hess))
+
+    # central differences of the (separately validated) gradient, all at once
+    vgrad = jax.jit(jax.vmap(grad))
+    args = (x, y, z, p)
+    for col, argnum in enumerate(argnums):
+        h = 1e-5 * args[argnum]
+        up = [a + h if k == argnum else a for k, a in enumerate(args)]
+        dn = [a - h if k == argnum else a for k, a in enumerate(args)]
+        fd = (vgrad(*up) - vgrad(*dn)) / (2 * h[:, None])
+        assert hess[:, :, col] == pytest.approx(np.asarray(fd), rel=1e-6, abs=1e-9)
