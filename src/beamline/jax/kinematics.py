@@ -194,6 +194,16 @@ class MuonState(ParticleState):
         q: SInt,
     ) -> Self:
         """Create a MuonState from position and momentum components"""
+        return cls(**cls._make_fields(position=position, momentum=momentum, q=q))
+
+    @staticmethod
+    def _make_fields(
+        *,
+        position: Cartesian4 | Cylindric4,
+        momentum: Cartesian3 | Cylindric3,
+        q: SInt,
+    ) -> dict:
+        """Constructor arguments common to all ``MuonState`` subclasses"""
         pos = position.to_cartesian()
         mom3 = momentum.to_cartesian()
         mom4 = Cartesian4.make(
@@ -207,13 +217,13 @@ class MuonState(ParticleState):
         log_weight = jnp.zeros(p4.shape[:-1])
         status = jnp.full(p4.shape[:-1], TrackingStatus.ALIVE, dtype=jnp.int32)
         lost_at = jnp.zeros(p4.shape[:-1])
-        return cls(
-            kin=tangent_vector,
-            q=q,
-            log_weight=log_weight,
-            status=status,
-            lost_at=lost_at,
-        )
+        return {
+            "kin": tangent_vector,
+            "q": q,
+            "log_weight": log_weight,
+            "status": status,
+            "lost_at": lost_at,
+        }
 
 
 class MuonStateDct(MuonState):
@@ -291,4 +301,72 @@ class MuonStateDz(MuonState):
             log_weight=jnp.zeros_like(self.log_weight),
             status=jnp.zeros_like(self.status),
             lost_at=jnp.zeros_like(self.lost_at),
+        )
+
+
+class MuonStateDs(MuonState):
+    """Muon state, propagating with respect to path length s
+
+    Useful e.g. for building a reference trajectory, since ``s`` is monotonic
+    regardless of the direction of motion. Also integrates the proper time
+    ``ctau`` elapsed along the trajectory.
+    """
+
+    kin: Tangent[Cartesian4]
+    """State of a muon particle"""
+    q: SInt = eqx.field(static=True)
+    """Sign of the muon charge (+1 or -1)"""
+    log_weight: SFloat
+    status: SInt
+    lost_at: SFloat
+    ctau: SFloat
+    """Proper time (times c) [mm], with ``d(ctau)/ds = m / |p|``"""
+
+    @classmethod
+    def make(
+        cls,
+        *,
+        position: Cartesian4 | Cylindric4,
+        momentum: Cartesian3 | Cylindric3,
+        q: SInt,
+        ctau: SFloat = 0.0,
+    ) -> MuonStateDs:
+        """Create a MuonStateDs from position and momentum components
+
+        Args:
+            ctau: Initial proper time (times c), broadcast over the particles
+        """
+        fields = cls._make_fields(position=position, momentum=momentum, q=q)
+        ctau = jnp.broadcast_to(
+            jnp.asarray(ctau, dtype=float), fields["log_weight"].shape
+        )
+        return cls(**fields, ctau=ctau)
+
+    def scale(self) -> SFloat:
+        # convert from d/ds to d/dct: ds/dct = beta = |p| / E
+        return self.kin.t.ct / abs(self.kin.t.to_cartesian3())
+
+    def regularized(self) -> MuonStateDs:
+        """Placeholder ``p = m`` along ``+z``
+
+        ``scale() = E / |p|`` only needs ``|p| > 0``.
+        """
+        return self._with_lost_momentum(Cartesian3.make(z=self.mass))
+
+    def build_tangent(self, dkin: Tangent[Cartesian4]) -> MuonStateDs:
+        """Derivative of log_weight is zero; it changes only at kicks.
+
+        Proper time advances as ``d(ctau) = (m / E) d(ct)``, with ``d(ct)``
+        the time component of the position derivative.
+
+        status and lost_at are bookkeeping (see ``ParticleState.without_status``);
+        their zero derivatives just give the result the same structure.
+        """
+        return MuonStateDs(
+            kin=dkin,
+            q=self.q,
+            log_weight=jnp.zeros_like(self.log_weight),
+            status=jnp.zeros_like(self.status),
+            lost_at=jnp.zeros_like(self.lost_at),
+            ctau=dkin.p.ct * self.mass / self.kin.t.ct,
         )
