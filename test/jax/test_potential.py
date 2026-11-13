@@ -15,6 +15,7 @@ from beamline.jax.emfield import (
 )
 from beamline.jax.magnet.loop import WireLoop
 from beamline.jax.magnet.solenoid import ThickSolenoid, ThinShellSolenoid
+from beamline.jax.rfcavity.pillbox import PillboxCavity
 
 THICK = ThickSolenoid(
     Rin=250.0 * u.mm, Rout=419.3 * u.mm, jphi=500.0 * u.A / u.mm**2, L=140.0 * u.mm
@@ -98,3 +99,53 @@ def test_contract_potential_jacobian_on_axis(name: str):
     jac_ref = jax.jacfwd(force_ref)(x)
     scale = jnp.max(jnp.abs(jac_ref))
     assert jac == pytest.approx(np.asarray(jac_ref), abs=1e-7 * scale)
+
+
+@pytest.mark.parametrize(
+    ("mode", "m", "n", "p"),
+    [
+        ("TM", 0, 1, 0),
+        ("TM", 0, 1, 1),
+        ("TE", 0, 1, 1),
+        ("TM", 1, 1, 0),
+        ("TE", 1, 1, 1),
+        ("TM", 2, 2, 1),
+    ],
+)
+def test_contract_potential_pillbox(mode: str, m: int, n: int, p: int):
+    """Temporal gauge potential reproduces the cavity's E and B
+
+    Points are inside the cavity at random times, plus (for m = 0, whose fields
+    are smooth there) on the axis, plus outside the cavity where both vanish.
+    """
+    cavity = PillboxCavity(
+        length=1 * u.m,
+        frequency=704 * u.MHz,
+        E0=30 * u.megavolt / u.m,
+        mode=mode,
+        m=m,
+        n=n,
+        p=p,
+        phase=0.4,
+        rotation=0.2,
+    )
+    rng = np.random.default_rng(3)
+    npts = 32
+    rho = cavity.radius * np.sqrt(rng.uniform(0.01, 0.9, npts))
+    phi = rng.uniform(0, 2 * np.pi, npts)
+    z = rng.uniform(-0.45, 0.45, npts) * cavity.length
+    ct = rng.uniform(0, 2, npts) * cavity.wavelength
+    pts = [np.stack([rho * np.cos(phi), rho * np.sin(phi), z, ct], -1)]
+    if m == 0:
+        pts.append(np.array([[0.0, 0.0, 0.1, 30.0], [0.0, 0.0, -0.3, 400.0]]))
+    # off the axis: m >= 1 fields are still singular there (TODO in pillbox.py),
+    # and under vmap the inside branch is evaluated (and differentiated) anyway
+    outside = [[10.0, 0.0, cavity.length, 0.0], [2 * cavity.radius, 0.0, 0.0, 0.0]]
+    pts.append(np.array(outside))
+    points = Cartesian4(coords=jnp.asarray(np.concatenate(pts)))
+    vec = Tangent(p=points, t=_momenta(points.coords.shape[0]))
+
+    expected = jax.vmap(cavity)(vec).t.coords
+    actual = jax.vmap(cavity.contract_potential)(vec).t.coords
+    scale = jnp.max(jnp.abs(expected))
+    assert actual == pytest.approx(np.asarray(expected), rel=1e-8, abs=1e-9 * scale)

@@ -129,6 +129,38 @@ class PillboxCavity(EMTensorField, CylinderVolume):
         )
         return E.to_cartesian(), B.to_cartesian()
 
+    def potential(self, point: Cartesian4) -> Tangent[Cartesian4]:
+        """Four-potential in the temporal gauge (phi = 0)
+
+        The fields are E = E_s(x) cos(theta), B = B_s(x) sin(theta) with
+        theta = omega t + phase, so A = -E_s(x) sin(theta) / omega gives
+        E = -dA/dt and, by Faraday's law (curl E_s = -omega B_s), B = curl A.
+        Since sin(theta) = cos(theta - pi/2), this is the electric field a quarter
+        period earlier, divided by -omega. Inside the (charge-free) cavity
+        div E_s = 0, so this is also the Coulomb gauge.
+
+        Like the field, the potential is zero outside the cavity. Its component
+        normal to the end plates (A_z, for TM modes) is nonzero there, so A jumps
+        across the plates, as E does: canonical momenta p + qA jump when a
+        particle enters or leaves the cavity, while the mechanical momentum does
+        not.
+        """
+        omega = self.frequency * 2 * jnp.pi
+        earlier = Cartesian4.make(
+            x=point.x,
+            y=point.y,
+            z=point.z,
+            ct=point.ct - jnp.pi / 2 * u.c_light / omega,
+        )
+        E, _ = self.field_strength(earlier)
+        A = -E.t.coords / omega
+        return Tangent(
+            p=point,
+            t=Cartesian4(
+                coords=jnp.concatenate([A, jnp.zeros_like(A[..., :1])], axis=-1)
+            ),
+        )
+
     def _reduced_field_m0(
         self, rho2: SFloat, z: SFloat, ct: SFloat
     ) -> tuple[ReducedComponents, ReducedComponents]:
