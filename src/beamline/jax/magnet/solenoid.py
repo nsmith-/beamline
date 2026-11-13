@@ -12,13 +12,13 @@ from beamline.jax.elliptic import (
     elliprd_one_zero,
     elliprf_one_zero,
     elliprj,
-    elliptic_kepi,
 )
 from beamline.jax.emfield import EMTensorField
 from beamline.jax.magnet.axial_expansion import (
     AXIS_SERIES_RADIUS,
     B_rhoexpansion,
     axisymmetric_magnet_field_strength,
+    axisymmetric_magnet_potential,
 )
 from beamline.jax.magnet.loop import WireLoop
 from beamline.jax.types import SBool, SFloat
@@ -99,26 +99,47 @@ class ThinShellSolenoid(EMTensorField):
         """
         return B_rhoexpansion(self.Bz_onaxis, rho, z, order)
 
+    def _guard_shell(self, rho: SFloat) -> SFloat:
+        """Avoid rho = R, where the elliptic integral iteration never converges"""
+        threshold_R = 1e-5 * self.R  # smaller eps = longer elliptic integral loop
+        return jax.lax.select(
+            jnp.abs(rho - self.R) < threshold_R,
+            self.R + jnp.sign(rho - self.R) * threshold_R,
+            rho,
+        )
+
     def A(self, rho: SFloat, z: SFloat) -> SFloat:
         """Vector potential A_phi at (rho, z)
 
-        Following Wikipedia"""
-        raise NotImplementedError("Not yet tested")
-        xip, xim = z + self.L / 2, z - self.L / 2
-        rhopR = rho + self.R
-        fourRrho = 4 * self.R * rho
-        n = fourRrho / rhopR**2
-        mp, mm = (
-            fourRrho / (xip**2 + rhopR**2),
-            fourRrho / (xim**2 + rhopR**2),
-        )
-        ap, am = xip / _hypot(xip, rhopR), xim / _hypot(xim, rhopR)
-        Kp, Ep, Pip = elliptic_kepi(n=n, k=jnp.sqrt(mp))
-        Km, Em, Pim = elliptic_kepi(n=n, k=jnp.sqrt(mm))
-        termp = ap * ((mp + n - mp * n) / (mp * n) * Kp - Ep / mp + (n + 1) / n * Pip)
-        termm = am * ((mm + n - mm * n) / (mm * n) * Km - Em / mm + (n + 1) / n * Pim)
-        Aphi = MU0 * self.jphi * self.R / jnp.pi / self.L * (termp - termm)
-        return Aphi
+        The textbook form (e.g. Callaghan:1960) is, with n = 4 R rho / (rho + R)^2,
+        m = 4 R rho / (zeta^2 + (rho + R)^2) and zeta = z -+ L/2,
+
+            A_phi = mu0 j R / pi [ zeta / sqrt(zeta^2 + (rho + R)^2)
+                    * ((m + n - m n) / (m n) K(m) - E(m) / m + (n - 1) / n Pi(n, m)) ]
+
+        evaluated between the ends. In Carlson form the K terms cancel exactly and
+        the 1 / (m n) singularities with them, leaving
+
+            A_phi = mu0 j R / (3 pi) [ beta (R_D(0, 1-m, 1) - gamma^2 R_J(0, 1-m, 1, gamma^2)) ]
+
+        with beta and gamma as in :meth:`B_elliptic` (1 - n = gamma^2). On the
+        axis the bracket vanishes like rho, so evaluate near the axis via
+        :func:`axisymmetric_magnet_potential` instead.
+        """
+        rho = self._guard_shell(rho)
+        rhopR, rhomR = rho + self.R, rho - self.R
+        gamma2 = (rhomR / rhopR) ** 2
+
+        def edge(xi: SFloat) -> SFloat:
+            k2 = (xi**2 + rhomR**2) / (xi**2 + rhopR**2)
+            one = jnp.ones_like(k2)
+            beta = xi / _hypot(xi, rhopR)
+            Rd = elliprd_one_zero(k2, one)
+            Rj = elliprj(jnp.zeros_like(k2), k2, one, gamma2)
+            return beta * (Rd - gamma2 * Rj)
+
+        prefactor = MU0 * self.jphi * self.R / (3 * jnp.pi)
+        return prefactor * (edge(z + self.L / 2) - edge(z - self.L / 2))
 
     def B_dA(self, rho: SFloat, z: SFloat) -> tuple[SFloat, SFloat]:
         """Compute the magnetic field by taking the curl of the vector potential"""
@@ -139,13 +160,7 @@ class ThinShellSolenoid(EMTensorField):
             Conway https://doi.org/10.1109/20.947050
             Caciagli:2018 https://doi.org/10.1016/j.jmmm.2018.02.003
         """
-        # avoid rho = R which never converges
-        threshold_R = 1e-5 * self.R  # smaller eps = longer elliptic integral loop
-        rho = jax.lax.select(
-            jnp.abs(rho - self.R) < threshold_R,
-            self.R + jnp.sign(rho - self.R) * threshold_R,
-            rho,
-        )
+        rho = self._guard_shell(rho)
         xip, xim = z + self.L / 2, z - self.L / 2
         rhopR, rhomR = rho + self.R, rho - self.R
         alphap, alpham = 1 / _hypot(xip, rhopR), 1 / _hypot(xim, rhopR)
@@ -183,6 +198,11 @@ class ThinShellSolenoid(EMTensorField):
     ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
         return axisymmetric_magnet_field_strength(
             self.B_elliptic, self.Bz_onaxis, point, AXIS_SERIES_RADIUS * self.R
+        )
+
+    def potential(self, point: Cartesian4) -> Tangent[Cartesian4]:
+        return axisymmetric_magnet_potential(
+            self.A, self.Bz_onaxis, point, AXIS_SERIES_RADIUS * self.R
         )
 
 
@@ -266,4 +286,21 @@ class ThickSolenoid(EMTensorField):
     ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
         return axisymmetric_magnet_field_strength(
             self.B_shells, self.Bz_onaxis, point, AXIS_SERIES_RADIUS * self.Rin
+        )
+
+    def A_shells(self, rho: SFloat, z: SFloat, num_shells: int = 8) -> SFloat:
+        """Vector potential A_phi, integrating thin shells as in :meth:`B_shells`"""
+        nodes, weights = np.polynomial.legendre.leggauss(num_shells)
+        half_width = (self.Rout - self.Rin) / 2
+        shell_radii = (self.Rout + self.Rin) / 2 + half_width * nodes
+        shell_widths = half_width * weights
+
+        def shell_contrib(R: SFloat, dR: SFloat) -> SFloat:
+            return ThinShellSolenoid(R=R, jphi=self.jphi * dR, L=self.L).A(rho, z)
+
+        return jnp.sum(jax.vmap(shell_contrib)(shell_radii, shell_widths))
+
+    def potential(self, point: Cartesian4) -> Tangent[Cartesian4]:
+        return axisymmetric_magnet_potential(
+            self.A_shells, self.Bz_onaxis, point, AXIS_SERIES_RADIUS * self.Rin
         )

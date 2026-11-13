@@ -66,6 +66,47 @@ class EMTensorField(Volume):
             t=Cartesian4.make(x=pxc, y=pyc, z=pzc, ct=Egy),
         )
 
+    def potential(self, point: Cartesian4) -> Tangent[Cartesian4]:
+        """Four-potential A^mu = (A_x, A_y, A_z, phi/c) at a point
+
+        Optional: fields that implement it can be contracted with
+        :meth:`contract_potential` instead of :meth:`__call__`. The gauge is up
+        to the implementation.
+
+        Args:
+            point: Point in spacetime where the potential is evaluated [mm]
+
+        Returns:
+            A^mu as a tangent vector at ``point``, in [MeV*ns/e/mm] (i.e. B * length)
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement potential")
+
+    def contract_potential(self, vec: Tangent[Cartesian4]) -> Tangent[Cartesian4]:
+        """Same as :meth:`__call__`, computed from :meth:`potential` with autodiff
+
+        With A_mu the covariant potential and F_mu_nu = d_mu A_nu - d_nu A_mu,
+
+            F_mu_nu p^nu = d_mu (A_nu p^nu) - p^nu d_nu A_mu
+
+        where the first term is a vector-Jacobian product of A with p and the
+        second a Jacobian-vector product of A along p. The index is then raised
+        with the Minkowski metric, as in :meth:`__call__`.
+        """
+        # signature (-, -, -, +) in the (x, y, z, ct) component order
+        eta = jnp.array([-1.0, -1.0, -1.0, 1.0])
+
+        def A_lower(x: jax.Array) -> jax.Array:
+            return eta * self.potential(Cartesian4(coords=x)).t.coords
+
+        x, p = vec.p.coords, vec.t.coords
+        _, pullback = jax.vjp(A_lower, x)
+        (grad_Ap,) = pullback(p)
+        convective = jax.jvp(A_lower, (x,), (p,))[1]
+        return Tangent(
+            p=vec.p,
+            t=Cartesian4(coords=u.c_light * eta * (grad_Ap - convective)),
+        )
+
     def __add__(self, other: EMTensorField) -> SumField:
         return SumField([self, other])
 
@@ -88,6 +129,18 @@ class SimpleEMField(EMTensorField):
         return (
             Tangent(p=point.to_cartesian3(), t=self.E0),
             Tangent(p=point.to_cartesian3(), t=self.B0),
+        )
+
+    def potential(self, point: Cartesian4) -> Tangent[Cartesian4]:
+        """Symmetric gauge: A = (B0 x r) / 2, phi = -E0 . r"""
+        r = point.coords[..., :3]
+        A = 0.5 * jnp.cross(self.B0.coords, r)
+        phi = -jnp.sum(self.E0.coords * r, axis=-1)
+        return Tangent(
+            p=point,
+            t=Cartesian4(
+                coords=jnp.concatenate([A, (phi / u.c_light)[..., None]], axis=-1)
+            ),
         )
 
 
@@ -133,6 +186,10 @@ class SumField(EMTensorField):
 
     def __call__(self, vec: Tangent[Cartesian4]) -> Tangent[Cartesian4]:
         return reduce(operator.add, (f(vec) for f in self.components))
+
+    def potential(self, point: Cartesian4) -> Tangent[Cartesian4]:
+        coords = sum(comp.potential(point).t.coords for comp in self.components)
+        return Tangent(p=point, t=Cartesian4(coords=coords))
 
 
 class StackedField(EMTensorField):
@@ -192,6 +249,10 @@ class StackedField(EMTensorField):
         out = eqx.filter_vmap(lambda f: f(vec))(self.fields)
         return Tangent(p=vec.p, t=Cartesian4(coords=jnp.sum(out.t.coords, axis=0)))
 
+    def potential(self, point: Cartesian4) -> Tangent[Cartesian4]:
+        A = eqx.filter_vmap(lambda f: f.potential(point))(self.fields)
+        return Tangent(p=point, t=Cartesian4(coords=jnp.sum(A.t.coords, axis=0)))
+
 
 class TransformEMField(EMTensorField):
     """A container to transform EM tensor fields
@@ -234,3 +295,11 @@ class TransformEMField(EMTensorField):
         in_local = self.transform.tangent_to_local(vec)
         out_local = self.field(in_local)
         return self.transform.tangent_to_global(out_local)
+
+    def potential(self, point: Cartesian4) -> Tangent[Cartesian4]:
+        """A^mu transforms as a four-vector: rotate the local potential back
+
+        Valid for the rotations and translations :class:`Transform` constructs.
+        """
+        A_local = self.field.potential(self.transform.to_local(point))
+        return self.transform.tangent_to_global(A_local)

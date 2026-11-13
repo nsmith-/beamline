@@ -102,3 +102,59 @@ def axisymmetric_magnet_field_strength(
         return ReducedComponents(zero, zero, zero), Bred
 
     return axisymmetric_field_strength(point, fields)
+
+
+def _rhoexpansion_aphi(
+    Bz_onaxis: Callable[[SFloat], SFloat], rho2: SFloat, z: SFloat, order: int
+) -> SFloat:
+    """A_phi / rho from the rho expansion, as a polynomial in rho^2
+
+    A_phi = sum_n (-1)^n / (n! (n+1)!) (rho/2)^(2n+1) Bz^(2n)(z), whose curl
+    reproduces the expansion in :func:`_rhoexpansion_g` (Bz up to Bz^(2 order),
+    Brho up to Bz^(2 order + 1)).
+    """
+    Bz0, dnBz = jet(
+        Bz_onaxis,
+        primals=(z,),
+        series=(jnp.zeros(2 * order).at[0].set(1.0),),
+    )
+    q = rho2 / 4
+    derivs = [Bz0] + [dnBz[2 * n - 1] for n in range(1, order + 1)]
+    return sum(
+        (-1) ** n / (gamma(n + 1) * gamma(n + 2)) / 2 * q**n * derivs[n]
+        for n in range(order + 1)
+    )
+
+
+def axisymmetric_magnet_potential(
+    Aphi: Callable[[SFloat, SFloat], SFloat],
+    Bz_onaxis: Callable[[SFloat], SFloat],
+    point: Cartesian4,
+    rho_series: SFloat,
+    order: int = AXIS_SERIES_ORDER,
+) -> Tangent[Cartesian4]:
+    """Four-potential of a static axisymmetric magnet, smooth through the axis
+
+    The potential analog of :func:`axisymmetric_magnet_field_strength`: only
+    A_phi is nonzero, and A_x = -y A_phi / rho, A_y = x A_phi / rho, with
+    A_phi / rho from the rho expansion within rho_series of the axis and from
+    the full potential Aphi outside.
+
+    Args:
+        Aphi: Full potential, (rho, z) -> A_phi
+        Bz_onaxis: On-axis field, z -> Bz
+        point: Point where the potential is evaluated
+        rho_series: Radius below which the rho expansion is used [mm]
+        order: Order of the rho expansion
+    """
+    rho2 = point.x**2 + point.y**2
+    near = rho2 < rho_series**2
+    a_series = _rhoexpansion_aphi(Bz_onaxis, rho2, point.z, order)
+    # double-where: keep the full branch (and its gradient) away from rho = 0
+    rho = jnp.sqrt(jnp.where(near, rho_series**2, rho2))
+    a = jnp.where(near, a_series, Aphi(rho, point.z) / rho)
+    zero = jnp.zeros_like(a)
+    return Tangent(
+        p=point,
+        t=Cartesian4.make(x=-point.y * a, y=point.x * a, z=zero, ct=zero),
+    )

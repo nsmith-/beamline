@@ -13,6 +13,7 @@ from beamline.jax.magnet.axial_expansion import (
     AXIS_SERIES_RADIUS,
     B_rhoexpansion,
     axisymmetric_magnet_field_strength,
+    axisymmetric_magnet_potential,
 )
 from beamline.jax.types import SBool, SFloat
 from beamline.units import MU0
@@ -84,6 +85,28 @@ class WireLoop(EMTensorField):
         )
         return Brho, Bz
 
+    def A(self, rho: SFloat, z: SFloat) -> SFloat:
+        """Vector potential A_phi of a wire loop at (rho, z)
+
+        The usual form (e.g. Jackson 5.37)
+        A_phi = mu0 I / (pi k) sqrt(R / rho) [(1 - k^2/2) K(k) - E(k)],
+        with k^2 = m, becomes in Carlson form (as in :meth:`B`)
+
+            A_phi = 2 mu0 I R / (pi beta) [R_D(0, 1-m, 1) / 3 - R_F(0, 1-m, 1) / 2]
+
+        without the sqrt(R / rho) / k. The bracket vanishes like rho on the axis,
+        so evaluate near the axis via ``axisymmetric_magnet_potential`` instead.
+        """
+        rho, z = self._guard_wire(rho, z)
+        R = self.R
+        alpha2 = (R - rho) ** 2 + z**2
+        beta2 = (R + rho) ** 2 + z**2
+        kp2 = alpha2 / beta2
+        one = jnp.ones_like(kp2)
+        Rf = elliprf_one_zero(kp2, one)
+        Rd = elliprd_one_zero(kp2, one)
+        return 2 * MU0 * self.I * R / (jnp.pi * jnp.sqrt(beta2)) * (Rd / 3 - Rf / 2)
+
     def _guard_wire(self, rho: SFloat, z: SFloat) -> tuple[SFloat, SFloat]:
         """Push (rho, z) out to at least WIRE_GUARD * R from the wire"""
         dmin = WIRE_GUARD * self.R
@@ -110,4 +133,9 @@ class WireLoop(EMTensorField):
     ) -> tuple[Tangent[Cartesian3], Tangent[Cartesian3]]:
         return axisymmetric_magnet_field_strength(
             self.B, self.Bz_onaxis, point, AXIS_SERIES_RADIUS * self.R
+        )
+
+    def potential(self, point: Cartesian4) -> Tangent[Cartesian4]:
+        return axisymmetric_magnet_potential(
+            self.A, self.Bz_onaxis, point, AXIS_SERIES_RADIUS * self.R
         )
